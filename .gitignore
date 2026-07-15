@@ -1,0 +1,94 @@
+# ============================================================
+# Altium Designer
+# ============================================================
+
+# Local history, previews, logs and generated outputs
+**/History/
+**/__Previews/
+**/Project Logs for */
+**/Project Outputs for */
+
+# Generated project/cache files
+*.PrjPcbStructure
+*.SchDocPreview
+*.PcbDocPreview
+*.DsnWrk
+*.DsnWrkStructure
+
+# Temporary, backup and lock files
+*.bak
+*.BAK
+*.$$$
+*.REP
+*.LOG
+*.log
+*.DWL
+*.DWL2
+~$*
+
+# Automatically created CAMtastic sessions
+CAMtastic*.Cam
+
+# Altium package/output archives
+**/ProjectPackages/
+**/Packages/
+
+# ============================================================
+# Firmware build files
+# ============================================================
+
+# PlatformIO
+**/.pio/
+**/.pioenvs/
+**/.piolibdeps/
+
+# Generic build/output folders
+**/build/
+**/dist/
+**/out/
+
+# Compiled firmware
+*.elf
+*.map
+*.hex
+*.bin
+*.uf2
+
+# Python / MicroPython
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# ============================================================
+# Editors and IDEs
+# ============================================================
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+.idea/
+*.code-workspace
+
+# ============================================================
+# Operating system files
+# ============================================================
+
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ============================================================
+# Local secrets and machine-specific settings
+# ============================================================
+
+.env
+.env.*
+secrets.py
+wifi_config.py
+config.local.*
