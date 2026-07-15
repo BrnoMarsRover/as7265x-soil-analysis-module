@@ -498,8 +498,6 @@ as7265x-soil-analysis-module/
 │     └─ PCB_photo_ver1,0.jpg
 ├─ Hardware/
 │  ├─ Altium/
-│  ├─ Gerbers/
-│  ├─ BOM/
 │  └─ Manufacturing/
 ├─ Firmware/
 ├─ Data/
@@ -510,7 +508,7 @@ as7265x-soil-analysis-module/
 Manufacturing outputs should be stored separately for each PCB revision:
 
 ```text
-Hardware/Releases/
+Hardware/Manufacturing/
 ├─ V1.0/
 └─ V1.1/
 ```
