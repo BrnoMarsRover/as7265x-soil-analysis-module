@@ -566,3 +566,11 @@ Until a `LICENSE` file is added, the project should be treated as **all rights r
 Developed as part of the **Brno Mars Rover / Freya** student rover project.
 
 The goal of the module is to create a practical, competition-ready scientific payload for repeatable multispectral analysis of geological and soil samples.
+
+---
+
+## Author
+
+**Maksym Pleshyvtsev**  
+Electrical Engineering Student  
+Brno University of Technology — FEKT
