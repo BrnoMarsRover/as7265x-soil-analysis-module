@@ -42,6 +42,7 @@ Firmware upload (PowerShell, adjust COM port):
    py -m mpremote connect COM4 fs cp references.json :references.json
    py -m mpremote connect COM4 fs cp sample_store.py :sample_store.py
    py -m mpremote connect COM4 fs cp sample_analysis.py :sample_analysis.py
+   py -m mpremote connect COM4 fs cp sensor_diag.py :sensor_diag.py
   
 
 Reloading the firmware (PowerShell, adjust COM port):
@@ -49,6 +50,10 @@ Reloading the firmware (PowerShell, adjust COM port):
 
 Run from the REPL (PowerShell, adjust COM port):
     py ..\host\rover_science_client.py --port COM4
+
+Add Samples BD:
+py -m mpremote connect COM4 fs ls
+py -m mpremote connect COM4 fs cp :samples.json samples.json
 
 '''
 
@@ -74,25 +79,7 @@ from carousel import (
 )
 from database import MaterialDatabase
 from mg995 import CCW, CW, MG995
-
-# Diagnostics are optional. If the file was not uploaded, the module
-# must still boot and serve commands - a missing add-on must never drop
-# the whole instrument to the REPL, where the PC sees its own commands
-# echoed back instead of JSON.
-try:
-    import sensor_diag
-
-    SENSOR_DIAG_ERROR = None
-
-except Exception as _diag_import_error:      # noqa: BLE001
-    sensor_diag = None
-
-    SENSOR_DIAG_ERROR = (
-        "sensor_diag.py is missing or failed to import ({}: {}). "
-        "Upload it to the ESP32 to enable sensor diagnostics.".format(
-            type(_diag_import_error).__name__, _diag_import_error
-        )
-    )
+import sensor_diag
 
 from sample_store import (
     SampleStore,
@@ -143,15 +130,11 @@ class CommandError(Exception):
     """Rejected command carrying a machine-readable code for the PC."""
 
     def __init__(self, code, message, data=None):
-        # super().__init__ - MicroPython does not support calling the
-        # native Exception.__init__ unbound, and doing so raises
-        # "type object 'Exception' has no attribute '__init__'",
-        # masking whatever real fault was being reported.
-        super().__init__(message)
+        Exception.__init__(self, message)
 
-        self.code = str(code)
-        self.message = str(message)
-        self.data = data if data is not None else None
+        self.code = code
+        self.message = message
+        self.data = data
 
 
 def _debug(*parts):
@@ -422,9 +405,6 @@ class ScienceModule:
             "list_samples": self.handle_list_samples,
             "get_sample": self.handle_get_sample,
             "update_sample_metadata": self.handle_update_sample_metadata,
-            "rename_sample": self.handle_rename_sample,
-            "delete_sample": self.handle_delete_sample,
-            "get_database_health": self.handle_get_database_health,
 
             "servo_stop": self.handle_servo_stop,
             "servo_jog_cw": self.handle_servo_jog_cw,
@@ -795,9 +775,6 @@ class ScienceModule:
             # Fixed calibration, spelled out so the operator can see at a
             # glance that no white/dark measurement is required.
             "calibration": self.calibration_status(),
-
-            "diagnostics_available": sensor_diag is not None,
-            "diagnostics_error": SENSOR_DIAG_ERROR,
 
             "transport": "usb-serial-console",
 
@@ -1678,116 +1655,6 @@ class ScienceModule:
             "metadata": record.get("metadata")
         }
 
-    def handle_rename_sample(self, request):
-        """
-        Change a Sample ID without touching any scientific value.
-
-        A runtime slot still pointing at the old ID is updated too, so
-        the carousel never references a record that no longer exists.
-        """
-        if "sample_id" not in request or "new_sample_id" not in request:
-            raise CommandError(
-                "MISSING_FIELD",
-                "rename_sample requires 'sample_id' and 'new_sample_id'."
-            )
-
-        old_id = request.get("sample_id")
-        new_id = request.get("new_sample_id")
-
-        try:
-            record = self.store.rename_sample(old_id, new_id)
-
-        except StorageError as error:
-            raise CommandError(
-                getattr(error, "code", "SAMPLE_RENAME_FAILED"),
-                error.message,
-                data={"sample_id": old_id, "new_sample_id": new_id}
-            )
-
-        # Keep the runtime carousel consistent with the database.
-        slot_updated = None
-
-        for slot in self.carousel.slot_list():
-            if slot.get("sample_id") == old_id:
-                slot["sample_id"] = record["sample_id"]
-                slot_updated = slot["slot_id"]
-
-        return {
-            "sample_id": record["sample_id"],
-            "previous_sample_id": old_id,
-            "slot_updated": slot_updated,
-            "saved_sample_count": self.store.count()
-        }
-
-    def handle_delete_sample(self, request):
-        """
-        Permanently remove a sample from samples.json.
-
-        This is NOT the same as clear_slot: that frees the physical slot
-        and keeps the science. This destroys the scientific record and
-        cannot be undone. The soil itself is untouched either way.
-        """
-        if "sample_id" not in request:
-            raise CommandError(
-                "MISSING_FIELD",
-                "delete_sample requires a 'sample_id'."
-            )
-
-        sample_id = request.get("sample_id")
-        clear_slot = bool(request.get("clear_slot"))
-
-        linked = self.carousel.find_slot_by_sample(sample_id)
-
-        try:
-            summary = self.store.delete_sample(sample_id)
-
-        except StorageError as error:
-            raise CommandError(
-                getattr(error, "code", "SAMPLE_DELETE_FAILED"),
-                error.message,
-                data={"sample_id": sample_id}
-            )
-
-        cleared = None
-
-        if linked is not None and clear_slot:
-            # Never leave a runtime slot pointing at a deleted record.
-            self.carousel.reset_slot(linked["slot_id"])
-            cleared = linked["slot_id"]
-
-        return {
-            "deleted": True,
-            "sample_id": summary.get("sample_id"),
-            "was_linked_to_slot": linked["slot_id"] if linked else None,
-            "slot_cleared": cleared,
-            "saved_sample_count": self.store.count(),
-            "note": (
-                "Software state only. Soil physically present in the "
-                "carousel is not affected."
-            )
-        }
-
-    def handle_get_database_health(self, request):
-        """Sample-database health, for the PC database manager screen."""
-        summaries = self.store.summaries()
-
-        states = {}
-
-        for entry in summaries:
-            state = entry.get("state") or "UNKNOWN"
-            states[state] = states.get(state, 0) + 1
-
-        return {
-            "file": config.SAMPLE_INDEX_FILE,
-            "record_dir": config.SAMPLE_RECORD_DIR,
-            "ready": self.store.ready,
-            "error": self.store.error,
-            "error_code": None if self.store.ready
-            else "SAMPLES_JSON_INVALID",
-            "count": self.store.count(),
-            "states": states
-        }
-
     # ==================================================================
     # servo maintenance
     # ==================================================================
@@ -2029,12 +1896,6 @@ class ScienceModule:
         reported inside the staged result, never as a bare error, so the
         operator always sees how far it got.
         """
-        if sensor_diag is None:
-            raise CommandError(
-                "DIAGNOSTICS_UNAVAILABLE",
-                SENSOR_DIAG_ERROR,
-                data={"stage": "COMMAND_ROUTING"}
-            )
         acquire = request.get("acquire", True)
 
         return sensor_diag.run_full_diagnostics(self, acquire=bool(acquire))
@@ -2046,12 +1907,6 @@ class ScienceModule:
         Works even when the driver failed at boot - which is exactly
         when the operator needs to know what is on the bus.
         """
-        if sensor_diag is None:
-            raise CommandError(
-                "DIAGNOSTICS_UNAVAILABLE",
-                SENSOR_DIAG_ERROR,
-                data={"stage": "COMMAND_ROUTING"}
-            )
         i2c, report = sensor_diag.run_i2c_scan()
 
         entry = report.stages[0] if report.stages else {}
@@ -2261,8 +2116,7 @@ class ScienceModule:
                 "ok": False,
                 "cmd": cmd,
                 "error": {
-                    "code": getattr(error, "code", "SAMPLE_SAVE_ERROR"),
-                    "exception_type": type(error).__name__,
+                    "code": "SAMPLE_SAVE_ERROR",
                     "message": str(error)
                 }
             }
