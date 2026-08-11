@@ -20,26 +20,17 @@
 # scanner.
 #
 # Physical slot occupancy and the tracked position live in RAM only and
-# are intentionally forgotten on reset. Measured science data is
-# persistent and lives in sample_store.py instead.
+# are intentionally forgotten on reset.
+#
+# This is deliberately NOT a sample lifecycle. The ESP32 knows only
+# whether a slot physically holds soil and which Sample ID the PC
+# attached to it, so that clear_slot has something to free and the
+# operator can see the real carousel contents. EMPTY / READY_TO_LOAD /
+# LOADED / MEASURED are scientific states and belong to the PC, which
+# is the authoritative sample archive.
 
 import config
 import mg995
-
-
-# Slot lifecycle.
-#
-#   EMPTY          nothing assigned to this slot
-#   READY_TO_LOAD  a Sample ID is assigned and the slot is at the loader
-#   LOADED         the external arm has physically deposited soil
-#   MEASURED       spectrum acquired; the soil is STILL in the slot
-#
-# MEASURED does not mean empty. A slot only becomes reusable after an
-# explicit clear_slot command.
-STATE_EMPTY = "EMPTY"
-STATE_READY_TO_LOAD = "READY_TO_LOAD"
-STATE_LOADED = "LOADED"
-STATE_MEASURED = "MEASURED"
 
 
 class CarouselError(Exception):
@@ -54,17 +45,11 @@ class CarouselError(Exception):
 
 
 def new_slot(slot_id):
-    """Return the runtime record for one empty physical slot."""
+    """Runtime record for one empty physical slot."""
     return {
         "slot_id": slot_id,
-        "state": STATE_EMPTY,
         "occupied": False,
-        "sample_id": None,
-        "measured": False,
-        "created_at": None,
-        "loaded_at": None,
-        "measured_at": None,
-        "metadata": None
+        "sample_id": None
     }
 
 
@@ -137,19 +122,35 @@ class Carousel:
         ]
 
     def reset_slot(self, slot_id):
-        """Clear runtime physical state only. Science data is untouched."""
+        """
+        Free a physical slot.
+
+        Runtime state only: the PC's persistent scientific record for
+        whatever was in the slot is a completely separate thing and is
+        never touched from here.
+        """
         slot_id = self.validate_slot(slot_id)
         self.slots[slot_id] = new_slot(slot_id)
 
         return self.slots[slot_id]
 
-    def find_slot_by_sample(self, sample_id):
-        """Return the slot currently holding the given Sample ID, if any."""
-        for slot in self.slot_list():
-            if slot["sample_id"] == sample_id:
-                return slot
+    def mark_occupied(self, slot_id, sample_id=None):
+        """
+        Record that a slot physically holds soil.
 
-        return None
+        Set after a successful acquisition: the soil really is in the
+        slot, and stays there until clear_slot. The Sample ID is carried
+        only so a response can be correlated with the PC's record.
+        """
+        slot_id = self.validate_slot(slot_id)
+        slot = self.slots[slot_id]
+
+        slot["occupied"] = True
+
+        if sample_id is not None:
+            slot["sample_id"] = sample_id
+
+        return slot
 
     # ------------------------------------------------------------------
     # geometry

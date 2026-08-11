@@ -19,7 +19,7 @@ The **AS7265x Soil Analysis Module** is a rover-mounted scientific payload desig
 
 The system uses the **AS7265x 18-channel VIS-NIR spectral sensor** to measure reflected light between approximately **410 nm and 940 nm**. An ESP32 controls the sensor, the eight-slot sample carousel, illumination, and the calibration pipeline.
 
-The ESP32 is a **passive command-controlled instrument**. It performs no automatic movement and no automatic measurement: the main computer is the mission controller and issues one JSON command at a time over the USB serial link. All scientific sample data is stored persistently on the ESP32 itself.
+The ESP32 is a **passive command-controlled instrument**. It performs no automatic movement and no automatic measurement: the main computer is the mission controller and issues one JSON command at a time over the USB serial link. The ESP32 moves the carousel, reads the sensor and returns a raw spectrum; all scientific processing and all persistent sample data live on the main computer.
 
 The project combines:
 
@@ -62,35 +62,38 @@ The module is command-driven. Nothing moves and nothing is measured until the ro
 
 1. The operator aligns physical Slot 1 with the loading hole and confirms it (`sync_position`).
 2. `select_slot` brings the next slot to the loading hole, normally one 45 deg clockwise step.
-3. `prepare_load` assigns a Sample ID and science metadata to that slot.
-4. The external rover arm deposits soil; `confirm_loaded` records that it happened.
-5. `measure_sample` rotates the same physical slot to the scanner, settles, and acquires one 18-channel spectrum.
-6. The spectrum is corrected with the **fixed** stored dark and white references.
+3. The PC creates a persistent Sample record with an ID and science metadata.
+4. The external rover arm deposits soil; the operator confirms that it happened.
+5. `measure_raw` rotates the same physical slot to the scanner, settles, and acquires one **raw** 18-channel spectrum.
+6. The PC corrects that spectrum with the **fixed** stored dark and white references.
 7. The normalized spectrum is compared against **every** material in the reference database.
 8. An automatic, deliberately conservative interpretation is generated.
-9. The complete scientific record is written to ESP32 flash and returned to the PC.
+9. The complete scientific record is written to the PC archive — the same record opened in step 3.
 
 ```mermaid
 flowchart LR
     SAMPLE[Soil sample in carousel slot]
     LIGHT[Controlled illumination]
     SENSOR[AS7265x spectral sensor]
-    ESP[ESP32 controller]
+    ESP[ESP32 hardware controller]
     SERVO[MG995 360 deg carousel servo]
-    ROVER[Rover main computer]
+    PC[PC mission controller]
+    BD[BD science layer]
     DATABASE[(database.json<br/>reference materials)]
     REFS[(references.json<br/>fixed white + dark)]
-    STORE[(samples.json<br/>measured samples)]
+    STORE[(PC data/samples<br/>measured samples)]
 
     ESP -->|GPIO| LIGHT
     LIGHT --> SAMPLE
     SAMPLE -->|Reflected VIS-NIR light| SENSOR
     ESP <-->|I²C| SENSOR
     ESP -->|timed PWM| SERVO
-    ESP <-->|USB serial JSON commands| ROVER
-    DATABASE --> ESP
-    REFS --> ESP
-    ESP --> STORE
+    ESP -->|USB serial JSON: RAW spectrum| PC
+    PC -->|raw| BD
+    DATABASE --> BD
+    REFS --> BD
+    BD -->|normalized + matches| PC
+    PC --> STORE
 ```
 
 ---
@@ -152,7 +155,7 @@ These are deliberately kept apart:
 | `current_scan_slot` | Which slot is physically under the scanner |
 | `selected_slot` | Which slot the operator is working with |
 
-While soil is deposited the selected slot sits at the loader. After `measure_sample` the carousel has swung 180°, so the **same** selected slot now sits at the scanner instead.
+While soil is deposited the selected slot sits at the loader. After a measurement the carousel has swung 180°, so the **same** selected slot now sits at the scanner instead.
 
 ### Choosing a slot
 
@@ -208,14 +211,14 @@ Milliseconds are an internal implementation detail. They appear only in `config.
 
 ### Measurement movement
 
-`measure_sample` is strict about what it will run on. The slot must be **the currently selected one**, in state **LOADED**, and physically **at the loading hole**. A `LOADED` slot that is not selected is refused with `SLOT_NOT_SELECTED`; a selected slot that is not at the loader is refused with `SLOT_NOT_AT_LOADER`. This is what stops the software's idea of the carousel from drifting away from the mechanism.
+Measurement is strict about what it will run on. The PC refuses unless the sample is `LOADED`, and the ESP32 independently refuses unless the slot is **the currently selected one** and physically **at the loading hole**. A slot that is not selected is refused with `SLOT_NOT_SELECTED`; a selected slot that is not at the loader is refused with `SLOT_NOT_AT_LOADER`. This is what stops the software's idea of the carousel from drifting away from the mechanism.
 
 It then swings out to the scanner and **stops there**:
 
 ```text
 Slot X at LOAD
   -> 180 deg calibrated half turn (LOAD_TO_SCAN_CW_MS)
-Slot X at SCAN  ->  acquire, normalize, compare, save
+Slot X at SCAN  ->  acquire RAW, return it to the PC
                     carousel_phase = SCAN
 ```
 
@@ -231,30 +234,32 @@ If a measurement *fails* after the outward swing, the carousel is returned to th
 
 ### One record per sample
 
-A sample is a single scientific object from preparation to analysis. `prepare_load` opens the persistent record, `confirm_loaded` updates it, and `measure_sample` **completes that same record** — same Sample ID, preparation metadata preserved, no derived `S002_measurement` entity:
+A sample is a single scientific object from preparation to analysis. *Prepare Sample* opens the persistent record on the PC, *Confirm Loaded* updates it, and *Measure Sample* **completes that same record** — same Sample ID, preparation metadata preserved, no derived `S002_measurement` entity:
 
 ```text
-prepare_load   ->  state READY_TO_LOAD, created_at, metadata
-confirm_loaded ->  state LOADED, loaded_at
-measure_sample ->  state MEASURED, measured_at, three spectra,
-                   all database matches, analysis
+Prepare Sample   ->  state READY_TO_LOAD, created_at, metadata
+Confirm Loaded   ->  state LOADED, loaded_at
+Measure Sample   ->  state MEASURED, measured_at, three spectra,
+                     all database matches, analysis
 ```
 
 ---
 
 ## Servo Calibration
 
-A continuous-rotation servo has no angle command, only a neutral pulse, direction pulses, and time. Every value that depends on the real mechanism lives in [`firmware/config.py`](firmware/config.py).
+A continuous-rotation servo has no angle command, only a neutral pulse, direction pulses, and time. Every value that depends on the real mechanism lives in [`firmware/ESP32/config.py`](firmware/ESP32/config.py).
 
 > [!IMPORTANT]
 > The shipped values are safe starting points, **not** known-good values. `SERVO_STOP_US`, the direction pulses and the 45° step timing **must be calibrated on the real mechanism**. Load, gearing, battery voltage and the individual servo all change them.
 
-Recommended order, using the servo maintenance commands:
+Recommended order, using **Tools → Servo / Carousel Test**:
 
 1. **Neutral.** Trim `SERVO_STOP_US` until the carousel does not creep in either direction.
-2. **Direction.** Send `servo_jog_cw` with a short `duration_ms` and note which way it turns. If the labels are inverted, swap `SERVO_CW_US` and `SERVO_CCW_US`.
-3. **Slot order.** Send `servo_jog_cw {"steps": 1}` and check whether the *next higher* or *next lower* slot number arrives at the scanner. Set `CAROUSEL_FORWARD_DIRECTION` accordingly.
-4. **Step time.** Adjust `SERVO_STEP_CW_MS` and `SERVO_STEP_CCW_MS` until one step lands cleanly on the next slot. The two directions are separate because backlash and servo asymmetry are rarely symmetric.
+2. **Direction.** Move one slot and note which way it turns. If the labels are inverted, swap `SERVO_CW_US` and `SERVO_CCW_US`.
+3. **Slot order.** Move one slot clockwise and check whether the *next higher* or *next lower* slot number arrives at the scanner. Set `CAROUSEL_FORWARD_DIRECTION` accordingly.
+4. **Step time.** Adjust `NEXT_SLOT_CW_MS` and `NEXT_SLOT_CCW_MS` until one step lands cleanly on the next slot. The two directions are separate because backlash and servo asymmetry are rarely symmetric.
+5. **Half turn.** Adjust `LOAD_TO_SCAN_CW_MS` and `SCAN_TO_LOAD_CCW_MS` until the 180° sweep lands on the scanner and returns. These are **independently calibrated** and must never be derived from four adjacent-slot moves.
+6. **Fine alignment.** Trim `CW_MS_PER_DEGREE` and `CCW_MS_PER_DEGREE` by requesting ±5° and measuring the actual travel.
 
 Multi-slot moves run as N discrete single steps rather than one long rotation, so the servo's start-up acceleration is paid once per step and the calibration stays linear in the step count.
 
@@ -266,7 +271,7 @@ Multi-slot moves run as N discrete single steps rather than one long rotation, s
 - ESP32-based sensor and actuator control;
 - eight-slot 360° sample carousel with software position tracking;
 - deterministic USB-serial JSON command protocol for the main computer;
-- persistent scientific sample storage on the ESP32 itself;
+- persistent scientific sample storage on the main computer;
 - fixed white and dark calibration references, never re-measured mid-run;
 - comparison against every material in the spectral reference database;
 - automatic, conservative interpretation of each measurement;
@@ -479,7 +484,7 @@ Reflectance[i] =
     (White[i] - Dark[i])
 ```
 
-There is exactly **one** white reference and **one** dark reference for the whole competition run. Both live in [`firmware/references.json`](firmware/references.json), which the firmware treats as strictly read-only.
+There is exactly **one** white reference and **one** dark reference for the whole competition run. Both live in [`firmware/BD/references.json`](firmware/BD/references.json), which is opened read-only and never written by any part of the system.
 
 ```json
 {
@@ -488,29 +493,13 @@ There is exactly **one** white reference and **one** dark reference for the whol
 }
 ```
 
-At startup the firmware opens the file, validates that both entries exist and that all 18 AS7265x channels are present and numeric, and loads them into the measurement system. The references are then reused for every sample.
+At startup the PC application loads the file, validates that both entries exist and that all 18 AS7265x channels are present and numeric, and reuses them for every sample. The ESP32 never sees this file; it does not need it to run the hardware.
 
-The firmware never measures white or dark: not at startup, not before a sample, not on any command. There is deliberately **no** "measure dark", "measure white" or "calibrate" command anywhere in the firmware or the client — the operator never performs calibration during normal operation.
+Nothing measures white or dark: not at startup, not before a sample, not on any command. There is deliberately **no** "measure dark", "measure white" or "calibrate" command anywhere in the firmware or the application — the operator never performs calibration during normal operation.
 
 The calibration set is identified as `FREYA_COMPETITION_2026_CAL_V1`, and every stored sample records that ID plus its provenance, so any record can be traced back to the references it was normalized against.
 
-If the references are missing or invalid, the command server still starts and `get_status` reports exactly which reference and which channel is at fault, while `measure_sample` refuses to run:
-
-```text
-Calibration
-  mode:             FIXED STORED REFERENCES
-  references file:  references.json
-
-  dark reference:   READY
-  channels:         18/18
-
-  white reference:  ERROR
-  channels:         17/18
-  MISSING:          W
-
-  runtime recalibration:
-                    DISABLED
-```
+If the references are missing or invalid, the application still starts and **System Status** reports exactly what is at fault, while Measure Sample refuses to run rather than acquiring a spectrum that cannot be normalized.
 
 Each measured sample stores three spectra, so a measurement can be re-derived later:
 
@@ -526,85 +515,132 @@ PTFE is planned as the primary stable white-reference material.
 
 ---
 
-## Firmware
+## Software Architecture
 
-The system runs MicroPython on the ESP32. MicroPython still executes `main.py` automatically after boot, but that startup does **not** move the servo, measure anything, or cycle through anything. It only prepares the module and waits.
+The software is split by *what a machine has to be* to run it, not by convenience:
+
+```text
+                    MAIN COMPUTER
+                         │
+              ┌──────────┴──────────┐
+              │                     │
+              ▼                     ▼
+             PC                     BD
+     Mission Controller      Science / Database
+              │                     ▲
+              │ raw spectrum        │
+              └─────────────────────┘
+              │
+              │ USB / CP2102
+              │ newline JSON
+              ▼
+            ESP32
+      Hardware Controller
+              │
+        ┌─────┴─────┐
+        ▼           ▼
+      MG995       AS7265x
+     Carousel      Sensor
+```
+
+| Layer | Runs on | Owns |
+|---|---|---|
+| `firmware/ESP32/` | MicroPython on the ESP32 | carousel, servo, AS7265x, **raw** 18-channel acquisition, hardware status |
+| `firmware/BD/` | CPython on the PC | fixed White/Dark, material database, dark correction, normalization, comparison, interpretation |
+| `firmware/PC/` | CPython on the PC | operator interface, Sample lifecycle, persistent Sample archive, orchestration |
+
+The boundaries are strict and enforced by the test suite:
+
+- ESP32 imports nothing from `BD/` or `PC/`, and needs no JSON data file to move hardware or read the sensor.
+- BD depends on no serial port, no I2C, no carousel and no long-lived measurement object — it is pure data processing.
+- PC reaches the ESP32 **only** over the serial protocol, and BD **only** by import.
+
+**The ESP32 does not know what material a sample resembles.** It moves hardware, reads hardware, and reports hardware.
+
+---
+
+## ESP32 Firmware
+
+MicroPython executes `main.py` automatically after boot, but that startup does **not** move the servo, measure anything, or cycle through anything. It prepares the hardware and waits.
 
 ```text
 ESP32 boot
- → initialize hardware
- → load fixed white/dark references
- → load reference material database
- → initialize 8 empty slots, position unknown
+ → create the carousel model, position unknown
+ → bring the AS7265x up, with bounded retries
  → wait for a command on sys.stdin
  → execute exactly the requested command
  → send one JSON response on sys.stdout
  → wait again
 ```
 
-The command loop is deliberately trivial, because the module spends nearly all its time waiting:
-
-```python
-while True:
-    line = read_command()
-
-    if not line:
-        continue
-
-    process_command(line)
-```
+A sensor that does not answer at boot does not take the module down: the command server, the carousel and `get_status` all keep working, the failure is recorded, and the next sensor-dependent command retries from scratch.
 
 ### Structure
 
 ```text
-firmware/
-├─ boot.py              MicroPython boot hook (unused)
-├─ main.py              init, runtime state, transport, dispatch, workflow
-├─ config.py            all hardware, timing, link and threshold settings
-├─ as7265x.py           AS7265x driver and reflectance normalization
-├─ mg995.py             timed continuous-rotation servo driver
-├─ carousel.py          8-slot state model and software position tracking
-├─ database.py          reference material database, cosine similarity
-├─ database.json        reference material spectra (read-only)
-├─ references.json      fixed white and dark references (read-only)
-├─ sample_store.py      persistent sample storage with safe writes
-├─ sample_analysis.py   spectra, database comparison, interpretation
-└─ wipe.py              filesystem eraser, not part of normal operation
+firmware/ESP32/
+├─ boot.py       MicroPython boot hook (unused)
+├─ main.py       transport, command dispatch, hardware handlers
+├─ config.py     hardware settings only: pins, gain, servo, carousel timing
+├─ as7265x.py    AS7265x driver + the one sensor runtime lifecycle
+├─ mg995.py      timed continuous-rotation servo driver
+└─ carousel.py   8-slot geometry and software position tracking
 ```
 
-### Uploading
+Six files, and every one of them is uploaded to the device. Nothing else is.
 
-Replace `COM4` with the active ESP32 serial port.
+### One sensor lifecycle
 
-```bash
-py -m mpremote connect COM4 fs cp firmware/boot.py :boot.py
+There is exactly one path to a working sensor:
+
+```text
+ensure_sensor_ready(force_reinit=False)
+        │
+        ├─ a working driver already exists? → use it
+        │
+        └─ otherwise
+             → create I2C
+             → bounded scan retries
+             → verify 0x49
+             → verify the internal VIS/NIR devices
+             → apply the configuration
+             → READ THE CONFIGURATION BACK and verify it
+             → store the working objects
+             → READY
 ```
 
-All files in one go, from the repository root:
+Both `measure_raw` and `sensor_test_raw` go through it, so a passing sensor test really does prove that measurement acquisition works. There is no separate diagnostic driver that can succeed while the runtime one reports a failure.
 
-```bash
-py -m mpremote connect COM4 fs cp firmware/boot.py firmware/main.py firmware/config.py firmware/as7265x.py firmware/mg995.py firmware/carousel.py firmware/database.py firmware/database.json firmware/references.json firmware/sample_store.py firmware/sample_analysis.py :
+The read-back matters. Firmware that only reports its *intended* settings will claim 100 cycles and 16x gain while the sensor is still running its power-on defaults. `apply_configuration()` writes the values from `config.py`, reads the registers back, and raises `SENSOR_CONFIG_NOT_APPLIED` naming the exact mismatch if they disagree — and every response carries the values that were read back, not the values that were requested.
+
+### Raw acquisition
+
+```text
+ensure_sensor_ready()
+        ↓
+illumination ON  →  settle  →  start integration
+        ↓
+wait DATA_READY
+        ↓
+read 18 calibrated channels
+        ↓
+validate all 18
+        ↓
+illumination OFF   (from a finally block: no failure can leave the LED burning)
+        ↓
+return raw counts
 ```
 
-Then restart the module:
-
-```bash
-py -m mpremote connect COM4 reset
-```
-
-> [!CAUTION]
-> Never upload `samples.json` or the `samples/` directory. They are created on the device and hold live competition data; uploading a copy would overwrite it. `wipe.py` erases the entire ESP32 filesystem, including all collected samples, and is not part of normal operation.
-
-USB/REPL stays available for upload, debugging and human-readable console output. It is **not** the rover protocol.
+The ESP32's scientific output ends at RAW. No dark correction, no white normalization, no database.
 
 ---
 
 ## Command Protocol
 
-Communication with the main computer is **newline-delimited JSON** over the USB serial console at 115200 baud. One command is one JSON object followed by a newline; one response is one JSON object followed by a newline.
+Newline-delimited JSON over the USB serial console at 115200 baud. One command is one JSON object followed by a newline; one response is one JSON object followed by a newline.
 
 > [!IMPORTANT]
-> `stdout` **is** the protocol stream. The firmware therefore prints nothing outside the JSON protocol — no progress messages, no channel tables, no "servo moving" chatter. Diagnostics go through a `_debug()` helper gated by `config.DEBUG`, which defaults to `False`.
+> `stdout` **is** the protocol stream. The firmware prints nothing outside the JSON protocol — no progress messages, no channel tables, no "servo moving" chatter. Diagnostics go through a `_debug()` helper gated by `config.DEBUG`, which defaults to `False`.
 >
 > MicroPython itself may still emit a boot banner, REPL text or a traceback on that same port. The PC client skips any line that is not valid JSON and only considers the module online once a `ping` has been answered.
 
@@ -626,95 +662,119 @@ Error:
 {
   "request_id": "42",
   "ok": false,
-  "cmd": "measure_sample",
+  "cmd": "measure_raw",
   "error": {
-    "code": "SLOT_NOT_LOADED",
-    "message": "Slot 1 does not contain a confirmed sample."
-  }
+    "code": "SLOT_NOT_AT_LOADER",
+    "message": "Slot 1 is not at the loading position."
+  },
+  "data": {"moved": false}
 }
 ```
 
 ### Commands
 
+Ten commands, all of them hardware operations:
+
 | Command | Purpose |
 |---|---|
 | `ping` | Liveness check |
-| `get_status` | Sensor, references, database, position, storage and all slot states |
+| `get_status` | Sensor, carousel, servo and physical slot state |
 | `sync_position` | Declare the origin: Slot 1 at the loading hole (moves nothing) |
-| `select_slot` | Choose the physical slot to work with; brings it to the loader |
-| `move_slots` | Whole-slot movement, exactly 45 deg per slot |
+| `select_slot` | Choose the physical slot and bring it to the loader |
+| `move_slots` | Whole-slot movement, exactly 45° per slot |
 | `fine_adjust` | Small alignment correction in degrees; logical slot unchanged |
-| `get_carousel_status` | Position, geometry and last movement |
-| `prepare_load` | Assign a Sample ID to a free slot and move it to the loader |
-| `confirm_loaded` | Record that the arm has deposited soil |
-| `measure_sample` | Move, settle, acquire, normalize, compare, interpret, save |
-| `help` | Command list, measurement stages and the calibration explanation |
-| `clear_slot` | Free a slot for reuse; stored science data is kept |
-| `get_slots` | All 8 runtime slots |
-| `list_samples` | Summary of every persistently stored sample |
-| `get_sample` | Full scientific record for one Sample ID |
-| `update_sample_metadata` | Add or change mission metadata after measurement |
+| `clear_slot` | Free a physical slot; the PC's scientific record is untouched |
+| `measure_raw` | Swing to the scanner and acquire one RAW 18-channel spectrum |
+| `sensor_test_raw` | Exercise the whole sensor path and return RAW; moves nothing |
 | `servo_stop` | Brake the servo and release the pin |
-| `servo_jog_cw` / `servo_jog_ccw` | Low-level maintenance jog (not exposed in the operator UI) |
-| `get_references` | The loaded white and dark references |
-| `get_material_names` | Names of all reference materials |
-| `get_database_status` | Database file, material count and load state |
 
-Error codes are machine-readable, for example `POSITION_NOT_SYNCHRONIZED`, `SLOT_NOT_EMPTY`, `SLOT_NOT_LOADED`, `SLOT_ALREADY_MEASURED`, `INVALID_SLOT`, `DUPLICATE_SAMPLE_ID`, `REFERENCES_INVALID`, `SENSOR_ERROR`, `MOVEMENT_FAILED`, `STORAGE_ERROR`, `SAMPLE_NOT_FOUND`.
+There is deliberately no `measure_sample`, no `list_samples`, no `get_references` and no `get_database_status`. Those are science and persistence, and they live on the PC.
 
-If a measurement succeeds but cannot be written to flash, the response is an error carrying `SAMPLE_SAVE_ERROR` **with the complete record attached**, and the slot stays `LOADED` so the measurement can be retried. Science data is never silently lost.
+A successful `measure_raw` response:
 
-### Measurement stages
-
-`measure_sample` reports a nine-stage log with every response, success or failure, so a fault names the exact step that stopped the pipeline:
-
-```text
-[1/9] VALIDATE_SLOT        state must be LOADED, sensor and references ready
-[2/9] MOVE_TO_SCANNER      shortest path, direction and step count recorded
-[3/9] MECHANICAL_SETTLE    let the carousel stop moving
-[4/9] SENSOR_READ          a NEW AS7265x acquisition, 18/18 channels checked
-[5/9] LOAD_REFERENCES      the fixed dark/white from references.json
-[6/9] NORMALIZE            R = (Sample - Dark) / (White - Dark)
-[7/9] DATABASE_COMPARISON  every material in database.json
-[8/9] SAVE_SAMPLE          persistent write to ESP32 flash
-[9/9] UPDATE_SLOT_STATE    LOADED -> MEASURED, occupied = True
+```json
+{
+  "request_id": "42",
+  "ok": true,
+  "data": {
+    "slot_id": 1,
+    "sample_id": "S001",
+    "raw": {"A": 1.23, "B": 2.34, "...": "...", "W": 4.56},
+    "sensor_settings": {
+      "integration_cycles": 100,
+      "gain": 2,
+      "gain_x": "16x",
+      "measurement_mode": 2,
+      "led_current": 1
+    },
+    "carousel": {"selected_slot": 1, "carousel_phase": "SCAN"}
+  }
+}
 ```
 
-The slot becomes `MEASURED` **only** after stages 4, 6 and 8 have all succeeded. If any stage fails, the slot stays `LOADED` with `measured = False` and `occupied = True` so the operator can simply retry — no false `MEASURED` state is ever written.
+Every payload is JSON-safe primitives only. Exceptions are never serialized; they become `code`, `message`, `stage`, `exception_type` and `exception_message` fields.
 
-Two failure modes are handled deliberately:
+### Failure semantics
 
-- **Fewer than 18 channels returned** → `INCOMPLETE_SPECTRUM`, listing the missing channels. A partial spectrum is never saved as if it were a successful measurement.
-- **Database comparison fails** → the measurement is still saved with `analysis_status: "FAILED"` and all three spectra intact, because the measured data is worth more than the classification. The client shows the classification failure prominently.
+- A sensor fault is detected **before** the carousel moves, so a broken sensor never strands a sample at the scanner.
+- If acquisition fails after the swing, the firmware returns the mechanism to the loader and says so — or, if it cannot, invalidates position tracking rather than reporting a position it no longer knows.
+- If the ESP32 fails before RAW is obtained, the PC leaves the sample `LOADED`. No false `MEASURED` state is ever written.
+- If RAW arrives but the PC-side analysis fails, the spectrum is still saved with `analysis_status: "FAILED"` and the exact error. Acquired science survives downstream software failure.
 
 ---
 
-## Persistent Sample Storage
+## BD — Science Layer
 
-The ESP32 holds the authoritative science record. The first version deliberately requires no PC-side database.
-
-| Data | Lifetime |
-|---|---|
-| Measured sample records | **Persistent** — survives reboot |
-| Physical slot occupancy | RAM only — reset to EMPTY on reboot |
-| Carousel position | RAM only — `position_valid` returns to `False` |
-
-Records are split across files so the ESP32 never has to parse the whole science history at once:
+`firmware/BD/` runs on the main computer and is never uploaded to the ESP32.
 
 ```text
-samples.json          index of every measured sample (small, always loadable)
-samples/S001.json     one complete scientific record per sample
+firmware/BD/
+├─ references.json     one fixed White + one fixed Dark   PROTECTED, READ ONLY
+├─ database.json       22 reference material spectra       PROTECTED, READ ONLY
+├─ config.py           calibration ID, thresholds, precision
+├─ database.py         reference loading, cosine similarity, comparison
+└─ sample_analysis.py  validation, the two formulas, interpretation
 ```
 
-Writes go through a temporary file and a rename, with the previous version kept as a backup until the new one is in place, so an interrupted write cannot corrupt the store.
+> [!CAUTION]
+> `database.json` and `references.json` are authoritative scientific assets. Normal operation never writes to them, and neither `References` nor `MaterialDatabase` has a save path at all. Regenerating either would silently invalidate every measurement taken against it.
 
-Each record holds the Sample ID and slot, PC-supplied timestamps, mission metadata, all three spectra across all 18 channels, the calibration provenance, the sensor settings actually used, the ranked match against every database material, and the automatic interpretation.
+### Calibration model
+
+The competition uses **one** accepted White and **one** accepted Dark for the whole run, stored in `references.json` under a single calibration ID. The operator is never asked to measure White or Dark, and nothing at runtime can re-measure them. That is what makes two samples taken hours apart comparable.
+
+```text
+S = raw sample spectrum from the ESP32
+D = fixed Dark
+W = fixed White
+
+C = S - D                 dark corrected
+R = (S - D) / (W - D)     normalized reflectance
+```
+
+Applied per channel, across all 18. Negative results are **kept**: a channel reading below the stored dark reference is real information about noise or drift, and clamping it to zero would hide that. Where `W == D` the reflectance is undefined and reported as `0.0`, with the affected channels named.
+
+### Pure functions, no shared state
+
+```python
+validate_spectrum(raw)
+dark_correct(sample, dark)
+normalize(sample, dark, white)
+database.compare(normalized)
+interpret(matches)
+```
+
+Every one takes plain dictionaries and returns plain dictionaries. No `SoilMeasurementSystem`, no object whose `sample_data` can be `None` while a spectrum exists elsewhere. The `'NoneType' object has no attribute 'sample_data'` class of bug is structurally impossible here, because there is no shared object to disagree with itself.
+
+### Comparison
+
+The normalized spectrum is compared against **every** material in the database by cosine similarity, sorted best first. The complete ranking is stored with the sample; the interface decides how many rows to show.
 
 ---
 
 ## Automatic Interpretation
 
-After every measurement the firmware generates a compact written conclusion from the best match, the second-best match, and the gap between them.
+A compact written conclusion is generated from the best match, the second-best match, and the gap between them.
 
 ```text
 STRONG_REFERENCE_MATCH   clear leader
@@ -723,7 +783,7 @@ WEAK_REFERENCE_MATCH     nothing in the database is a good fit
 NO_DATABASE              no reference materials available
 ```
 
-Both thresholds live in `config.py` and are recorded inside each sample record, so old results stay interpretable after retuning:
+Both thresholds live in `firmware/BD/config.py` and are recorded inside each sample record, so old results stay interpretable after retuning:
 
 ```python
 MIN_SIMILARITY_PERCENT   = 85.0
@@ -733,112 +793,128 @@ AMBIGUITY_MARGIN_PERCENT = 1.5
 > [!NOTE]
 > These are **heuristic competition-support thresholds, not scientifically validated criteria**. Because cosine similarity between non-negative reflectance vectors is high for almost any pair, the informative quantity is the *gap* between the top candidates rather than the absolute score. Tune both against measurements of known materials.
 
+The wording is deliberately constrained. This module performs **comparative spectral classification** against a small reference library. It reports spectral similarity, match scores and reference matches — never chemical probability, composition percentages or identification certainty.
+
 Example output:
 
 ```text
-The measured spectrum shows the highest cosine similarity to Basalt
-(91.4%). Andesite is the second closest reference (87.2%). Because the
+The measured spectrum shows the highest cosine similarity to Red Clay
+(91.4%). Bentonit is the second closest reference (87.2%). Because the
 score difference is only 4.2 percentage points, the classification is
 considered ambiguous.
 ```
 
 ---
 
-## Main-PC Client
+## PC — Mission Controller
 
-[`host/rover_science_client.py`](host/rover_science_client.py) is a standard CPython program using `pyserial`. It provides a reusable API plus a simple interactive menu for testing the module before integration into the real rover software.
-
-```bash
-python -m pip install -r host/requirements.txt
-```
-
-Windows and Linux:
-
-```bash
-python host/rover_science_client.py --port COM5
-```
-
-```bash
-python host/rover_science_client.py --port /dev/ttyUSB0
-```
-
-The serial port is never hardcoded, and the client needs to know nothing about the ESP32 side of the link — no GPIO numbers, no UART peripheral, just the port name. A single command can also be run non-interactively:
-
-```bash
-python host/rover_science_client.py --port COM5 --command get_status
-```
-
-The class is importable, so future rover software can use it directly. The context manager opens the port and waits for the module to come online:
-
-```python
-from rover_science_client import RoverScienceClient
-
-with RoverScienceClient("COM5") as science:
-    science.sync_position(1)
-    science.prepare_load(1, "S001", metadata={"task": "regolith survey"})
-    science.confirm_loaded(1)
-    result = science.measure_sample(1, metadata={"location": "site A"})
-```
-
-### Connecting
-
-Opening a serial port resets many ESP32 development boards, because their auto-reset circuit is wired to DTR/RTS. The client does not fight this and never toggles those lines itself; instead it tolerates a reset:
+`firmware/PC/` is standard CPython.
 
 ```text
-open serial port
-    ↓
-retry ping, ignoring every line that is not valid JSON
-    ↓
-valid ping response → module ONLINE
+firmware/PC/
+├─ rover_science_client.py   operator interface and mission workflow
+├─ esp32_link.py             serial transport and the hardware command API
+├─ sample_store.py           persistent Sample archive
+├─ requirements.txt          pyserial
+└─ data/
+    ├─ samples.json          index of every Sample
+    └─ samples/S001.json     one complete scientific record per Sample
 ```
 
-That makes the boot banner, REPL prompts, reboot text, blank lines and stale partial frames harmless. Once the link is established, a malformed *application* response is still reported as a communication error rather than skipped. Use `--connect-timeout` if a board is slow to come up.
+BD is imported by path relative to the application, so it runs from any working directory with no `PYTHONPATH` setup.
 
-### Timeouts
+### Sample lifecycle
 
-A measurement takes far longer than a status query — carousel movement, settling, acquisition, 18-channel processing, comparison against every database material, and a flash write. The client therefore uses tiered timeouts, so it never concludes that "nothing happened" while the module is still working:
+```text
+EMPTY
+  ↓ Prepare Sample        record created, ID assigned, slot moved to the loader
+READY_TO_LOAD
+  ↓ Confirm Loaded        the rover arm has deposited soil
+LOADED
+  ↓ Measure Sample        RAW acquired, analysed, the SAME record completed
+MEASURED
+```
 
-| Tier | Timeout | Used for |
-|---|---:|---|
-| `DEFAULT_TIMEOUT` | 10 s | `ping`, `get_status`, slot and sample queries |
-| `MOVE_TIMEOUT` | 30 s | `prepare_load`, servo jogs, `servo_stop` |
-| `MEASUREMENT_TIMEOUT` | 120 s | `measure_sample` |
-| `CONNECT_TIMEOUT` | 20 s | initial ping retry after opening the port |
+`MEASURED` is **not** `EMPTY`. The soil physically stays in the slot until the operator clears it. Clearing a physical slot frees the mechanism and keeps the scientific record; deleting a Sample is a separate, explicitly confirmed action.
 
-If a measurement genuinely does time out, the client says so explicitly and tells the operator to check `[s] Module status` before retrying, so the same sample is not measured twice.
+The record opened by *Prepare* is the record completed by *Measure*. One coherent scientific object per sample — no second Sample ID is ever created during measurement.
 
-The PC supplies every timestamp automatically, because the ESP32 has no reliable wall clock and never invents one:
+### Sample record
+
+Each record holds the Sample ID and slot, the lifecycle state, PC-supplied timestamps, mission metadata, all three spectra across all 18 channels, the sensor settings *read back from the sensor*, the calibration provenance, the ranked match against every database material, and the automatic interpretation.
+
+Raw is primary data and is never overwritten by anything derived from it. `raw`, `dark_corrected` and `normalized` are stored separately, which is what makes offline re-analysis possible: a stored spectrum can be re-run later against different thresholds, an updated material database or a different accepted calibration, without repeating the physical acquisition.
+
+Writes go through a temporary file and an atomic rename. A present-but-unparseable index is reported and every write refused, rather than overwritten — data that looks damaged is usually still recoverable by hand.
+
+The PC supplies every timestamp, because the ESP32 has no reliable wall clock and never invents one:
 
 ```python
 datetime.now(timezone.utc).isoformat()
 ```
 
-Human and external context is supplied as PC metadata: task, hypothesis, operator, location, map point, note, photo reference and sensor distance. Photos are never stored on the ESP32 — only a filename, ID or path. Anything unavailable is stored as `null` rather than guessed.
+Mission metadata is task, hypothesis, location, map point, note and photo reference. Every field is optional; an unanswered field stays `null` rather than being invented to satisfy a prompt. Photos are never stored — only a filename, ID or path.
+
+### Operator interface
+
+```text
+============================================================
+ FREYA SCIENCE MODULE
+============================================================
+
+Selected: Slot 1 / S001
+State:    LOADED
+Position: LOAD
+
+Loader: Slot 1    Scanner: Slot 5
+
+1  S001     LOADED
+2  ----     EMPTY
+...
+
+[1] Choose Sample / Slot
+[2] Prepare Sample [DONE]
+[3] Confirm Sample Loaded [DONE]
+[4] Measure Sample [AVAILABLE]
+[5] Fine Carousel Alignment
+
+[t] Tools / Records
+[h] Help
+[q] Exit
+```
+
+Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot.
+
+**Sensor Test is one command.** The operator never has to decide which internal layer to test: it runs the whole chain — ESP32 sensor recovery, I2C, internal devices, configuration, illumination, a new 18-channel acquisition, then the PC's dark correction, normalization and database comparison — through the production code path, prints every stage as PASS or FAIL, and saves nothing.
+
+For installation, upload, startup and recovery procedures, see **[firmware/OPERATIONS.md](firmware/OPERATIONS.md)**.
 
 ---
 
 ## Competition Workflow
 
 ```text
-HYPOTHESIS → PLAN → choose Sample ID + free slot
+INITIAL CAROUSEL CALIBRATION   Slot 1 under the loading hole, declared once
     ↓
-PREPARE LOAD          ESP32 moves the slot to the loading hole
+CHOOSE SLOT                    ESP32 brings the slot to the loading hole
+    ↓
+PREPARE SAMPLE                 PC creates the persistent record
     ↓
 external rover arm deposits soil
     ↓
-CONFIRM LOADED        slot state = LOADED
+CONFIRM LOADED                 state = LOADED
     ↓
-MEASURE SAMPLE        ESP32 moves the same slot to the scanner
-    ↓                 AS7265x acquisition
-    ↓                 stored dark + white reference
-    ↓                 normalization
-    ↓                 comparison against ALL materials
-    ↓                 automatic interpretation
-    ↓                 full record saved on ESP32
+MEASURE SAMPLE
+    ↓        ESP32   180° swing to the scanner
+    ↓        ESP32   RAW 18-channel acquisition
+    ↓        PC      receives RAW
+    ↓        BD      validation, C = S - D, R = (S-D)/(W-D)
+    ↓        BD      comparison against ALL materials, interpretation
+    ↓        PC      completes and saves the SAME record
     ↓
-slot state = MEASURED, still OCCUPIED
+state = MEASURED, soil still physically in the slot
     ↓
-operator adds location, map point, photo, notes, task/hypothesis
+operator adds location, map point, photo, notes
     ↓
 REPORT
 ```
@@ -857,7 +933,6 @@ Slot 8   ----   EMPTY
 ```
 
 ---
-
 ## Spectral Material Database
 
 A dedicated database is being developed for calibration, comparison, and future classification algorithms.
@@ -930,7 +1005,7 @@ ch_940
 
 The database is intended for training and validating comparative classification methods. It does not provide definitive chemical identification from a single spectrum.
 
-`database.json` holds **known reference materials only**. Measured competition samples are stored separately in `samples.json`, and the firmware never writes to the reference database.
+`firmware/BD/database.json` holds **known reference materials only**. Measured competition samples are stored separately under `firmware/PC/data/`, and nothing in the system writes to the reference database.
 
 Each measurement is compared against every entry in the database, and all results are stored ranked by descending similarity — not only the top few.
 
@@ -981,11 +1056,14 @@ The module was developed through the following stages:
 - MG995 continuous-rotation carousel driver;
 - eight-slot carousel state model with software position tracking;
 - USB-serial JSON command protocol (CP2102 console, no UART peripheral);
-- persistent sample storage on the ESP32;
+- three-layer software split: ESP32 hardware / BD science / PC mission control;
+- single authoritative sensor lifecycle with automatic recovery;
+- verified sensor configuration, read back from the registers;
+- persistent sample storage on the PC;
 - fixed white/dark reference calibration;
 - comparison against the full reference-material database;
 - automatic conservative interpretation;
-- main-PC client with a reusable Python API;
+- main-PC application with a reusable serial API;
 - external illumination control architecture;
 - rover UART hardware interface (reserved for a future revision);
 - structured spectral-material database;
@@ -1037,12 +1115,15 @@ as7265x-soil-analysis-module/
 │     ├─ 2D_PCB_ver1,0.png
 │     ├─ 3D_PCB_ver1,0.png
 │     └─ PCB_photo_ver1,0.jpg
-├─ Hardware/
+├─ Hardware/            Altium project and manufacturing outputs
 │  ├─ Altium/
 │  └─ Manufacturing/
-├─ firmware/            ESP32 MicroPython science module
-├─ host/                main-PC serial client (CPython + pyserial)
-├─ docs/
+├─ firmware/
+│  ├─ ESP32/            MicroPython hardware controller (the only uploaded code)
+│  ├─ BD/               science layer + protected White/Dark and material database
+│  ├─ PC/               mission controller, operator UI, Sample archive
+│  └─ OPERATIONS.md     install, run, update, debug and recover
+├─ tests/               regression suite, runs the real firmware on CPython
 └─ Documentation/
 ```
 
@@ -1070,9 +1151,18 @@ Project documentation includes:
 
 Recommended repository links:
 
+- [Operations runbook](firmware/OPERATIONS.md) — install, upload, run, debug, recover
 - [PCB BOM and component models](Documentation/Mars%20Rover%20AS7265x%20Soil%20Analyzer%20PCB%20-%20BOM%20_%20Component%20Models%20v0.1.pdf)
 - [PCB purchase list](Documentation/Purchase%20List%20-%20Mars%20Rover%20AS7265x%20PCB.docx)
 - [Spectral material database](Documentation/Spectral%20Material%20Database.docx)
+
+Document roles are kept separate on purpose:
+
+| Document | Answers |
+|---|---|
+| `README.md` | what the project is, how it is built, what the science means |
+| `firmware/OPERATIONS.md` | how to install, run, update, debug and recover it |
+| source code | how the implementation works |
 
 ---
 

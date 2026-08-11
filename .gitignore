@@ -84,14 +84,14 @@ Desktop.ini
 .DS_Store
 
 # ============================================================
-# Runtime science data pulled off the ESP32
+# Runtime science data
 # ============================================================
 
-# Competition sample data belongs to a run, not to the firmware image.
-# Keeping it out of firmware/ also stops a Pymakr sync from pushing an
-# old copy back onto the device and overwriting live records.
-firmware/samples.json
-firmware/samples/
+# Measured competition samples belong to a run, not to the source tree.
+# They live on the PC and are backed up with the procedure in
+# firmware/OPERATIONS.md.
+firmware/PC/data/samples.json
+firmware/PC/data/samples/
 
 # ============================================================
 # Local secrets and machine-specific settings
