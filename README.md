@@ -15,6 +15,8 @@
 
 ---
 
+# 1. System Architecture & Sensor Task
+
 ## Overview
 
 The **AS7265x Soil Analysis Module** is a rover-mounted subsystem for comparative multispectral analysis of soil and geological samples.
@@ -76,7 +78,137 @@ PC    = mission workflow + persistent Sample storage
 
 ---
 
-# Hardware V1.0
+## Sensor Task
+
+The subsystem is designed to:
+
+- illuminate a soil or geological sample under controlled conditions;
+- acquire an **18-channel VIS-NIR spectrum**;
+- preserve the original RAW measurement;
+- normalize the spectrum using stored White and Dark references;
+- compare the normalized spectral shape against a controlled reference database;
+- store the complete measurement for later analysis.
+
+The system performs **comparative multispectral analysis**, not laboratory chemical identification.
+
+---
+
+## Spectral Channels
+
+| Channel | nm | Channel | nm | Channel | nm |
+|---|---:|---|---:|---|---:|
+| A | 410 | G | 560 | R | 730 |
+| B | 435 | H | 585 | S | 760 |
+| C | 460 | I | 610 | T | 810 |
+| D | 485 | J | 645 | U | 860 |
+| E | 510 | K | 680 | V | 900 |
+| F | 535 | L | 705 | W | 940 |
+
+---
+
+## Measurement Workflow
+
+```text
+Synchronize carousel
+      ↓
+Choose slot
+      ↓
+Prepare Sample
+      ↓
+Rover arm deposits soil
+      ↓
+Confirm Loaded
+      ↓
+Verify sensor
+      ↓
+180° move to SCAN
+      ↓
+AS7265x illumination + spectral acquisition
+      ↓
+RAW spectrum → PC
+      ↓
+White / Dark normalization
+      ↓
+Compare against all 22 references
+      ↓
+Save complete Sample record
+```
+
+After a successful measurement the selected sample remains at the scanner.
+
+Selecting the next sample restores the loading orientation automatically.
+
+---
+
+## Scientific Processing
+
+For every wavelength channel:
+
+```text
+Dark corrected:
+C = S - D
+
+Normalized reflectance:
+R = (S - D) / (W - D)
+```
+
+where:
+
+```text
+S = measured Sample
+D = stored Dark reference
+W = stored White reference
+```
+
+The accepted White/Dark calibration pair is stored in:
+
+```text
+firmware/BD/references.json
+```
+
+The normalized sample is then compared against **22 spectral reference materials** using cosine similarity.
+
+```text
+RAW spectrum
+     ↓
+White / Dark normalization
+     ↓
+cosine similarity
+     ↓
+22 reference materials
+     ↓
+ranked results
+     ↓
+conservative interpretation
+```
+
+> [!IMPORTANT]
+> Similarity is **not chemical composition or probability**.
+>
+> Correct:
+>
+> `Highest spectral similarity: Red Clay — 92.1 %`
+>
+> Incorrect:
+>
+> `The sample is 92.1 % Red Clay.`
+
+Current interpretation parameters:
+
+```text
+minimum similarity    = 85.0 %
+ambiguity margin      = 1.5 percentage points
+```
+
+These parameters are currently being validated using measurements of known materials.
+
+---
+
+# 2. Hardware
+
+## Hardware V1.0
+
+The final hardware is built around a custom two-layer carrier PCB connecting the ESP32 controller, AS7265x spectral sensor and carousel servo.
 
 ## Main Components
 
@@ -140,7 +272,7 @@ The servo and spectral-sensor supplies are separated because the servo produces 
 
 ---
 
-## ESP32 Interfaces
+## Electrical Interfaces
 
 | Function | ESP32 |
 |---|---:|
@@ -160,64 +292,7 @@ The operational main-computer link uses the development board's USB / CP2102 int
 
 ---
 
-## AS7265x Measurement
-
-Expected AS7265x I²C address:
-
-```text
-0x49
-```
-
-Current acquisition configuration:
-
-```text
-integration cycles   = 100
-gain                 = 16x
-measurement mode     = 0b10
-onboard LED current  = 25 mA
-illumination settle  = 300 ms
-```
-
-### Acquisition Sequence
-
-```text
-ensure sensor ready
-        ↓
-AS7265x onboard white LED ON
-        ↓
-300 ms illumination settle
-        ↓
-start new integration
-        ↓
-wait DATA_READY
-        ↓
-read 18 calibrated channels
-        ↓
-validate spectrum
-        ↓
-AS7265x onboard white LED OFF
-        ↓
-return RAW spectrum
-```
-
-The LED shutdown is executed through a protected cleanup path so a failed acquisition does not intentionally leave the illumination enabled.
-
-### Spectral Channels
-
-| Channel | nm | Channel | nm | Channel | nm |
-|---|---:|---|---:|---|---:|
-| A | 410 | G | 560 | R | 730 |
-| B | 435 | H | 585 | S | 760 |
-| C | 460 | I | 610 | T | 810 |
-| D | 485 | J | 645 | U | 860 |
-| E | 510 | K | 680 | V | 900 |
-| F | 535 | L | 705 | W | 940 |
-
-The subsystem performs **comparative multispectral analysis**, not laboratory chemical identification.
-
----
-
-# Sample Carousel
+## Sample Carousel
 
 The mechanism contains **8 sample slots** and two fixed positions:
 
@@ -243,17 +318,7 @@ Slot 3 at LOAD  →  Slot 7 at SCAN
 ...
 ```
 
-### Geometry vs Calibration
-
-Mechanical geometry is fixed:
-
-```text
-8 slots
-45° between slots
-180° between LOAD and SCAN
-```
-
-The continuous-rotation servo does not accept an angle command. Movement is controlled through PWM direction and calibrated runtime.
+The MG995 is a continuous-rotation servo, so movement is controlled through PWM direction and calibrated runtime rather than absolute angle commands.
 
 | Motion | Current value |
 |---|---:|
@@ -272,7 +337,61 @@ If a movement fails, the firmware invalidates position tracking instead of guess
 
 ---
 
-# Software Architecture
+# Hardware Gallery
+
+## Schematics
+
+| Power | ESP32 |
+|:---:|:---:|
+| <img src="Photos/VER1.0/01_POWER_ver1,0.png" alt="Power schematic" width="100%"> | <img src="Photos/VER1.0/02_ESP32_ver1,0.png" alt="ESP32 schematic" width="100%"> |
+
+## Connections & PCB Layout
+
+| Connections | 2D PCB Layout |
+|:---:|:---:|
+| <img src="Photos/VER1.0/03_CONNECTION_ver1,0.png" alt="Connections schematic" width="100%"> | <img src="Photos/VER1.0/2D_PCB_ver1,0.png" alt="2D PCB layout" width="100%"> |
+
+## Final Hardware
+
+| Assembled PCB | Complete Rover Module |
+|:---:|:---:|
+| <img src="Photos/VER1.0/PCB_photo_ver1,0.jpg" alt="Assembled PCB V1.0" width="100%"> | <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg" alt="Complete Freya AS7265x Soil Analysis Module" width="100%"> |
+
+---
+
+## Engineering Development Process
+
+```text
+System requirements
+      ↓
+Architecture
+      ↓
+Component selection
+      ↓
+Altium schematic
+      ↓
+PCB layout
+      ↓
+Manufacturing package
+      ↓
+Manual assembly
+      ↓
+Bring-up / troubleshooting / rework
+      ↓
+Sensor + actuator integration
+      ↓
+Firmware + PC integration
+      ↓
+Calibration and verification
+```
+
+The project covers the complete prototype engineering chain from electrical architecture and component selection through PCB manufacturing, assembly, bring-up, integration and system-level verification.
+
+---
+
+# 3. Firmware & Software
+
+## Software Architecture
 
 ```text
 firmware/
@@ -280,6 +399,21 @@ firmware/
 ├─ BD/       PC-side spectral processing / database
 ├─ PC/       mission controller / operator application
 └─ OPERATIONS.md
+```
+
+The software is divided into three functional layers:
+
+```text
+ESP32
+Hardware control
+       │
+       ▼
+PC Mission Controller
+Workflow / sample management
+       │
+       ▼
+BD Science Layer
+Calibration / comparison / interpretation
 ```
 
 ---
@@ -309,9 +443,27 @@ firmware/ESP32/
 - hardware status;
 - JSON command protocol.
 
-### Sensor Lifecycle
+---
 
-There is one production sensor path:
+## AS7265x Configuration
+
+Expected I²C address:
+
+```text
+0x49
+```
+
+Current acquisition configuration:
+
+```text
+integration cycles   = 100
+gain                 = 16x
+measurement mode     = 0b10
+onboard LED current  = 25 mA
+illumination settle  = 300 ms
+```
+
+### Sensor Lifecycle
 
 ```text
 create I²C
@@ -330,6 +482,32 @@ READY
 ```
 
 A failed sensor initialization at boot is not permanently latched. Later sensor commands can retry the complete bring-up sequence.
+
+---
+
+## Acquisition Sequence
+
+```text
+ensure sensor ready
+        ↓
+AS7265x onboard white LED ON
+        ↓
+300 ms illumination settle
+        ↓
+start new integration
+        ↓
+wait DATA_READY
+        ↓
+read 18 calibrated channels
+        ↓
+validate spectrum
+        ↓
+AS7265x onboard white LED OFF
+        ↓
+return RAW spectrum
+```
+
+The LED shutdown is executed through a protected cleanup path so a failed acquisition does not intentionally leave the illumination enabled.
 
 ---
 
@@ -354,7 +532,7 @@ The ESP32 performs **no database access, material classification or persistent s
 
 ---
 
-# Science Layer
+## Science Layer
 
 ```text
 firmware/BD/
@@ -365,89 +543,19 @@ firmware/BD/
 └─ sample_analysis.py
 ```
 
-The science layer runs entirely on the PC.
+The science layer performs:
+
+- White/Dark normalization;
+- spectral validation;
+- cosine-similarity comparison;
+- database ranking;
+- conservative interpretation.
+
+The reference database contains **22 material spectra**.
 
 ---
 
-## White / Dark Calibration
-
-Per wavelength channel:
-
-```text
-Dark corrected:
-C = S - D
-
-Normalized reflectance:
-R = (S - D) / (W - D)
-```
-
-where:
-
-```text
-S = measured Sample
-D = stored Dark reference
-W = stored White reference
-```
-
-The White/Dark calibration set is stored in:
-
-```text
-firmware/BD/references.json
-```
-
-Normal runtime does not automatically re-measure these references.
-
-The current project stage includes final validation of the accepted calibration data.
-
----
-
-## Material Database
-
-The reference database contains **22 spectral reference materials**:
-
-```text
-firmware/BD/database.json
-```
-
-Each normalized measurement is compared against **every reference spectrum** using cosine similarity.
-
-```text
-RAW spectrum
-     ↓
-White / Dark normalization
-     ↓
-cosine similarity
-     ↓
-22 reference materials
-     ↓
-ranked results
-     ↓
-conservative interpretation
-```
-
-> [!IMPORTANT]
-> Similarity is **not chemical composition or probability**.
->
-> Correct:
->
-> `Highest spectral similarity: Red Clay — 92.1 %`
->
-> Incorrect:
->
-> `The sample is 92.1 % Red Clay.`
-
-Current interpretation parameters:
-
-```text
-minimum similarity    = 85.0 %
-ambiguity margin      = 1.5 percentage points
-```
-
-These values are currently being validated using measurements of known materials.
-
----
-
-# PC Mission Controller
+## PC Mission Controller
 
 ```text
 firmware/PC/
@@ -485,43 +593,9 @@ A completed Sample record can contain:
 - automatic interpretation;
 - hardware acquisition status.
 
-RAW data is stored separately from derived results so measurements can be re-analysed later.
+RAW data is preserved independently from derived results so measurements can be re-analysed later.
 
-Sample records are written through a temporary file and atomic rename to reduce the risk of incomplete files.
-
----
-
-# Measurement Workflow
-
-```text
-Synchronize carousel
-      ↓
-Choose slot
-      ↓
-Prepare Sample
-      ↓
-Rover arm deposits soil
-      ↓
-Confirm Loaded
-      ↓
-Verify sensor
-      ↓
-180° move to SCAN
-      ↓
-AS7265x LED + spectral acquisition
-      ↓
-RAW spectrum → PC
-      ↓
-White / Dark normalization
-      ↓
-Compare against all 22 references
-      ↓
-Save complete Sample record
-```
-
-After a successful measurement the selected sample remains at the scanner.
-
-Selecting the next sample restores the loading orientation automatically.
+Sample records are written through a temporary file followed by an atomic rename to reduce the risk of incomplete records.
 
 ---
 
@@ -558,7 +632,7 @@ py test_pc.py
 py test_integration.py
 ```
 
-### Physical Verification
+## Physical Verification
 
 Hardware development is complete.
 
@@ -572,58 +646,6 @@ Current physical work focuses on:
 - final White/Dark validation;
 - interpretation-threshold tuning;
 - complete end-to-end rover workflows.
-
----
-
-# Engineering Development Process
-
-```text
-System requirements
-      ↓
-Architecture
-      ↓
-Component selection
-      ↓
-Altium schematic
-      ↓
-PCB layout
-      ↓
-Manufacturing package
-      ↓
-Manual assembly
-      ↓
-Bring-up / troubleshooting / rework
-      ↓
-Sensor + actuator integration
-      ↓
-Firmware + PC integration
-      ↓
-Calibration and verification
-```
-
-The project covers the complete prototype engineering chain from electrical architecture and component selection through PCB manufacturing, assembly, bring-up, integration and system-level verification.
-
----
-
-# Hardware Gallery
-
-## Schematics
-
-| Power | ESP32 |
-|:---:|:---:|
-| <img src="Photos/VER1.0/01_POWER_ver1,0.png" alt="Power schematic" width="100%"> | <img src="Photos/VER1.0/02_ESP32_ver1,0.png" alt="ESP32 schematic" width="100%"> |
-
-## Connections & PCB Layout
-
-| Connections | 2D PCB Layout |
-|:---:|:---:|
-| <img src="Photos/VER1.0/03_CONNECTION_ver1,0.png" alt="Connections schematic" width="100%"> | <img src="Photos/VER1.0/2D_PCB_ver1,0.png" alt="2D PCB layout" width="100%"> |
-
-## Final Hardware
-
-| Assembled PCB | Complete Rover Module |
-|:---:|:---:|
-| <img src="Photos/VER1.0/PCB_photo_ver1,0.jpg" alt="Assembled PCB V1.0" width="100%"> | <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg" alt="Complete Freya AS7265x Soil Analysis Module" width="100%"> |
 
 ---
 
