@@ -146,52 +146,18 @@ py -m mpremote connect COM4 fs ls
 ```
 
 **2. Remove the obsolete project files.** These are from the old flat
-layout and have no place in the new one.
-
-Quick form — one command. It removes only the names on an explicit list,
-only if they are present, then removes the old `samples` directory and
-prints what is left:
-
-```powershell
-py -m mpremote connect COM4 exec "import os; old=['sensor_diag.py','database.py','database.json','references.json','sample_analysis.py','sample_store.py','samples.json','samples.json.bak','wipe.py']; [os.remove(f) for f in old if f in os.listdir()]; d='samples'; ([os.remove(d+'/'+n) for n in os.listdir(d)], os.rmdir(d)) if d in os.listdir() else None; print(os.listdir())"
-```
-
-Step-by-step form, if you prefer to see each removal. Run them one at a
-time; a file that is already gone reports an error, which is harmless.
+layout and have no place in the new one. Run them one at a time; a file
+that is already gone reports an error, which is harmless.
 
 ```powershell
 py -m mpremote connect COM4 fs rm :sensor_diag.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :database.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :database.json
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :references.json
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :sample_analysis.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :sample_store.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :samples.json
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :samples.json.bak
-```
-
-```powershell
 py -m mpremote connect COM4 fs rm :wipe.py
 ```
 
@@ -228,35 +194,14 @@ as7265x.py   boot.py   carousel.py   config.py   main.py   mg995.py
 
 ## Upload the ESP32 runtime
 
-From `firmware\ESP32`. All six files in one command:
-
-```powershell
-py -m mpremote connect COM4 fs cp boot.py main.py config.py as7265x.py mg995.py carousel.py :
-```
-
-Or one file at a time, if you want to see each transfer:
+From `firmware\ESP32`:
 
 ```powershell
 py -m mpremote connect COM4 fs cp boot.py :boot.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs cp main.py :main.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs cp config.py :config.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs cp as7265x.py :as7265x.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs cp mg995.py :mg995.py
-```
-
-```powershell
 py -m mpremote connect COM4 fs cp carousel.py :carousel.py
 ```
 
@@ -743,7 +688,12 @@ List ESP32 files:
 py -m mpremote connect COM4 fs ls
 
 Upload the runtime (from firmware\ESP32):
-py -m mpremote connect COM4 fs cp boot.py main.py config.py as7265x.py mg995.py carousel.py :
+py -m mpremote connect COM4 fs cp boot.py :boot.py
+py -m mpremote connect COM4 fs cp main.py :main.py
+py -m mpremote connect COM4 fs cp config.py :config.py
+py -m mpremote connect COM4 fs cp as7265x.py :as7265x.py
+py -m mpremote connect COM4 fs cp mg995.py :mg995.py
+py -m mpremote connect COM4 fs cp carousel.py :carousel.py
 
 Reset:
 py -m mpremote connect COM4 reset
