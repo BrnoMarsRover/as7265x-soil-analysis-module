@@ -8,9 +8,9 @@
 ![Sensor](https://img.shields.io/badge/sensor-AS7265x-4c8bf5)
 
 <p align="center">
-  <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg"
-       alt="Freya AS7265x Soil Analysis Module V1.0"
-       width="820">
+  <img src="Photos/VER1.0/3D_PCB_ver1,0.png"
+       alt="AS7265x Soil Analysis Module PCB V1.0"
+       width="760">
 </p>
 
 ---
@@ -607,14 +607,6 @@ The project covers the complete prototype engineering chain from electrical arch
 
 # Hardware Gallery
 
-## Complete Rover Module
-
-<p align="center">
-  <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg"
-       alt="Complete Freya AS7265x science module"
-       width="820">
-</p>
-
 ## Schematics
 
 | Power | ESP32 |
@@ -629,16 +621,32 @@ The project covers the complete prototype engineering chain from electrical arch
 
 ## PCB Design
 
-| 2D PCB | 3D PCB |
+| 2D Layout | 3D Model |
 |---|---|
 | ![2D PCB](Photos/VER1.0/2D_PCB_ver1,0.png) | ![3D PCB](Photos/VER1.0/3D_PCB_ver1,0.png) |
 
-## Assembled PCB
+## Assembled Hardware
 
 <p align="center">
   <img src="Photos/VER1.0/PCB_photo_ver1,0.jpg"
        alt="Assembled PCB V1.0"
-       width="760">
+       width="520">
+</p>
+
+<p align="center">
+  <em>Assembled custom ESP32 carrier/interface PCB — V1.0</em>
+</p>
+
+### Complete Rover Module
+
+<p align="center">
+  <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg"
+       alt="Complete Freya AS7265x Soil Analysis Module"
+       width="560">
+</p>
+
+<p align="center">
+  <em>Complete multispectral soil-analysis module prepared for integration with the Freya rover.</em>
 </p>
 
 ---
