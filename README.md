@@ -607,47 +607,23 @@ The project covers the complete prototype engineering chain from electrical arch
 
 # Hardware Gallery
 
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/01_POWER_ver1,0.png" alt="Power schematic" width="100%"><br>
-      <sub><b>Power schematic</b></sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/02_ESP32_ver1,0.png" alt="ESP32 schematic" width="100%"><br>
-      <sub><b>ESP32 schematic</b></sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/03_CONNECTION_ver1,0.png" alt="External connections schematic" width="100%"><br>
-      <sub><b>Connections schematic</b></sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/2D_PCB_ver1,0.png" alt="2D PCB layout" width="100%"><br>
-      <sub><b>2D PCB layout</b></sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/3D_PCB_ver1,0.png" alt="3D PCB model" width="100%"><br>
-      <sub><b>3D PCB model</b></sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/PCB_photo_ver1,0.jpg" alt="Assembled PCB V1.0" width="100%"><br>
-      <sub><b>Assembled PCB — V1.0</b></sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg" alt="Complete Freya AS7265x Soil Analysis Module" width="100%"><br>
-      <sub><b>Complete rover module</b></sub>
-    </td>
-    <td align="center" width="50%">
-      &nbsp;
-    </td>
-  </tr>
-</table>
+## Schematics
+
+| Power | ESP32 |
+|:---:|:---:|
+| <img src="Photos/VER1.0/01_POWER_ver1,0.png" alt="Power schematic" width="100%"> | <img src="Photos/VER1.0/02_ESP32_ver1,0.png" alt="ESP32 schematic" width="100%"> |
+
+## Connections & PCB Layout
+
+| Connections | 2D PCB Layout |
+|:---:|:---:|
+| <img src="Photos/VER1.0/03_CONNECTION_ver1,0.png" alt="Connections schematic" width="100%"> | <img src="Photos/VER1.0/2D_PCB_ver1,0.png" alt="2D PCB layout" width="100%"> |
+
+## Final Hardware
+
+| Assembled PCB | Complete Rover Module |
+|:---:|:---:|
+| <img src="Photos/VER1.0/PCB_photo_ver1,0.jpg" alt="Assembled PCB V1.0" width="100%"> | <img src="Photos/VER1.0/Fullprojec_photo_ver1,0.jpg" alt="Complete Freya AS7265x Soil Analysis Module" width="100%"> |
 
 ---
 
