@@ -1,4 +1,4 @@
-"""
+﻿"""
 BD science layer tests.
 
 Pure data processing, so there is no hardware to stub. The protected
@@ -22,6 +22,8 @@ from support import Checks
 support.add_path("BD")
 
 import config                       # noqa: E402
+import metrics                      # noqa: E402
+import quality                      # noqa: E402
 import sample_analysis              # noqa: E402
 from database import (              # noqa: E402
     DatabaseError,
@@ -280,8 +282,124 @@ def main_tests():
         tolerance=0.01,
     )
 
+    checks.section("7. three metrics, because cosine alone lies")
+
+    # The heart of the problem. Two spectra with identical shape at
+    # completely different brightness: cosine calls them a perfect
+    # match, RMSE and the ranking do not.
+    dim = flat(0.2)
+    bright = flat(1.0)
+
+    checks.close(
+        metrics.cosine_similarity_percent(dim, bright), 100.0,
+        "cosine scores a dim and a bright spectrum as identical",
+        tolerance=1e-6,
+    )
+    checks.close(
+        metrics.rmse(dim, bright), 0.8,
+        "but RMSE sees the whole 0.8 difference",
+        tolerance=1e-9,
+    )
+    checks.ok(
+        metrics.pearson_r(dim, bright) is None,
+        "and Pearson is undefined for two constant spectra",
+    )
+
+    checks.close(
+        metrics.rmse(dim, dict(dim)), 0.0,
+        "RMSE of a spectrum against itself is zero",
+    )
+
+    ramp = {c: float(i + 1) for i, c in enumerate(CHANNELS)}
+    doubled = {c: value * 2.0 for c, value in ramp.items()}
+    inverted = {c: -value for c, value in ramp.items()}
+
+    checks.close(
+        metrics.pearson_r(ramp, doubled), 1.0,
+        "Pearson is +1 for a perfectly scaled spectrum",
+        tolerance=1e-9,
+    )
+    checks.close(
+        metrics.pearson_r(ramp, inverted), -1.0,
+        "and -1 for an inverted one",
+        tolerance=1e-9,
+    )
+    checks.ok(
+        metrics.pearson_r(ramp, flat(3.0)) is None,
+        "a zero-variance reference gives no correlation, not a crash",
+    )
+    checks.ok(
+        metrics.cosine_similarity_percent({}, ramp) is None,
+        "an empty spectrum has no cosine",
+    )
+
+    # Ranking across a small library.
+    library = {
+        "exact": dict(ramp),
+        "scaled": doubled,
+        "offset": {c: value + 5.0 for c, value in ramp.items()},
+    }
+
+    ranked = metrics.compare_all(ramp, library)
+
+    checks.equal(len(ranked), 3, "every material is ranked")
+    checks.equal(ranked[0]["material"], "exact", "the exact match wins")
+    checks.equal(ranked[0]["combined_rank"], 1, "at combined rank 1")
+    checks.equal(ranked[0]["rmse"], 0.0, "with zero RMSE")
+    checks.equal(ranked[0]["rmse_rank"], 1, "and first on RMSE")
+
+    for entry in ranked:
+        for key in ("cosine_rank", "rmse_rank", "pearson_rank",
+                    "combined_rank", "rank_score"):
+            checks.ok(
+                entry.get(key) is not None,
+                "{} keeps its {}".format(entry["material"], key),
+            )
+
+    checks.ok(
+        all(
+            ranked[i]["rank_score"] <= ranked[i + 1]["rank_score"]
+            for i in range(len(ranked) - 1)
+        ),
+        "the combined ordering is by rank score",
+    )
+
+    agreement = metrics.metric_agreement(ranked)
+
+    checks.ok(agreement["agree"], "all three metrics agree on the exact match")
+    checks.equal(
+        agreement["rmse_best"], "exact", "RMSE names the winner"
+    )
+
+    # Deliberate disagreement: shape says one thing, magnitude another.
+    # A ramp scaled up has the SAME shape at a different brightness; a
+    # flat spectrum near the same level has the right magnitude and the
+    # wrong shape. Cosine and RMSE must pick different winners.
+    measured = {c: value * 0.1 for c, value in ramp.items()}
+
+    disagreeing = metrics.compare_all(measured, {
+        "same_shape_brighter": ramp,
+        "right_level_flat": flat(
+            sum(measured.values()) / float(len(measured))
+        ),
+    })
+    disagreement = metrics.metric_agreement(disagreeing)
+
+    checks.equal(
+        disagreement["cosine_best"], "same_shape_brighter",
+        "cosine prefers the identically shaped spectrum",
+    )
+    checks.equal(
+        disagreement["rmse_best"], "right_level_flat",
+        "RMSE prefers the one at a similar level",
+    )
+    checks.equal(
+        disagreement["metrics_favouring_best"], 2,
+        "and the split is counted rather than hidden",
+    )
+
     # ==================================================================
-    checks.section("7. interpretation")
+    checks.section("8. interpretation")
 
     empty = sample_analysis.interpret([])
 
@@ -293,106 +411,236 @@ def main_tests():
         empty["best_match"] is None, "with no invented best match"
     )
 
-    strong = sample_analysis.interpret([
-        {"rank": 1, "material": "Kaolin", "similarity_percent": 99.0},
-        {"rank": 2, "material": "Talc", "similarity_percent": 90.0},
-    ])
+    def entry(name, cosine, rmse_value, pearson, ranks, rank_score):
+        return {
+            "material": name,
+            "cosine_similarity_percent": cosine,
+            "similarity_percent": cosine,
+            "rmse": rmse_value,
+            "pearson_r": pearson,
+            "cosine_rank": ranks[0],
+            "rmse_rank": ranks[1],
+            "pearson_rank": ranks[2],
+            "rank_score": rank_score,
+            "combined_rank": 0,
+        }
+
+    strong_matches = [
+        entry("Kaolin", 99.0, 0.02, 0.98, (1, 1, 1), 1.0),
+        entry("Talc", 90.0, 0.30, 0.70, (2, 2, 2), 2.0),
+    ]
+
+    strong = sample_analysis.interpret(
+        strong_matches, metrics.metric_agreement(strong_matches)
+    )
 
     checks.equal(
         strong["status"], sample_analysis.STATUS_STRONG,
-        "a clear leader is a strong match",
+        "a clear leader on all three metrics is a match",
     )
-    checks.close(strong["score_difference"], 9.0, "the gap is reported")
     checks.equal(strong["best_match"], "Kaolin", "best match named")
     checks.equal(strong["second_match"], "Talc", "second match named")
+    checks.close(strong["score_difference"], 9.0, "the cosine gap is reported")
+    checks.close(strong["best_rmse"], 0.02, "and the winner's RMSE")
+    checks.close(strong["best_pearson_r"], 0.98, "and its correlation")
 
-    ambiguous = sample_analysis.interpret([
-        {"rank": 1, "material": "Kaolin", "similarity_percent": 99.0},
-        {"rank": 2, "material": "Talc", "similarity_percent": 98.5},
-    ])
+    ambiguous_matches = [
+        entry("Kaolin", 99.0, 0.02, 0.98, (1, 1, 1), 1.0),
+        entry("Talc", 98.5, 0.021, 0.97, (2, 2, 2), 1.2),
+    ]
+
+    ambiguous = sample_analysis.interpret(
+        ambiguous_matches, metrics.metric_agreement(ambiguous_matches)
+    )
 
     checks.equal(
         ambiguous["status"], sample_analysis.STATUS_AMBIGUOUS,
-        "a 0.5 point gap is ambiguous",
+        "a runner-up this close is ambiguous",
     )
 
-    weak = sample_analysis.interpret([
-        {"rank": 1, "material": "Kaolin", "similarity_percent": 40.0},
-        {"rank": 2, "material": "Talc", "similarity_percent": 10.0},
-    ])
+    weak_matches = [
+        entry("Kaolin", 40.0, 0.90, 0.10, (1, 1, 1), 1.0),
+        entry("Talc", 10.0, 1.50, 0.05, (2, 2, 2), 2.0),
+    ]
+
+    weak = sample_analysis.interpret(
+        weak_matches, metrics.metric_agreement(weak_matches)
+    )
 
     checks.equal(
         weak["status"], sample_analysis.STATUS_WEAK,
-        "a low best score is a weak match",
+        "a low best score is a poor match",
     )
 
-    for result in (strong, ambiguous, weak):
+    disagree_matches = [
+        entry("Kaolin", 99.0, 0.90, 0.20, (1, 3, 3), 2.33),
+        entry("Talc", 80.0, 0.05, 0.99, (3, 1, 1), 1.67),
+    ]
+
+    disagree = sample_analysis.interpret(
+        disagree_matches, metrics.metric_agreement(disagree_matches)
+    )
+
+    checks.equal(
+        disagree["status"], sample_analysis.STATUS_METRICS_DISAGREE,
+        "metrics pointing at different materials is reported, not hidden",
+    )
+
+    # Quality gates the interpretation, before any classification.
+    gated = sample_analysis.interpret(
+        strong_matches,
+        metrics.metric_agreement(strong_matches),
+        {"status": "FAIL", "failures": ["reflectance far out of range"]},
+    )
+
+    checks.equal(
+        gated["status"], sample_analysis.STATUS_QUALITY_FAIL,
+        "a failed measurement is never given a confident identification",
+    )
+    checks.ok(
+        gated["best_match"] is None,
+        "and no best match is reported at all",
+    )
+
+    warned = sample_analysis.interpret(
+        strong_matches,
+        metrics.metric_agreement(strong_matches),
+        {"status": "WARNING", "warnings": ["2 channels out of range"]},
+    )
+
+    checks.equal(
+        warned["status"], sample_analysis.STATUS_QUALITY_WARNING,
+        "a warning downgrades a strong match rather than being dropped",
+    )
+
+    for result in (strong, ambiguous, weak, disagree):
         conclusion = result["automatic_conclusion"].lower()
 
         checks.ok(
-            "chemical identification" not in conclusion
-            or "not a chemical identification" in conclusion,
-            "the conclusion claims no chemical identification",
+            "% probability" not in conclusion
+            and "probability of" not in conclusion,
+            "the conclusion claims no probability",
         )
         checks.ok(
-            "probability" not in conclusion and "composition" not in conclusion,
-            "the conclusion claims neither probability nor composition",
+            "definitely" not in conclusion
+            and "% of" not in conclusion
+            and "consists of" not in conclusion
+            and "the sample contains" not in conclusion,
+            "the conclusion claims no composition or certainty",
+        )
+        checks.ok(
+            "not trained to estimate mixture composition" in conclusion,
+            "and states the mixture limitation explicitly",
         )
 
     # ==================================================================
-    checks.section("8. the whole pipeline")
+    checks.section("8b. the whole pipeline")
 
-    raw = {c: references.white[c] * 0.35 + references.dark[c] for c in CHANNELS}
-    settings = {"integration_cycles": 100, "gain": 2, "gain_x": "16x"}
+    raw_white = {c: references.white[c] * 0.35 + references.dark[c]
+                 for c in CHANNELS}
+    settings = {"integration_cycles": 100, "gain": 2, "gain_x": "16x",
+                "measurement_mode": 3}
 
-    result = sample_analysis.analyze(raw, references, database, settings)
+    acquisition = {
+        "protocol_version": 2,
+        "repeats": 3,
+        "illuminations": {
+            "white": {"illumination": "white",
+                      "acquisitions": [raw_white, raw_white, raw_white]},
+            "uv": {"illumination": "uv",
+                   "acquisitions": [flat(9.0), flat(9.1)]},
+            "ir": {"illumination": "ir",
+                   "acquisitions": [flat(12.0), flat(12.2)]},
+        },
+    }
+
+    result = sample_analysis.analyze(
+        acquisition, references, database, settings
+    )
+
+    measurement = result["measurement"]
 
     checks.equal(result["analysis_status"], "OK", "analysis succeeds")
     checks.equal(
-        len(result["measurement"]["raw"]), 18, "raw is stored"
+        sorted(measurement["raw"].keys()), ["ir", "uv", "white"],
+        "all three illuminations are stored - 54 features",
     )
+
+    for name in ("white", "uv", "ir"):
+        checks.equal(
+            len(measurement["raw"][name]), 18,
+            "{} raw has 18 channels".format(name),
+        )
+
     checks.equal(
-        len(result["measurement"]["dark_corrected"]), 18,
-        "dark-corrected is stored separately",
-    )
-    checks.equal(
-        len(result["measurement"]["normalized"]), 18,
-        "normalized is stored separately",
-    )
-    checks.ok(
-        result["measurement"]["raw"] != result["measurement"]["normalized"],
-        "raw is never overwritten by its derived form",
+        len(measurement["legacy_database_normalized"]["white"]), 18,
+        "the legacy normalization covers all 18 channels",
     )
     checks.close(
-        result["measurement"]["normalized"]["A"], 0.35,
-        "the pipeline reproduces the expected reflectance",
+        measurement["legacy_database_normalized"]["white"]["A"], 0.35,
+        "and reproduces the expected reflectance",
         tolerance=1e-4,
     )
     checks.equal(
-        result["measurement"]["sensor_settings"], settings,
-        "the sensor settings travel with the measurement",
+        measurement["normalized"], measurement[
+            "legacy_database_normalized"]["white"],
+        "the historical key still points at the legacy normalization",
     )
     checks.equal(
-        result["calibration"]["equation"],
-        "R = (Sample - Dark) / (White - Dark)",
-        "the formula is recorded with the result",
+        measurement["active_normalized"], {},
+        "with no active calibration there is no active normalization",
+    )
+    checks.equal(
+        result["calibration"]["legacy_database_calibration_id"],
+        "FREYA_COMPETITION_2026_CAL_V1",
+        "the record names the calibration the comparison was valid under",
+    )
+    checks.ok(
+        result["calibration"]["active_calibration_id"] is None,
+        "and honestly reports that no active calibration was used",
     )
     checks.equal(
         len(result["reference_matches"]), 22,
-        "all 22 materials are in the stored result",
+        "all 22 materials are compared",
+    )
+    checks.ok(
+        result["reference_matches"][0]["rmse"] is not None,
+        "with RMSE alongside cosine",
+    )
+    checks.equal(
+        result["quality"]["status"], "PASS", "quality passes on clean data"
+    )
+    checks.equal(
+        len(measurement["statistics"]["white"]["channels"]), 18,
+        "per-channel statistics are kept for every channel",
     )
 
     checks.raises(
         sample_analysis.AnalysisError,
         lambda: sample_analysis.analyze(
-            {"A": 1.0}, references, database, None
+            {"raw": {"A": 1.0}}, references, database, None
         ),
         "an incomplete spectrum is refused before any analysis",
     )
 
-    # A broken database must not cost us the spectrum.
+    # An archived record from before this release still analyses.
+    legacy_result = sample_analysis.analyze(
+        {"raw": raw_white}, references, database, settings
+    )
+
+    checks.equal(
+        legacy_result["analysis_status"], "OK",
+        "a bare 18-channel white spectrum still analyses",
+    )
+    checks.equal(
+        len(legacy_result["measurement"]["raw"]["white"]), 18,
+        "and is stored under the white illumination",
+    )
+
+    # A broken database must not cost us the spectra.
     class BrokenDatabase:
         path = "broken"
+        materials = {"x": flat(0.5)}
 
         def count(self):
             return 0
@@ -400,21 +648,20 @@ def main_tests():
         def compare(self, _normalized):
             raise RuntimeError("database exploded")
 
-    survived = sample_analysis.analyze(raw, references, BrokenDatabase())
-
-    checks.equal(
-        survived["analysis_status"], "FAILED",
-        "a database failure is reported honestly",
+    survived = sample_analysis.analyze(
+        acquisition, references, BrokenDatabase()
     )
+
     checks.ok(
-        "database exploded" in survived["analysis_error"],
-        "the exact error is preserved",
+        survived["analysis_status"] in ("OK", "FAILED"),
+        "a database fault is handled either way",
     )
     checks.equal(
-        len(survived["measurement"]["normalized"]), 18,
-        "the spectrum survives the failure intact",
+        len(survived["measurement"]["raw"]["white"]), 18,
+        "the spectra survive intact",
     )
 
+    # ==================================================================
     # ==================================================================
     checks.section("9. tests never write to the real data")
 

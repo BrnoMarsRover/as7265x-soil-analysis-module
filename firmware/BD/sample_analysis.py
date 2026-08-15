@@ -17,32 +17,46 @@ disagree.
 
 Scientific constraint, enforced by the wording produced here: this is
 COMPARATIVE SPECTRAL CLASSIFICATION against a small reference library.
-It never claims chemical identification. The percentages are cosine
-similarity between 18-channel reflectance vectors - not composition,
-not probability, not certainty.
+It never claims chemical identification. The numbers are similarity and
+error metrics between reflectance vectors - not composition, not
+probability, not certainty.
 """
 
+import aggregation
 import config
+import metrics
+import quality
 
 
-# The 18 AS7265x channels, in wavelength order.
-CHANNELS = (
-    "A", "B", "C", "D", "E", "F",
-    "G", "H", "I", "J", "K", "L",
-    "R", "S", "T", "U", "V", "W",
+# Attached to every conclusion. The library holds PURE reference
+# materials, so a mixture cannot be decomposed by comparing against it -
+# and the honest thing is to say so every time rather than let a
+# confident-looking ranking imply otherwise.
+MIXTURE_CAVEAT = (
+    "The reference library contains pure materials and is not trained "
+    "to estimate mixture composition."
 )
 
-WAVELENGTHS = {
-    "A": 410, "B": 435, "C": 460, "D": 485, "E": 510, "F": 535,
-    "G": 560, "H": 585, "I": 610, "J": 645, "K": 680, "L": 705,
-    "R": 730, "S": 760, "T": 810, "U": 860, "V": 900, "W": 940,
-}
+
+# Re-exported so every existing importer keeps working; the definitions
+# live in channels.py, which imports nothing.
+from channels import CHANNELS, WAVELENGTHS, channel_wavelengths  # noqa: E402,F401
 
 # Interpretation outcomes.
-STATUS_STRONG = "STRONG_REFERENCE_MATCH"
+STATUS_STRONG = "REFERENCE_MATCH"
 STATUS_AMBIGUOUS = "AMBIGUOUS"
-STATUS_WEAK = "WEAK_REFERENCE_MATCH"
+STATUS_WEAK = "POOR_MATCH"
 STATUS_NO_DATABASE = "NO_DATABASE"
+STATUS_METRICS_DISAGREE = "METRICS_DISAGREE"
+STATUS_QUALITY_WARNING = "MEASUREMENT_QUALITY_WARNING"
+STATUS_QUALITY_FAIL = "MEASUREMENT_QUALITY_FAIL"
+
+# Historical spellings, so records written before this release still
+# compare equal to the constants.
+LEGACY_STATUS_ALIASES = {
+    "STRONG_REFERENCE_MATCH": STATUS_STRONG,
+    "WEAK_REFERENCE_MATCH": STATUS_WEAK,
+}
 
 
 class AnalysisError(Exception):
@@ -125,11 +139,6 @@ def round_channels(data, decimals):
     }
 
 
-def channel_wavelengths():
-    """Channel-to-nanometre map stored alongside every measurement."""
-    return {channel: WAVELENGTHS[channel] for channel in CHANNELS}
-
-
 # ----------------------------------------------------------------------
 # the two formulas
 # ----------------------------------------------------------------------
@@ -203,14 +212,37 @@ def _thresholds():
     }
 
 
-def interpret(matches):
+def interpret(matches, agreement=None, quality=None):
     """
-    A compact, conservative reading of the full match list.
+    A conservative reading of the ranked comparison.
 
-    Because cosine similarity between non-negative reflectance vectors
-    is high for almost any pair, the informative quantity is the GAP
-    between the best and second-best candidate, not the absolute score.
+    Three things have to hold before a result is called a match: the
+    measurement has to be sound, the three metrics have to point the
+    same way, and the winner has to be clearly ahead of the runner-up.
+    Any one of them failing downgrades the answer rather than being
+    averaged away.
     """
+    quality_status = (quality or {}).get("status")
+
+    if quality_status == "FAIL":
+        return {
+            "best_match": None,
+            "best_similarity": None,
+            "second_match": None,
+            "second_similarity": None,
+            "score_difference": None,
+            "status": STATUS_QUALITY_FAIL,
+            "confidence": "NONE",
+            "automatic_conclusion": (
+                "The measurement did not pass quality control, so no "
+                "reference comparison is reported. The acquired spectra "
+                "are stored and can be re-examined. Reasons: {}".format(
+                    "; ".join((quality or {}).get("failures") or ["unknown"])
+                )
+            ),
+            "thresholds": _thresholds(),
+        }
+
     if not matches:
         return {
             "best_match": None,
@@ -228,80 +260,128 @@ def interpret(matches):
             "thresholds": _thresholds(),
         }
 
-    best_name = matches[0]["material"]
-    best_score = matches[0]["similarity_percent"]
+    best = matches[0]
+    best_name = best["material"]
+    best_score = best.get("cosine_similarity_percent")
 
     if len(matches) > 1:
-        second_name = matches[1]["material"]
-        second_score = matches[1]["similarity_percent"]
-        difference = round(best_score - second_score, 2)
+        second = matches[1]
+        second_name = second["material"]
+        second_score = second.get("cosine_similarity_percent")
+        difference = (
+            round(best_score - second_score, 2)
+            if best_score is not None and second_score is not None else None
+        )
+        rank_separation = round(
+            second.get("rank_score", 0) - best.get("rank_score", 0), 3
+        )
 
     else:
         second_name = None
         second_score = None
         difference = None
+        rank_separation = None
 
-    minimum = config.MIN_SIMILARITY_PERCENT
-    margin = config.AMBIGUITY_MARGIN_PERCENT
+    agreement = agreement or {}
+    metrics_agree = agreement.get("agree")
 
-    if best_score < minimum:
+    detail = (
+        "cosine {} %, RMSE {}, Pearson r {}".format(
+            best_score, best.get("rmse"), best.get("pearson_r")
+        )
+    )
+
+    # -- the three ways a result stops being a clean match -------------
+    if metrics_agree is False:
+        status = STATUS_METRICS_DISAGREE
+        confidence = "LOW"
+        conclusion = (
+            "The comparison metrics disagree. By spectral shape the "
+            "closest reference is {}; by absolute reflectance error it "
+            "is {}; by correlation it is {}. Shape and magnitude are "
+            "pointing at different materials, which usually means the "
+            "sample is not well represented by any single reference in "
+            "the current library.".format(
+                agreement.get("cosine_best"),
+                agreement.get("rmse_best"),
+                agreement.get("pearson_best"),
+            )
+        )
+
+    elif best_score is not None and best_score < config.MIN_SIMILARITY_PERCENT:
         status = STATUS_WEAK
         confidence = "LOW"
         conclusion = (
-            "No strong spectral similarity was found in the current "
-            "reference database. The closest reference is {} at {:.1f}% "
-            "cosine similarity, which is below the {:.1f}% support "
-            "threshold. The sample may not be sufficiently represented "
-            "by the available reference materials.".format(
-                best_name, best_score, minimum
+            "No reference in the current library is a good fit. The "
+            "closest is {} ({}), below the {:.1f}% support threshold. "
+            "The sample is probably not represented by the available "
+            "reference materials.".format(
+                best_name, detail, config.MIN_SIMILARITY_PERCENT
             )
         )
 
-    elif difference is not None and difference < margin:
+    elif (
+        rank_separation is not None
+        and rank_separation < config.MIN_RANK_SEPARATION
+    ):
         status = STATUS_AMBIGUOUS
         confidence = "MODERATE"
         conclusion = (
-            "The measured spectrum shows the highest cosine similarity "
-            "to {} ({:.1f}%). {} is the second closest reference "
-            "({:.1f}%). Because the score difference is only {:.1f} "
-            "percentage points, the classification is considered "
-            "ambiguous. The sample is most consistent with {}/{} "
-            "reference material within the current database.".format(
-                best_name, best_score, second_name, second_score,
-                difference, best_name, second_name,
-            )
+            "The measured spectrum is most consistent with {} ({}), but "
+            "{} is nearly as close across all three metrics. The "
+            "comparison cannot separate them, so the result is reported "
+            "as ambiguous.".format(best_name, detail, second_name)
         )
 
-    elif second_name is None:
-        status = STATUS_STRONG
-        confidence = "HIGH"
+    elif (
+        difference is not None
+        and difference < config.AMBIGUITY_MARGIN_PERCENT
+    ):
+        status = STATUS_AMBIGUOUS
+        confidence = "MODERATE"
         conclusion = (
-            "The measured spectrum shows {:.1f}% cosine similarity to "
-            "{}, the only reference material in the current database. A "
-            "single-entry database cannot distinguish between "
-            "candidates.".format(best_score, best_name)
+            "The measured spectrum is most consistent with {} ({}). {} "
+            "is the second closest and only {:.1f} percentage points "
+            "behind on cosine similarity, so the classification is "
+            "reported as ambiguous.".format(
+                best_name, detail, second_name, difference
+            )
         )
 
     else:
         status = STATUS_STRONG
         confidence = "HIGH"
         conclusion = (
-            "The measured spectrum shows the highest cosine similarity "
-            "to {} ({:.1f}%), ahead of {} ({:.1f}%) by {:.1f} percentage "
-            "points. Within the current reference database the sample is "
-            "most consistent with {}. This is a spectral similarity "
-            "result, not a chemical identification.".format(
-                best_name, best_score, second_name, second_score,
-                difference, best_name,
+            "The measured spectrum is most consistent with {} ({}), "
+            "ranked first by all three metrics. This is a comparative "
+            "spectral result against the reference library, not a "
+            "chemical identification.".format(best_name, detail)
+        )
+
+    # A warning never turns a match into a failure, but it must not be
+    # quietly dropped either.
+    if quality_status == "WARNING" and status == STATUS_STRONG:
+        status = STATUS_QUALITY_WARNING
+        confidence = "MODERATE"
+        conclusion = (
+            "{} Measurement quality raised warnings: {}".format(
+                conclusion,
+                "; ".join((quality or {}).get("warnings") or ["unknown"]),
             )
         )
+
+    conclusion = "{} {}".format(conclusion, MIXTURE_CAVEAT)
 
     return {
         "best_match": best_name,
         "best_similarity": best_score,
+        "best_rmse": best.get("rmse"),
+        "best_pearson_r": best.get("pearson_r"),
         "second_match": second_name,
         "second_similarity": second_score,
         "score_difference": difference,
+        "rank_separation": rank_separation,
+        "metric_agreement": agreement,
         "status": status,
         "confidence": confidence,
         "automatic_conclusion": conclusion,
@@ -313,34 +393,133 @@ def interpret(matches):
 # the whole pipeline, in one call
 # ----------------------------------------------------------------------
 
-def analyze(raw, references, database, sensor_settings=None):
+def _blocks_from(acquisition):
     """
-    RAW spectrum in, complete scientific result out.
+    Aggregate whatever the ESP32 sent into one spectrum per lamp.
 
-    The single entry point used by both Measure Sample and Sensor Test,
-    so a passing sensor test really does exercise the measurement
-    pipeline.
-
-        validate -> C = S - D -> R = (S-D)/(W-D) -> compare all -> interpret
-
-    A database failure must not cost us the spectrum: the comparison is
-    isolated, and dark_corrected/normalized are returned either way with
-    analysis_status = FAILED.
+    Accepts both shapes: the WHITE/UV/IR protocol with repeats, and a
+    bare 18-channel dict from an older single-spectrum acquisition. A
+    stored record from before this release therefore still analyses.
     """
+    if not isinstance(acquisition, dict):
+        raise AnalysisError(
+            "INCOMPLETE_SPECTRUM", "No acquisition data was supplied."
+        )
+
+    illuminations = acquisition.get("illuminations")
+
+    if isinstance(illuminations, dict):
+        return {
+            name: aggregation.aggregate_block(block)
+            for name, block in illuminations.items()
+        }
+
+    # Legacy: one white spectrum, no repeats.
+    raw = acquisition.get("raw", acquisition)
+
     require_spectrum(raw, "RAW spectrum")
 
-    dark_corrected = dark_correct(raw, references.dark)
-    normalized = normalize(raw, references.dark, references.white)
+    return {
+        "white": {
+            "spectrum": copy_channels(raw),
+            "statistics": {
+                "illumination": "white", "repeats": 1,
+                "estimator": "single", "channels": {},
+                "missing_channels": [], "rejected_total": 0,
+                "mean_cv": None, "max_cv": None, "unstable_channels": [],
+            },
+            "acquisitions": [copy_channels(raw)],
+        }
+    }
 
+
+def analyze(acquisition, references, database, sensor_settings=None,
+            active_calibration=None, distance_mm=None):
+    """
+    Acquisition in, complete scientific result out.
+
+    The pipeline, in order:
+
+        aggregate repeats
+          -> normalize against the ACTIVE calibration   (science)
+          -> normalize WHITE against the LEGACY one     (database)
+          -> measurement quality control
+          -> compare every material on 3 metrics
+          -> rank aggregation
+          -> conservative interpretation
+
+    `references` is the legacy calibration - the White/Dark the material
+    library was built against, and the only one ever used to compare
+    against it. `active_calibration` is the current full calibration and
+    may be None, in which case the active normalization is simply not
+    produced and the legacy comparison still works.
+    """
+    blocks = _blocks_from(acquisition)
+
+    if "white" not in blocks:
+        raise AnalysisError(
+            "INCOMPLETE_SPECTRUM",
+            "No WHITE illumination block: the legacy database comparison "
+            "needs one.",
+            {"illuminations": sorted(blocks.keys())},
+        )
+
+    raw = {name: block["spectrum"] for name, block in blocks.items()}
+    stats = {name: block["statistics"] for name, block in blocks.items()}
+
+    # -- legacy path: the ONLY one the database may be compared with ---
+    legacy_normalized = normalize(
+        raw["white"], references.dark, references.white
+    )
+    legacy_dark_corrected = dark_correct(raw["white"], references.dark)
+
+    # -- active path: the new scientific record ------------------------
+    active_normalized = {}
+    active_error = None
+
+    if active_calibration is not None:
+        for name, spectrum in raw.items():
+            try:
+                active_normalized[name] = normalize(
+                    spectrum,
+                    active_calibration.dark,
+                    active_calibration.white_for(name),
+                )
+
+            except Exception as error:
+                active_error = "{}: {}".format(type(error).__name__, error)
+
+    # -- quality, before anything is classified ------------------------
+    report = quality.assess(
+        legacy_normalized,
+        references.white,
+        references.dark,
+        stats.get("white"),
+        distance_mm,
+        "white",
+    )
+
+    # -- comparison ----------------------------------------------------
     analysis_status = "OK"
     analysis_error = None
+    usable = report.get("usable_channels") or list(CHANNELS)
 
     try:
-        matches = database.compare(normalized) if database else []
-        analysis = interpret(matches)
+        if database is not None:
+            matches = metrics.compare_all(
+                legacy_normalized, database.materials, usable
+            )
+            agreement = metrics.metric_agreement(matches)
+
+        else:
+            matches = []
+            agreement = {}
+
+        analysis = interpret(matches, agreement, report)
 
     except Exception as error:
         matches = []
+        agreement = {}
         analysis_status = "FAILED"
         analysis_error = "{}: {}".format(type(error).__name__, error)
         analysis = {
@@ -352,8 +531,8 @@ def analyze(raw, references, database, sensor_settings=None):
             "status": "ANALYSIS_FAILED",
             "confidence": "NONE",
             "automatic_conclusion": (
-                "The spectrum was acquired successfully, but the "
-                "comparison against the reference database failed ({}). "
+                "The spectra were acquired successfully, but the "
+                "comparison against the reference library failed ({}). "
                 "The measured data is intact.".format(analysis_error)
             ),
             "error": analysis_error,
@@ -361,29 +540,67 @@ def analyze(raw, references, database, sensor_settings=None):
 
     return {
         "measurement": {
+            "protocol_version": acquisition.get("protocol_version", 1),
+            "sample_schema_version": config.SAMPLE_SCHEMA_VERSION,
             "wavelengths": channel_wavelengths(),
-            "raw": round_channels(raw, config.RAW_DECIMALS),
-            "dark_corrected": dark_corrected,
-            "normalized": normalized,
-            "sensor_settings": sensor_settings,
+
+            # Primary data: what the sensor returned, per illumination.
+            "raw": raw,
+
+            # Derived, against the ACTIVE calibration - the scientific
+            # record and the basis of any future 54-feature model.
+            "active_normalized": active_normalized,
+            "active_normalization_error": active_error,
+
+            # Derived, against the LEGACY calibration - the ONLY thing
+            # the existing material library may be compared with.
+            "legacy_database_normalized": {"white": legacy_normalized},
+            "dark_corrected": legacy_dark_corrected,
+
+            # Kept under the historical key so older readers and the
+            # spectrum table keep working.
+            "normalized": legacy_normalized,
+
+            "statistics": stats,
+            "repeats": acquisition.get("repeats"),
+            "temperatures": acquisition.get("temperatures"),
+            "sensor_settings": sensor_settings
+            or acquisition.get("sensor_settings"),
         },
+
         "calibration": {
-            "calibration_id": references.calibration_id,
-            "source": str(references.path),
+            "legacy_database_calibration_id": references.calibration_id,
+            "legacy_source": str(references.path),
+            "active_calibration_id": (
+                active_calibration.calibration_id
+                if active_calibration is not None else None
+            ),
             "equation": "R = (Sample - Dark) / (White - Dark)",
-            "mode": "fixed_stored_references",
+            "mode": "dual_normalization",
             "runtime_recalibration": "DISABLED",
             "zero_denominator_channels":
                 references.zero_denominator_channels(),
+
+            # The legacy White and Dark actually used, snapshotted so
+            # the archived sample can be re-derived exactly.
+            "dark_reference": copy_channels(references.dark),
+            "white_reference": copy_channels(references.white),
         },
+
         "database": {
             "file": str(database.path) if database else None,
             "material_count": database.count() if database else 0,
-            "metric": "cosine_similarity",
+            "metrics": ["cosine_similarity", "rmse", "pearson_r"],
+            "ranking": "combined rank aggregation",
             "compared_against_all": True,
+            "compared_channels": usable,
+            "calibration_id": references.calibration_id,
             "science_version": config.SCIENCE_VERSION,
         },
+
+        "quality": report,
         "reference_matches": matches,
+        "metric_agreement": agreement,
         "analysis": analysis,
         "analysis_status": analysis_status,
         "analysis_error": analysis_error,

@@ -27,6 +27,7 @@ import time
 
 import as7265x
 import config
+import mg995
 
 from as7265x import SensorError, SensorRuntime
 from carousel import Carousel, CarouselError
@@ -216,11 +217,22 @@ class HardwareModule:
             "move_slots": self.handle_move_slots,
             "fine_adjust": self.handle_fine_adjust,
             "clear_slot": self.handle_clear_slot,
+            "clear_all_slots": self.handle_clear_all_slots,
 
             "measure_raw": self.handle_measure_raw,
             "sensor_test_raw": self.handle_sensor_test_raw,
+            "acquire_block": self.handle_acquire_block,
+            "acquire_triad": self.handle_acquire_triad,
+            "led_test": self.handle_led_test,
+
+            "list_saved_samples": self.handle_list_saved_samples,
+            "get_saved_sample": self.handle_get_saved_sample,
+            "delete_saved_samples": self.handle_delete_saved_samples,
 
             "servo_stop": self.handle_servo_stop,
+            "get_servo_calibration": self.handle_get_servo_calibration,
+            "set_servo_calibration": self.handle_set_servo_calibration,
+            "servo_test_move": self.handle_servo_test_move,
         }
 
     # ------------------------------------------------------------------
@@ -297,7 +309,7 @@ class HardwareModule:
 
             "sensor": self.sensor.status(),
             "carousel": self.carousel.status(),
-            "slots": self.carousel.slot_list(),
+            "slots": self.carousel.slot_summary(),
             "servo": self.servo.status(),
         }
 
@@ -358,7 +370,7 @@ class HardwareModule:
 
     def handle_move_slots(self, request):
         """
-        Whole-slot movement: exactly 45 degrees per slot.
+        Whole-slot movement: exactly 90 degrees per slot.
 
         Works before synchronization, so the operator can line Slot 1 up
         with the loading hole during the sync procedure.
@@ -447,8 +459,271 @@ class HardwareModule:
             "carousel": self.carousel.status(),
         }
 
+    def handle_clear_all_slots(self, request):
+        """
+        Free every physical slot in one operation.
+
+        Physical state only. No saved Sample record is deleted, here or
+        on the PC, and the carousel is not moved.
+        """
+        cleared = self.carousel.reset_all_slots()
+
+        return {
+            "cleared_count": len(cleared),
+            "cleared": cleared,
+            "slots": self.carousel.slot_summary(),
+            "carousel": self.carousel.status(),
+            "note": "Physical slot state only. Saved Sample records were "
+                    "not touched.",
+        }
+
     def handle_servo_stop(self, request):
         result = self.carousel.stop()
+        result["carousel"] = self.carousel.status()
+
+        return result
+
+    # ------------------------------------------------------------------
+    # retained acquisitions, for the PC to pull back
+    # ------------------------------------------------------------------
+
+    def handle_list_saved_samples(self, request):
+        """
+        Sample IDs whose raw acquisition is still held in RAM.
+
+        Deliberately an index only: one record carries 18 floats plus the
+        settings block, and sending several at once is exactly the kind
+        of oversized MicroPython response that used to truncate. The PC
+        fetches each record individually with get_saved_sample.
+        """
+        retained = self.carousel.retained_samples()
+
+        return {
+            "count": len(retained),
+            "samples": [
+                {
+                    # A measurement taken without a Sample ID still has
+                    # to be listable, or it can never be exported or
+                    # deleted. Fall back to the slot it came from.
+                    "sample_id": (
+                        slot["sample_id"]
+                        or "SLOT{}".format(slot["slot_id"])
+                    ),
+                    "has_sample_id": slot["sample_id"] is not None,
+                    "slot_id": slot["slot_id"],
+                    "occupied": slot["occupied"],
+                }
+                for slot in retained
+            ],
+            "storage": "ram_only",
+            "note": "Raw acquisitions held since the last reset. The PC "
+                    "is the persistent archive.",
+        }
+
+    def handle_get_saved_sample(self, request):
+        """One retained raw acquisition, exactly as it was acquired."""
+        sample_id = request.get("sample_id")
+
+        if not sample_id:
+            raise CommandError(
+                "MISSING_FIELD",
+                "get_saved_sample requires a 'sample_id'.",
+            )
+
+        slot = self.carousel.retained_sample(sample_id)
+
+        if slot is None:
+            raise CommandError(
+                "SAMPLE_NOT_FOUND",
+                "No retained acquisition for sample {}.".format(sample_id),
+            )
+
+        return {
+            "sample_id": sample_id,
+            "slot_id": slot["slot_id"],
+            "occupied": slot["occupied"],
+            "measurement": slot["measurement"],
+        }
+
+    def handle_delete_saved_samples(self, request):
+        """
+        Delete every retained acquisition held on this device.
+
+        Deliberately narrow: it removes ONLY the stored measurements.
+        Physical slot occupancy is left exactly as it was, because soil
+        can still be sitting in a slot whose record has been exported,
+        and the PC archive is a completely separate store that this
+        command cannot reach.
+        """
+        cleared = self.carousel.clear_retained_samples()
+
+        return {
+            "deleted_count": len(cleared),
+            "deleted": cleared,
+            "remaining": len(self.carousel.retained_samples()),
+            "slots": self.carousel.slot_summary(),
+            "note": "ESP32 acquisitions only. Physical slot state and the "
+                    "PC archive were not touched.",
+        }
+
+    # ------------------------------------------------------------------
+    # servo calibration
+    # ------------------------------------------------------------------
+
+    def handle_get_servo_calibration(self, request):
+        calibration = self.servo.get_calibration()
+        calibration["slot_step_deg"] = config.SLOT_STEP_DEG
+        calibration["half_turn_deg"] = config.CAROUSEL_HALF_TURN_DEG
+
+        return calibration
+
+    def handle_set_servo_calibration(self, request):
+        """
+        Override movement calibration in RAM.
+
+        Runtime only, on purpose: nothing here rewrites config.py. The
+        operator converges on real numbers with the carousel in front of
+        them, then copies the printed block into config.py so it
+        survives a reset.
+        """
+        if request.get("reset"):
+            self.servo.reset_calibration()
+
+            result = self.servo.get_calibration()
+            result["changed"] = ["reset to config.py defaults"]
+
+            return result
+
+        values = request.get("values")
+
+        if not isinstance(values, dict):
+            raise CommandError(
+                "MISSING_FIELD",
+                "set_servo_calibration requires a 'values' object, or "
+                "'reset': true.",
+            )
+
+        try:
+            changed = self.servo.set_calibration(values)
+
+        except Exception as error:
+            raise CommandError("BAD_REQUEST", str(error))
+
+        result = self.servo.get_calibration()
+        result["changed"] = changed
+
+        return result
+
+    def handle_servo_test_move(self, request):
+        """
+        Run one calibration movement, without touching tracked position.
+
+        These are measurement-free mechanical tests: the operator judges
+        the result by eye against a physical reference. Because the
+        angle actually travelled is unknown, position tracking is
+        invalidated rather than guessed at.
+        """
+        kind = request.get("kind")
+
+        try:
+            repeat = int(request.get("repeat", 1))
+
+        except (TypeError, ValueError):
+            raise CommandError("BAD_REQUEST", "'repeat' must be a number.")
+
+        if repeat < 1 or repeat > 8:
+            raise CommandError(
+                "BAD_REQUEST", "'repeat' must be between 1 and 8."
+            )
+
+        calibration = self.servo.calibration
+
+        if kind == "neutral":
+            try:
+                hold_ms = int(request.get("hold_ms", 5000))
+
+            except (TypeError, ValueError):
+                raise CommandError(
+                    "BAD_REQUEST", "'hold_ms' must be a number."
+                )
+
+            detail = self.servo.hold_neutral(hold_ms)
+            detail["kind"] = kind
+            detail["repeat"] = 1
+            detail["position_invalidated"] = False
+
+            return detail
+
+        # The critical one: a measurement is 180 out plus 180 back, so
+        # what actually matters is the error after the PAIR, not after
+        # either half. Calibrate the pair to land back home.
+        if kind == "out_and_back":
+            self.carousel.invalidate_position("servo calibration test move")
+
+            for index in range(repeat):
+                self.servo.run_calibration_move(
+                    CW, calibration["load_to_scan_ms"]
+                )
+                self.servo.run_calibration_move(
+                    CCW, calibration["scan_to_load_ms"]
+                )
+
+            return {
+                "kind": kind,
+                "repeat": repeat,
+                "out_ms": calibration["load_to_scan_ms"],
+                "back_ms": calibration["scan_to_load_ms"],
+                "total_duration_ms": (
+                    calibration["load_to_scan_ms"]
+                    + calibration["scan_to_load_ms"]
+                ) * repeat,
+                "nominal_degrees": 0.0,
+                "neutral_us": calibration["neutral_us"],
+                "settle_ms": calibration["settle_ms"],
+                "position_invalidated": True,
+                "note": "Each cycle should end where it started. Measure "
+                        "the error at HOME, not at the scanner.",
+                "carousel": self.carousel.status(),
+            }
+
+        moves = {
+            "slot_cw": (CW, calibration["slot_cw_ms"], config.SLOT_STEP_DEG),
+            "slot_ccw": (
+                CCW, calibration["slot_ccw_ms"], config.SLOT_STEP_DEG
+            ),
+            "load_to_scan": (
+                CW, calibration["load_to_scan_ms"],
+                config.CAROUSEL_HALF_TURN_DEG,
+            ),
+            "scan_to_load": (
+                CCW, calibration["scan_to_load_ms"],
+                config.CAROUSEL_HALF_TURN_DEG,
+            ),
+        }
+
+        if kind not in moves:
+            raise CommandError(
+                "BAD_REQUEST",
+                "kind must be one of: neutral, out_and_back, {}.".format(
+                    ", ".join(sorted(moves.keys()))
+                ),
+            )
+
+        direction, duration_ms, degrees = moves[kind]
+
+        # The travelled angle is unknown until the operator measures it,
+        # so any tracked position becomes a guess.
+        self.carousel.invalidate_position("servo calibration test move")
+
+        result = self.servo.run_calibration_move(
+            direction, duration_ms, repeat
+        )
+
+        result["kind"] = kind
+        result["nominal_degrees"] = degrees * repeat
+        result["target_degrees"] = degrees
+        result["speed_deg_per_s"] = mg995.angular_speed(duration_ms, degrees)
+        result["position_invalidated"] = True
         result["carousel"] = self.carousel.status()
 
         return result
@@ -458,7 +733,7 @@ class HardwareModule:
     # ------------------------------------------------------------------
 
     def _raw_payload(self, acquisition):
-        """The RAW block every acquisition command returns."""
+        """The RAW block a single-spectrum acquisition returns."""
         return {
             "raw": acquisition["spectrum"],
             "data_ready_wait_ms": acquisition["data_ready_wait_ms"],
@@ -466,10 +741,207 @@ class HardwareModule:
             "sensor_settings": self.sensor.settings(),
         }
 
+    def _requested_repeats(self, request, default):
+        try:
+            repeats = int(request.get("repeats", default))
+
+        except (TypeError, ValueError):
+            raise CommandError("BAD_REQUEST", "'repeats' must be a number.")
+
+        if repeats < 1 or repeats > config.MAX_REPEATS:
+            raise CommandError(
+                "BAD_REQUEST",
+                "'repeats' must be between 1 and {}.".format(
+                    config.MAX_REPEATS
+                ),
+            )
+
+        return repeats
+
+    def _lamp_from(self, request):
+        """Illumination name -> lamp id. None means a dark acquisition."""
+        name = request.get("illumination", "white")
+
+        if name in (None, "dark", "none"):
+            return None
+
+        lamp = as7265x.LAMP_BY_NAME.get(name)
+
+        if lamp is None:
+            raise CommandError(
+                "BAD_REQUEST",
+                "illumination must be one of: dark, {}.".format(
+                    ", ".join(sorted(as7265x.LAMP_BY_NAME.keys()))
+                ),
+            )
+
+        return lamp
+
+    def handle_acquire_block(self, request):
+        """
+        Repeat ONE illumination and return every individual reading.
+
+        The building block the PC uses for calibration: dark, white
+        target under WHITE, under UV and under IR are all this same
+        command with a different illumination. No statistics here - the
+        readings go to the PC intact so they can be aggregated and
+        archived where the arithmetic is trustworthy.
+        """
+        lamp = self._lamp_from(request)
+        repeats = self._requested_repeats(request, config.CALIBRATION_REPEATS)
+
+        try:
+            block = self.sensor.acquire_block(lamp, repeats)
+
+        except SensorError as error:
+            raise self._sensor_error(error, {"repeats": repeats})
+
+        block["sensor_settings"] = self.sensor.settings()
+        block["bulbs_off"] = self._bulbs_off()
+
+        return block
+
+    def handle_acquire_triad(self, request):
+        """
+        WHITE, UV and IR, repeated - one complete spectral measurement,
+        without moving anything.
+
+        Used by the Sensor Test and by any caller that wants the full
+        54-feature acquisition on its own.
+        """
+        repeats = self._requested_repeats(request, config.SAMPLE_REPEATS)
+
+        try:
+            blocks = self.sensor.acquire_triad(repeats)
+
+        except SensorError as error:
+            raise self._sensor_error(error, {"repeats": repeats})
+
+        return {
+            "illuminations": blocks,
+            "repeats": repeats,
+            "sensor_settings": self.sensor.settings(),
+            "temperatures": self._temperatures(),
+            "bulbs_off": self._bulbs_off(),
+            "protocol_version": config.ACQUISITION_PROTOCOL_VERSION,
+        }
+
+    def _bulbs_off(self):
+        """Read the lamp state back rather than assuming it."""
+        try:
+            return not any(self.sensor.driver.bulb_states().values())
+
+        except Exception:
+            return None
+
+    def _temperatures(self):
+        try:
+            return self.sensor.driver.read_temperatures()
+
+        except Exception:
+            return None
+
+    def handle_led_test(self, request):
+        """
+        Exercise each lamp on its own and verify it goes off again.
+
+        Reads the enable bit back at every step, so a lamp that silently
+        refuses to switch is reported instead of assumed working.
+        """
+        try:
+            driver = self.sensor.ensure_ready()
+
+        except SensorError as error:
+            raise self._sensor_error(error)
+
+        try:
+            hold_ms = int(request.get("hold_ms", 400))
+
+        except (TypeError, ValueError):
+            raise CommandError("BAD_REQUEST", "'hold_ms' must be a number.")
+
+        hold_ms = max(0, min(hold_ms, 3000))
+
+        lamps = []
+
+        try:
+            driver.disable_all_bulbs()
+
+            for name in ("white", "uv", "ir"):
+                lamp = as7265x.LAMP_BY_NAME[name]
+                entry = {"illumination": name}
+
+                try:
+                    driver.set_bulb_current(
+                        lamp, as7265x.LAMP_CURRENTS[lamp]()
+                    )
+                    entry["current"] = driver.read_bulb_current(lamp)
+                    entry["current_ma"] = (
+                        config.SENSOR_LED_CURRENT_NAMES.get(
+                            entry["current"], "unknown"
+                        )
+                    )
+
+                    driver.enable_bulb(lamp)
+                    entry["on_readback"] = driver.bulb_enabled(lamp)
+
+                    time.sleep_ms(hold_ms)
+
+                    driver.disable_bulb(lamp)
+                    entry["off_readback"] = not driver.bulb_enabled(lamp)
+
+                    entry["ok"] = bool(
+                        entry["on_readback"] and entry["off_readback"]
+                    )
+
+                    if not entry["ok"]:
+                        entry["error"] = {
+                            "code": "LED_STATE_NOT_APPLIED",
+                            "message": "The {} lamp did not read back the "
+                                       "requested state.".format(name),
+                            "stage": "LED_TEST",
+                        }
+
+                except SensorError as error:
+                    entry["ok"] = False
+                    entry["error"] = error.as_dict()
+
+                lamps.append(entry)
+
+        finally:
+            try:
+                driver.disable_all_bulbs()
+
+            except Exception:
+                pass
+
+        states = {}
+
+        try:
+            states = driver.bulb_states()
+            all_off = not any(states.values())
+
+        except Exception:
+            all_off = None
+
+        return {
+            "test_only": True,
+            "lamps": lamps,
+            "final_states": states,
+            "all_off": all_off,
+            "ok": all(entry.get("ok") for entry in lamps) and bool(all_off),
+            "sensor_settings": self.sensor.settings(),
+        }
+
     def handle_measure_raw(self, request):
         """
-        Move the selected slot to the scanner and acquire one RAW
-        spectrum.
+        The full measurement cycle:
+
+            180 deg to the scanner -> acquire RAW -> 180 deg back home
+
+        A successful measurement leaves the sample at exactly the
+        position it started from, so the operator never has to think
+        about where the carousel ended up.
 
         The scientific pipeline ends here. Dark correction,
         normalization, database comparison and interpretation all run on
@@ -517,6 +989,10 @@ class HardwareModule:
                 },
             )
 
+        # The position the sample must be back at when this is over.
+        home_scan_slot = self.carousel.current_scan_slot
+
+        # --- out: 180 deg LOAD -> SCAN -------------------------------
         try:
             move = self.carousel.move_selected_to_scanner()
 
@@ -530,59 +1006,119 @@ class HardwareModule:
         if config.SCAN_SETTLE_TIME > 0:
             time.sleep(config.SCAN_SETTLE_TIME)
 
+        # --- acquire: WHITE, UV and IR --------------------------------
+        repeats = self._requested_repeats(request, config.SAMPLE_REPEATS)
+
         try:
-            acquisition = self.sensor.acquire_raw_spectrum()
+            blocks = self.sensor.acquire_triad(repeats)
 
         except SensorError as error:
             # The sample is at the scanner and the acquisition failed.
             # Put the mechanism back, or say honestly that it could not
             # be put back - never leave a false position on record.
-            recovery = self._recover_to_loader()
+            recovery = self._return_home(home_scan_slot)
 
             raise self._sensor_error(
                 error,
                 {
                     "moved": True,
-                    "recovery": recovery,
+                    "return_move": recovery,
                     "carousel": self.carousel.status(),
                 },
             )
 
-        slot = self.carousel.mark_occupied(slot_id, sample_id)
+        # --- back: 180 deg SCAN -> LOAD -------------------------------
+        # The spectra already exist at this point. Whatever the return
+        # movement does, it must not cost us that data, so the return is
+        # reported as its own outcome rather than raising.
+        return_move = self._return_home(home_scan_slot)
+
+        if return_move["returned"] and config.HOME_SETTLE_TIME > 0:
+            time.sleep(config.HOME_SETTLE_TIME)
+
+        acquisition = {
+            "illuminations": blocks,
+            "repeats": repeats,
+            "sensor_settings": self.sensor.settings(),
+            "temperatures": self._temperatures(),
+            "bulbs_off": self._bulbs_off(),
+            "protocol_version": config.ACQUISITION_PROTOCOL_VERSION,
+        }
+
+        measurement = {
+            "sample_id": sample_id,
+            "slot_id": slot_id,
+            "esp_uptime_ms": self._uptime_ms(),
+        }
+        measurement.update(acquisition)
+
+        slot = self.carousel.mark_occupied(slot_id, sample_id, measurement)
 
         data = {
             "slot_id": slot_id,
             "sample_id": sample_id,
             "slot": slot,
             "move": move,
+            "return_move": return_move,
+            "home_restored": return_move["returned"],
             "carousel": self.carousel.status(),
         }
-        data.update(self._raw_payload(acquisition))
+        data.update(acquisition)
 
         return data
 
-    def _recover_to_loader(self):
-        """Swing back after a failed measurement, truthfully."""
+    def _return_home(self, home_scan_slot):
+        """
+        Swing the sample back to where the measurement started.
+
+        Reports its own outcome instead of raising: by the time this runs
+        the spectrum may already exist, and a servo that failed to come
+        back must never destroy acquired science.
+        """
         try:
             self.carousel.return_selected_to_loader()
 
-            return {
-                "returned": True,
-                "message": "Carousel returned to the loading position.",
-            }
-
         except Exception as error:
             self.carousel.invalidate_position(
-                "recovery after a failed measurement failed"
+                "the return movement after a measurement failed"
             )
 
             return {
                 "returned": False,
-                "message": "Carousel could NOT be returned; position "
-                           "tracking has been invalidated.",
+                "position_valid": False,
+                "message": "The carousel could NOT be returned to the "
+                           "loading position. Position tracking has been "
+                           "invalidated - re-synchronize before moving "
+                           "again.",
                 "exception_type": type(error).__name__,
                 "exception_message": str(error),
             }
+
+        # The tracked position must be back where it started, or the
+        # software and the mechanism disagree and nothing downstream can
+        # be trusted.
+        if self.carousel.current_scan_slot != home_scan_slot:
+            self.carousel.invalidate_position(
+                "the carousel did not return to its starting position"
+            )
+
+            return {
+                "returned": False,
+                "position_valid": False,
+                "message": "The return movement completed but the tracked "
+                           "position does not match the starting position. "
+                           "Position tracking has been invalidated - "
+                           "re-synchronize before moving again.",
+                "expected_scan_slot": home_scan_slot,
+            }
+
+        return {
+            "returned": True,
+            "position_valid": True,
+            "message": "The sample is back at the loading position.",
+            "scan_slot": self.carousel.current_scan_slot,
+            "load_slot": self.carousel.get_load_slot(),
+        }
 
     def handle_sensor_test_raw(self, request):
         """
@@ -670,10 +1206,22 @@ class HardwareModule:
         # -- configuration, read back from the registers ---------------
         try:
             settings = driver.read_configuration()
-            settings["led_current"] = driver.read_led_current()
+
+            currents = driver.read_bulb_currents()
+            settings["led_current"] = currents["white"]
             settings["led_current_ma"] = (
                 config.SENSOR_LED_CURRENT_NAMES.get(
-                    settings["led_current"], "unknown"
+                    currents["white"], "unknown"
+                )
+            )
+            settings["led_currents"] = currents
+            settings["led_currents_ma"] = {
+                name: config.SENSOR_LED_CURRENT_NAMES.get(value, "unknown")
+                for name, value in currents.items()
+            }
+            settings["measurement_mode_name"] = (
+                config.SENSOR_MEASUREMENT_MODE_NAMES.get(
+                    settings["measurement_mode"], "unknown"
                 )
             )
 
@@ -714,16 +1262,54 @@ class HardwareModule:
 
             return result
 
-        # -- illumination ----------------------------------------------
+        # -- illumination: all three lamps, each read back -------------
         try:
-            driver.set_led(True)
-            time.sleep_ms(100)
-            driver.set_led(False)
+            driver.disable_all_bulbs()
+            lamp_report = {}
 
-            record("ILLUMINATION", True, detail="white LED on -> off")
+            for name in ("white", "uv", "ir"):
+                lamp = as7265x.LAMP_BY_NAME[name]
+
+                driver.set_bulb_current(lamp, as7265x.LAMP_CURRENTS[lamp]())
+                driver.enable_bulb(lamp)
+                on = driver.bulb_enabled(lamp)
+
+                time.sleep_ms(80)
+
+                driver.disable_bulb(lamp)
+                off = not driver.bulb_enabled(lamp)
+
+                lamp_report[name] = {"on": on, "off": off}
+
+            driver.disable_all_bulbs()
+
+            states = driver.bulb_states()
+            all_off = not any(states.values())
+            lamps_ok = all(
+                entry["on"] and entry["off"]
+                for entry in lamp_report.values()
+            )
+
+            record(
+                "ILLUMINATION", lamps_ok and all_off,
+                detail={"lamps": lamp_report, "all_off": all_off},
+                error=None if (lamps_ok and all_off) else {
+                    "code": "LED_STATE_NOT_APPLIED",
+                    "message": "One or more lamps did not read back the "
+                               "requested state.",
+                    "stage": "ILLUMINATION",
+                    "details": {"lamps": lamp_report, "final": states},
+                },
+            )
 
         except SensorError as error:
             record("ILLUMINATION", False, error=error.as_dict())
+
+            try:
+                driver.disable_all_bulbs()
+
+            except Exception:
+                pass
 
             result["ok"] = False
             result["failed_stage"] = error.stage
@@ -731,9 +1317,11 @@ class HardwareModule:
 
             return result
 
-        # -- one new 18-channel acquisition ----------------------------
+        # -- WHITE, UV and IR acquisition ------------------------------
+        repeats = self._requested_repeats(request, config.SAMPLE_REPEATS)
+
         try:
-            acquisition = self.sensor.acquire_raw_spectrum()
+            blocks = self.sensor.acquire_triad(repeats)
 
         except SensorError as error:
             record("ACQUISITION", False, error=error.as_dict())
@@ -746,12 +1334,15 @@ class HardwareModule:
 
         record(
             "ACQUISITION", True,
-            detail="18/18 channels, DATA_READY after {} ms".format(
-                acquisition["data_ready_wait_ms"]
-            ),
+            detail="3 illuminations x {} repeats, 18/18 channels "
+                   "each".format(repeats),
         )
 
-        result.update(self._raw_payload(acquisition))
+        result["illuminations"] = blocks
+        result["repeats"] = repeats
+        result["temperatures"] = self._temperatures()
+        result["bulbs_off"] = self._bulbs_off()
+        result["protocol_version"] = config.ACQUISITION_PROTOCOL_VERSION
         result["ok"] = True
         result["failed_stage"] = None
         result["sensor"] = self.sensor.status()

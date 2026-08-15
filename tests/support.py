@@ -135,10 +135,27 @@ RX_VALID = 0x01
 
 V_CONFIG = 0x04
 V_INTEGRATION_TIME = 0x05
+V_DEVICE_TEMP = 0x06
 V_LED_CONFIG = 0x07
 V_DEV_SELECT = 0x4F
 
 CAL_BASES = (0x14, 0x18, 0x1C, 0x20, 0x24, 0x28)
+
+# Device ids, as the driver uses them.
+DEV_NIR, DEV_VISIBLE, DEV_UV = 0, 1, 2
+
+# Channel letter -> (calibrated-value register, internal device). One
+# register base serves three channels, one per device, which is why the
+# 18 channels come out of only six addresses.
+CHANNEL_ADDRESSES = {}
+
+for _index, _base in enumerate(CAL_BASES):
+    for _letters, _device in (
+        ("ABCDEF", DEV_UV),
+        ("GHIJKL", DEV_VISIBLE),
+        ("RSTUVW", DEV_NIR),
+    ):
+        CHANNEL_ADDRESSES[_letters[_index]] = (_base, _device)
 
 
 class FakeAS7265X:
@@ -174,9 +191,31 @@ class FakeAS7265X:
         self.vregs = {
             V_CONFIG: 0b00010000,      # power-on-ish: gain 1, mode 0
             V_INTEGRATION_TIME: 20,    # power-on-ish default
-            V_LED_CONFIG: 0x00,
             V_DEV_SELECT: 0x30 if slaves_present else 0x00,
+            V_DEVICE_TEMP: 27,
         }
+
+        # LED_CONFIG is per internal device: each one drives its own
+        # lamp, and DEV_SELECT_CONTROL chooses whose register is visible.
+        self.led_config = {0: 0x00, 1: 0x00, 2: 0x00}
+
+        # Lamp on/off history, so a test can assert that a lamp was
+        # actually used and actually switched off again.
+        self.lamp_on_counts = {0: 0, 1: 0, 2: 0}
+
+        # How much of the stored spectrum each illumination returns.
+        # A real detector sees almost nothing in the dark and different
+        # amounts under each lamp; without that, White minus Dark is
+        # zero and a calibration can never validate.
+        self.illumination_gain = {
+            "dark": 0.004,     # detector floor, no lamp
+            "white": 1.0,      # device 0
+            "ir": 0.62,        # device 1
+            "uv": 0.38,        # device 2
+        }
+
+        self._device_to_lamp = {0: "white", 1: "ir", 2: "uv"}
+        self._active_gain = self.illumination_gain["dark"]
 
         for base in CAL_BASES:
             for device in range(3):
@@ -201,6 +240,18 @@ class FakeAS7265X:
         for index, base in enumerate(CAL_BASES):
             for device in range(3):
                 self._store_float(base, device, function(index, device))
+
+    def fill_from_channels(self, values):
+        """
+        Load a channel-letter spectrum, e.g. {"A": 12.3, ..., "W": 4.5}.
+
+        Lets a test build a physically plausible sample from the real
+        white reference instead of inventing counts that would produce
+        impossible reflectance and be rejected by quality control.
+        """
+        for channel, (base, device) in CHANNEL_ADDRESSES.items():
+            if channel in values:
+                self._store_float(base, device, float(values[channel]))
 
     # -- bus ----------------------------------------------------------
 
@@ -270,11 +321,27 @@ class FakeAS7265X:
         for base in CAL_BASES:
             if base <= register < base + 4:
                 self.channel_reads += 1
-                packed = self.vregs[self._key(base, self.selected_device)]
+
+                value = struct.unpack(
+                    ">f", self.vregs[self._key(base, self.selected_device)]
+                )[0]
+
+                packed = struct.pack(">f", value * self._active_gain)
 
                 return packed[register - base]
 
+        if register == V_LED_CONFIG:
+            return self.led_config[self.selected_device]
+
         return self.vregs.get(register, 0)
+
+    def _lamp_gain(self):
+        """Gain of whichever lamp is on when a conversion is triggered."""
+        for device, state in self.led_config.items():
+            if state & (1 << 3):
+                return self.illumination_gain[self._device_to_lamp[device]]
+
+        return self.illumination_gain["dark"]
 
     def _write_virtual(self, register, value):
         if register == V_DEV_SELECT:
@@ -293,19 +360,40 @@ class FakeAS7265X:
             return
 
         if register == V_LED_CONFIG:
-            was_on = self.led_on
-            self.led_on = bool(value & (1 << 3))
+            device = self.selected_device
+            was_on = bool(self.led_config[device] & (1 << 3))
 
-            if self.led_on and not was_on:
-                self.led_on_count += 1
+            self.led_config[device] = value & 0xFF
+
+            now_on = bool(value & (1 << 3))
+
+            if now_on and not was_on:
+                self.lamp_on_counts[device] += 1
+
+            # Historical single-lamp counters, kept for older checks.
+            self.led_on = any(
+                bool(state & (1 << 3)) for state in self.led_config.values()
+            )
+            self.led_on_count = sum(self.lamp_on_counts.values())
+
+            return
 
         if register == V_CONFIG:
+            # Writing CONFIG is what arms a one-shot conversion, so this
+            # is the moment the illumination is sampled.
+            self._active_gain = self._lamp_gain()
+
             if self.data_ready_supported:
                 value |= 1 << 1
             else:
                 value &= ~(1 << 1)
 
         self.vregs[register] = value & 0xFF
+
+    def any_lamp_on(self):
+        return any(
+            bool(state & (1 << 3)) for state in self.led_config.values()
+        )
 
 
 # ----------------------------------------------------------------------

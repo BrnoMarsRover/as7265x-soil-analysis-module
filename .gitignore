@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # Altium Designer
 # ============================================================
 
@@ -90,8 +90,8 @@ Desktop.ini
 # Measured competition samples belong to a run, not to the source tree.
 # They live on the PC and are backed up with the procedure in
 # firmware/OPERATIONS.md.
-firmware/PC/data/samples.json
-firmware/PC/data/samples/
+firmware/BD/samples.json
+firmware/BD/samples_backup_*.json
 
 # ============================================================
 # Local secrets and machine-specific settings

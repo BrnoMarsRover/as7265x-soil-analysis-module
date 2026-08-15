@@ -74,9 +74,12 @@ class References:
     measured hours apart comparable.
     """
 
+    kind = "LEGACY"
+    protected = True
+
     def __init__(self, path=None):
         self.path = path or config.REFERENCES_FILE
-        self.calibration_id = config.CALIBRATION_ID
+        self.calibration_id = config.LEGACY_CALIBRATION_ID
 
         data = _load_json(self.path, "references.json")
 
@@ -130,13 +133,19 @@ class References:
 
     def status(self):
         return {
+            "kind": self.kind,
             "file": str(self.path),
             "calibration_id": self.calibration_id,
+            "protected": True,
+            "database": str(config.DATABASE_FILE),
+            "illuminations": ["white"],
             "white_channels": len(CHANNELS) - len(self.white_missing),
             "dark_channels": len(CHANNELS) - len(self.dark_missing),
             "channels_required": len(CHANNELS),
             "zero_denominator_channels": self.zero_denominator_channels(),
             "read_only": True,
+            "note": "Immutable. The only calibration ever used to compare "
+                    "a measurement against database.json.",
         }
 
 
@@ -171,19 +180,77 @@ def cosine_similarity_percent(measured, reference):
     return max(0.0, min(100.0, similarity * 100.0))
 
 
+def _material_spectrum(entry):
+    """
+    The comparable spectrum of one library entry.
+
+    Two shapes are accepted. The legacy one, which is what
+    database.json holds today:
+
+        "Material": {"A": 0.1, ..., "W": 0.2}
+
+    and a richer one that a future remeasurement could produce without
+    breaking anything:
+
+        "Material": {"mean": {...}, "std": {...}, "n": 10,
+                     "illumination": "white", "calibration_id": "..."}
+
+    Only the mean is compared; the rest is carried for provenance.
+    Nothing is fabricated - an entry that has no usable spectrum is
+    reported as incomplete rather than filled in.
+    """
+    if not isinstance(entry, dict):
+        return None, {}
+
+    if "mean" in entry and isinstance(entry["mean"], dict):
+        metadata = {
+            key: entry[key] for key in
+            ("std", "n", "illumination", "calibration_id")
+            if key in entry
+        }
+
+        return entry["mean"], metadata
+
+    return entry, {}
+
+
 class MaterialDatabase:
     """Read-only library of reference material reflectance spectra."""
 
     def __init__(self, path=None):
         self.path = path or config.DATABASE_FILE
 
-        self.materials = _load_json(self.path, "database.json")
+        raw = _load_json(self.path, "database.json")
 
-        if not self.materials:
+        if not raw:
             raise DatabaseError(
                 "DATABASE_EMPTY",
                 "{} contains no reference materials.".format(self.path),
             )
+
+        self.materials = {}
+        self.material_metadata = {}
+
+        for name, entry in raw.items():
+            spectrum, metadata = _material_spectrum(entry)
+
+            if spectrum is None:
+                continue
+
+            self.materials[name] = spectrum
+            self.material_metadata[name] = metadata
+
+        if not self.materials:
+            raise DatabaseError(
+                "DATABASE_EMPTY",
+                "{} holds no usable reference spectra.".format(self.path),
+            )
+
+        # The library was normalized against ONE White/Dark pair, and
+        # comparing it against anything else changes what every stored
+        # number means. Recorded here so a result can always say which
+        # calibration its comparison was valid under.
+        self.calibration_id = config.LEGACY_CALIBRATION_ID
 
     def count(self):
         return len(self.materials)
@@ -237,6 +304,11 @@ class MaterialDatabase:
         return {
             "file": str(self.path),
             "material_count": self.count(),
-            "metric": "cosine_similarity",
+            "metrics": ["cosine_similarity", "rmse", "pearson_r"],
+            "calibration_id": self.calibration_id,
+            "illumination": "white",
             "read_only": True,
+            "note": "18 white-illumination reference features per "
+                    "material. UV and IR are recorded on new samples but "
+                    "have no reference data to compare against yet.",
         }

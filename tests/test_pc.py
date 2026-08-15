@@ -15,9 +15,11 @@ from pathlib import Path
 import support
 from support import Checks
 
+support.add_path("BD")
 support.add_path("PC")
 
 import esp32_link                              # noqa: E402
+import sample_analysis                         # noqa: E402
 import sample_store                            # noqa: E402
 from sample_store import (                     # noqa: E402
     STATE_EMPTY,
@@ -126,7 +128,7 @@ def main_tests():
 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        store = SampleStore(root / "samples.json", root / "samples")
+        store = SampleStore(root / "samples.json")
 
         checks.ok(store.ready, "a fresh store is ready")
         checks.equal(store.count(), 0, "and empty")
@@ -147,10 +149,10 @@ def main_tests():
             record["metadata"]["hypothesis"] is None,
             "an unanswered field stays null, never invented",
         )
-        checks.equal(store.count(), 1, "the index has one entry")
+        checks.equal(store.count(), 1, "the archive has one record")
         checks.ok(
-            (root / "samples" / "S001.json").exists(),
-            "the record lives in its own file",
+            (root / "samples.json").exists(),
+            "written to the single archive file",
         )
 
         store.set_state("S001", STATE_LOADED, "loaded_at", "2026-08-11T10:05")
@@ -231,12 +233,8 @@ def main_tests():
         # Rename and delete.
         store.rename("S001", "S001B")
 
-        checks.ok(store.has_sample("S001B"), "renamed sample is indexed")
+        checks.ok(store.has_sample("S001B"), "renamed sample is archived")
         checks.ok(not store.has_sample("S001"), "the old ID is gone")
-        checks.ok(
-            not (root / "samples" / "S001.json").exists(),
-            "the old record file is removed",
-        )
         checks.equal(
             store.get_sample("S001B")["analysis"]["best_match"], "Kaolin",
             "every scientific value survived the rename",
@@ -252,10 +250,9 @@ def main_tests():
 
         store.delete("S001B")
 
-        checks.equal(store.count(), 1, "delete removes the index entry")
+        checks.equal(store.count(), 1, "delete removes the record")
         checks.ok(
-            not (root / "samples" / "S001B.json").exists(),
-            "and the record file",
+            not store.has_sample("S001B"), "and it can no longer be found"
         )
         checks.raises(
             StorageError,
@@ -271,7 +268,7 @@ def main_tests():
         index = root / "samples.json"
         index.write_text("{ this is not json", encoding="utf-8")
 
-        store = SampleStore(index, root / "samples")
+        store = SampleStore(index)
 
         checks.ok(not store.ready, "a corrupt index is not ready")
         checks.ok(store.error is not None, "and says so")
@@ -291,7 +288,7 @@ def main_tests():
 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        store = SampleStore(root / "samples.json", root / "samples")
+        store = SampleStore(root / "samples.json")
 
         store.create("S001", 1, "now")
 
@@ -301,29 +298,196 @@ def main_tests():
 
         payload = json.loads((root / "samples.json").read_text("utf-8"))
 
-        checks.equal(payload["version"], 1, "the index records its version")
+        checks.equal(payload["version"], 2, "the archive records its version")
         checks.equal(len(payload["samples"]), 1, "and one sample")
 
         # A second store sees what the first wrote.
         checks.equal(
-            SampleStore(root / "samples.json", root / "samples").count(), 1,
+            SampleStore(root / "samples.json").count(), 1,
             "the archive survives a restart of the program",
         )
 
     # ==================================================================
-    checks.section("5. the default archive path is inside PC/")
+    checks.section("5. the archive lives in BD, beside the science data")
 
     checks.equal(
-        sample_store.DATA_DIR.parent.name, "PC",
-        "sample data lives under firmware/PC",
+        sample_store.ARCHIVE_PATH.parent.name, "BD",
+        "the Sample archive sits in firmware/BD",
     )
     checks.equal(
-        sample_store.INDEX_PATH.name, "samples.json", "index filename"
+        sample_store.ARCHIVE_PATH.name, "samples.json", "archive filename"
     )
     checks.ok(
-        sample_store.DATA_DIR.is_absolute(),
+        sample_store.ARCHIVE_PATH.is_absolute(),
         "the path is absolute, so the working directory does not matter",
     )
+    checks.equal(
+        sorted(
+            path.name for path in sample_store.BD_DIR.glob("*.json")
+        ),
+        ["database.json", "references.json", "samples.json"],
+        "all three science data files sit together",
+    ) if sample_store.ARCHIVE_PATH.exists() else checks.ok(
+        (sample_store.BD_DIR / "database.json").exists(),
+        "the reference data it sits beside is there",
+    )
+
+    # ==================================================================
+    checks.section("5b. full scientific records survive a round trip")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        store = SampleStore(root / "samples.json")
+
+        channels = sample_analysis.CHANNELS
+
+        full = {
+            "sample_id": "S010",
+            "slot_id": 2,
+            "state": STATE_MEASURED,
+            "measured": True,
+            "timestamps": {
+                "created_at": "2026-08-14T10:00:00+00:00",
+                "loaded_at": "2026-08-14T10:02:00+00:00",
+                "measured_at": "2026-08-14T10:05:00+00:00",
+            },
+            "metadata": {"task": "crater floor", "note": "dry"},
+            "measurement": {
+                "wavelengths": sample_analysis.channel_wavelengths(),
+                "raw": {c: 100.0 + i for i, c in enumerate(channels)},
+                "dark_corrected": {
+                    c: 99.0 + i for i, c in enumerate(channels)
+                },
+                "normalized": {
+                    c: 0.4 + i / 100.0 for i, c in enumerate(channels)
+                },
+                "sensor_settings": {
+                    "integration_cycles": 100, "gain": 2, "gain_x": "16x",
+                    "measurement_mode": 2, "led_current": 1,
+                },
+            },
+            "calibration": {
+                "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+                "dark_reference": {c: 1.0 for c in channels},
+                "white_reference": {c: 250.0 for c in channels},
+            },
+            "reference_matches": [
+                {"rank": n + 1, "material": "M{}".format(n),
+                 "similarity_percent": 90.0 - n}
+                for n in range(22)
+            ],
+            "analysis": {
+                "best_match": "M0", "best_similarity": 90.0,
+                "second_match": "M1", "second_similarity": 89.0,
+                "score_difference": 1.0, "status": "AMBIGUOUS",
+                "automatic_conclusion": "spectral similarity only",
+            },
+            "analysis_status": "OK",
+        }
+
+        store.save(full)
+
+        # Reload from disk, exactly as a restart would.
+        reloaded = SampleStore(root / "samples.json").get_sample("S010")
+
+        measurement = reloaded["measurement"]
+        calibration = reloaded["calibration"]
+
+        for name, block in (
+            ("raw", measurement["raw"]),
+            ("dark_corrected", measurement["dark_corrected"]),
+            ("normalized", measurement["normalized"]),
+            ("wavelengths", measurement["wavelengths"]),
+            ("dark_reference", calibration["dark_reference"]),
+            ("white_reference", calibration["white_reference"]),
+        ):
+            checks.equal(
+                sorted(block.keys()), sorted(channels),
+                "{} survives with all 18 channels".format(name),
+            )
+
+        checks.equal(
+            len(reloaded["reference_matches"]), 22,
+            "every material comparison survives",
+        )
+        checks.equal(
+            reloaded["reference_matches"][0]["material"], "M0",
+            "ranked best first",
+        )
+        checks.equal(
+            reloaded["analysis"]["second_match"], "M1",
+            "the second match survives",
+        )
+        checks.close(
+            reloaded["analysis"]["score_difference"], 1.0,
+            "and the margin",
+        )
+        checks.equal(
+            reloaded["analysis"]["automatic_conclusion"],
+            "spectral similarity only", "and the conclusion",
+        )
+        checks.equal(
+            reloaded["measurement"]["sensor_settings"]["gain_x"], "16x",
+            "sensor settings survive",
+        )
+        checks.equal(
+            reloaded["metadata"]["task"], "crater floor", "metadata survives"
+        )
+        checks.equal(
+            reloaded["timestamps"]["loaded_at"], "2026-08-14T10:02:00+00:00",
+            "timestamps survive",
+        )
+        checks.equal(reloaded, full, "nothing at all was dropped")
+
+        # The compact table still gets its columns.
+        summary = store.find_summary("S010")
+
+        checks.equal(summary["best_match"], "M0", "the table row is derived")
+        checks.close(summary["best_similarity"], 90.0, "with its score")
+
+    # ==================================================================
+    checks.section("5c. old short records stay readable")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        archive = root / "samples.json"
+
+        archive.write_text(json.dumps({
+            "version": 1,
+            "samples": [{
+                "sample_id": "s1",
+                "slot_id": 1,
+                "state": "MEASURED",
+                "measured": True,
+                "created_at": "2026-08-14T13:18:24+00:00",
+                "measured_at": "2026-08-14T13:18:49+00:00",
+                "best_match": "Magnesium Carbonate",
+                "best_similarity": 94.95,
+                "status": "AMBIGUOUS",
+                "analysis_status": "OK",
+            }],
+        }), encoding="utf-8")
+
+        store = SampleStore(archive)
+
+        checks.ok(store.ready, "an old short archive loads")
+        checks.equal(store.count(), 1, "with its record")
+
+        summary = store.summaries()[0]
+
+        checks.equal(
+            summary["best_match"], "Magnesium Carbonate",
+            "the flat best_match is still found",
+        )
+        checks.close(
+            summary["best_similarity"], 94.95, "and its score"
+        )
+        checks.equal(summary["state"], "MEASURED", "and the state")
+        checks.equal(
+            summary["created_at"], "2026-08-14T13:18:24+00:00",
+            "and the flat timestamp",
+        )
+        checks.ok(summary["measured"], "and the measured flag")
 
     # ==================================================================
     checks.section("6. protocol: a good round trip")
@@ -468,14 +632,23 @@ def main_tests():
     link.clear_slot(2)
     link.measure_raw(2, "S001")
     link.sensor_test_raw()
+    link.list_saved_samples()
+    link.get_saved_sample("S001")
+    link.delete_saved_samples()
+    link.clear_all_slots()
+    link.get_servo_calibration()
+    link.set_servo_calibration({"neutral_us": 1500})
+    link.servo_test_move("slot_cw")
     link.servo_stop()
 
     checks.equal(
         sorted(set(seen)),
         sorted([
-            "clear_slot", "fine_adjust", "get_status", "measure_raw",
-            "move_slots", "ping", "select_slot", "sensor_test_raw",
-            "servo_stop", "sync_position",
+            "clear_all_slots", "clear_slot", "delete_saved_samples",
+            "fine_adjust", "get_saved_sample", "get_servo_calibration",
+            "get_status", "list_saved_samples", "measure_raw", "move_slots",
+            "ping", "select_slot", "sensor_test_raw", "servo_stop",
+            "servo_test_move", "set_servo_calibration", "sync_position",
         ]),
         "the client speaks exactly the hardware protocol",
     )
@@ -505,6 +678,45 @@ def main_tests():
     checks.ok(
         hasattr(app, "Mission") and hasattr(app.Mission, "analyse_raw"),
         "the mission controller owns the analysis call",
+    )
+    checks.equal(app.SLOT_COUNT, 4, "the UI knows about four slots")
+    checks.ok(
+        hasattr(app, "sync_esp32_samples"),
+        "the ESP32 -> PC sync exists",
+    )
+    checks.equal(
+        [key for key, _l, _d, _h in app.TOOLS_MENU][-1], "7",
+        "and is the last Tools entry",
+    )
+    checks.ok(
+        "Sync ESP32 Samples to PC" in [
+            label for _k, label, _d, _h in app.TOOLS_MENU
+        ],
+        "under its documented name",
+    )
+    checks.ok(
+        hasattr(app, "clear_all_slots"), "Clear ALL physical slots exists"
+    )
+    checks.ok(
+        hasattr(app, "delete_esp32_samples"),
+        "Delete ALL ESP32 Samples exists",
+    )
+    checks.ok(
+        hasattr(app, "menu_servo_calibration"),
+        "the servo calibration screen exists",
+    )
+
+    # Spectra that differ must not be treated as the same measurement.
+    same = {c: 1.0 for c in sample_analysis.CHANNELS}
+    other = dict(same)
+    other["K"] = 2.0
+
+    checks.ok(app._same_spectrum(same, dict(same)), "identical spectra match")
+    checks.ok(
+        not app._same_spectrum(same, other), "a differing channel does not"
+    )
+    checks.ok(
+        not app._same_spectrum(same, {}), "an absent spectrum never matches"
     )
 
     source = (support.FIRMWARE / "PC").glob("*.py")

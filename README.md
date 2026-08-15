@@ -17,7 +17,7 @@
 
 The **AS7265x Soil Analysis Module** is a rover-mounted scientific payload designed for multispectral analysis of soils, minerals, salts, clays, and organic reference materials.
 
-The system uses the **AS7265x 18-channel VIS-NIR spectral sensor** to measure reflected light between approximately **410 nm and 940 nm**. An ESP32 controls the sensor, the eight-slot sample carousel, illumination, and the calibration pipeline.
+The system uses the **AS7265x 18-channel VIS-NIR spectral sensor** to measure reflected light between approximately **410 nm and 940 nm**. An ESP32 controls the sensor, the four-slot sample carousel, illumination, and the calibration pipeline.
 
 The ESP32 is a **passive command-controlled instrument**. It performs no automatic movement and no automatic measurement: the main computer is the mission controller and issues one JSON command at a time over the USB serial link. The ESP32 moves the carousel, reads the sensor and returns a raw spectrum; all scientific processing and all persistent sample data live on the main computer.
 
@@ -61,14 +61,14 @@ The engineering work includes:
 The module is command-driven. Nothing moves and nothing is measured until the rover main computer asks for it.
 
 1. The operator aligns physical Slot 1 with the loading hole and confirms it (`sync_position`).
-2. `select_slot` brings the next slot to the loading hole, normally one 45 deg clockwise step.
+2. `select_slot` brings the next slot to the loading hole, normally one 90 deg clockwise step.
 3. The PC creates a persistent Sample record with an ID and science metadata.
 4. The external rover arm deposits soil; the operator confirms that it happened.
-5. `measure_raw` rotates the same physical slot to the scanner, settles, and acquires one **raw** 18-channel spectrum.
-6. The PC corrects that spectrum with the **fixed** stored dark and white references.
-7. The normalized spectrum is compared against **every** material in the reference database.
-8. An automatic, deliberately conservative interpretation is generated.
-9. The complete scientific record is written to the PC archive — the same record opened in step 3.
+5. `measure_raw` rotates the slot to the scanner and acquires **raw** 18-channel spectra under WHITE, UV and IR illumination — 54 spectral features — then swings it back.
+6. The PC normalizes the result **twice**: against the active full calibration for the scientific record, and against the legacy calibration for comparison with the material library.
+7. Measurement quality control runs before anything is classified.
+8. The WHITE reflectance is compared against **every** material on three metrics: cosine similarity, RMSE and Pearson correlation, combined by rank.
+9. An automatic, deliberately conservative interpretation is generated and written to the same record opened in step 3.
 
 ```mermaid
 flowchart LR
@@ -80,8 +80,9 @@ flowchart LR
     PC[PC mission controller]
     BD[BD science layer]
     DATABASE[(database.json<br/>reference materials)]
-    REFS[(references.json<br/>fixed white + dark)]
-    STORE[(PC data/samples<br/>measured samples)]
+    REFS[(references.json<br/>legacy white + dark)]
+    CAL[(calibrations/<br/>active full calibration)]
+    STORE[(samples.json<br/>measured samples)]
 
     ESP -->|GPIO| LIGHT
     LIGHT --> SAMPLE
@@ -92,6 +93,7 @@ flowchart LR
     PC -->|raw| BD
     DATABASE --> BD
     REFS --> BD
+    CAL --> BD
     BD -->|normalized + matches| PC
     PC --> STORE
 ```
@@ -104,25 +106,30 @@ The sample mechanism is a full 360° carousel driven by an **MG995 modified for 
 
 | Property | Value |
 |---|---|
-| Physical sample slots | 8 |
-| Angle between neighbouring slot centres | 360° / 8 = **45°** |
-| Scanning position ↔ loading position | **180°**, i.e. **4 slots** apart |
+| Physical sample slots | 4 |
+| Angle between neighbouring slot centres | 360° / 4 = **90°** |
+| Scanning position ↔ loading position | **180°**, i.e. **2 slots** apart |
 
 Because the two fixed positions are exactly opposite, the slot at the loader follows directly from the slot at the scanner:
 
 ```text
-load_slot = ((scan_slot - 1 + 4) % 8) + 1
+load_slot = ((scan_slot - 1 + 2) % 4) + 1
 ```
 
-The relationship is its own inverse and holds in both directions: putting Slot 3 at the loader necessarily puts Slot 7 at the scanner, and Slot 1 at the loader means Slot 5 at the scanner.
+The relationship is its own inverse and holds in both directions:
 
-Slots are numbered **1–8 clockwise**, and the origin is established by the operator: physical Slot 1 is aligned with the **soil loading hole** and declared as Slot 1.
+```text
+Loader Slot 1  ↔  Scanner Slot 3
+Loader Slot 2  ↔  Scanner Slot 4
+```
+
+Slots are numbered **1–4 clockwise**, and the origin is established by the operator: physical Slot 1 is aligned with the **soil loading hole** and declared as Slot 1.
 
 ```text
 Slot 1 = loading position (the calibrated origin)
-Slot 2 = 45°  clockwise from Slot 1
-...
-Slot 8 = 315° clockwise from Slot 1
+Slot 2 = 90°  clockwise from Slot 1
+Slot 3 = 180° clockwise from Slot 1  (the scanner position)
+Slot 4 = 270° clockwise from Slot 1
 ```
 
 ### Software position tracking
@@ -141,7 +148,7 @@ Synchronization is the **first** operation after boot. The operator moves the ca
 {"cmd": "sync_position", "load_slot": 1}
 ```
 
-`sync_position` never moves anything — it records where the operator has already put the mechanism. Because the scanner is exactly 180° opposite, declaring Slot 1 at the loader also declares **Slot 5 at the scanner**.
+`sync_position` never moves anything — it records where the operator has already put the mechanism. Because the scanner is exactly 180° opposite, declaring Slot 1 at the loader also declares **Slot 3 at the scanner**.
 
 From then on the firmware maintains position by counting calibrated slot transitions. If a movement fails, the tracked position is **discarded** rather than guessed, and the operator must re-synchronize.
 
@@ -155,19 +162,19 @@ These are deliberately kept apart:
 | `current_scan_slot` | Which slot is physically under the scanner |
 | `selected_slot` | Which slot the operator is working with |
 
-While soil is deposited the selected slot sits at the loader. After a measurement the carousel has swung 180°, so the **same** selected slot now sits at the scanner instead.
+While soil is deposited the selected slot sits at the loader. A measurement swings it out to the scanner and back again, so once the operation completes the selected slot is at the loader once more.
 
 ### Choosing a slot
 
-`select_slot` brings the chosen slot to the loading hole. Sequential progression is always one clockwise step, because any move of four slots or fewer resolves in the forward (clockwise) direction:
+`select_slot` brings the chosen slot to the loading hole. Sequential progression is always one clockwise step, because any move of half the slot count or fewer resolves in the forward (clockwise) direction:
 
 ```text
 Slot 1 -> Slot 2   = one clockwise slot transition
 Slot 2 -> Slot 3   = one clockwise slot transition
-Slot 8 -> Slot 1   = one clockwise slot transition
+Slot 4 -> Slot 1   = one clockwise slot transition
 ```
 
-Each transition spans 45° of geometry but is *commanded* with the calibrated ~40° equivalent — see below.
+Each transition spans 90° of geometry, commanded with its own calibrated runtime — see below.
 
 Selecting a distant slot still takes the shortest path.
 
@@ -177,25 +184,25 @@ The single most important distinction in the carousel code:
 
 | | |
 |---|---|
-| **Geometry** | what the carousel *is* — 45° slot spacing, 180° loader↔scanner |
+| **Geometry** | what the carousel *is* — 90° slot spacing, 180° loader↔scanner |
 | **Calibration** | what the servo must be *commanded* to do |
 
-These are not the same, and one is never derived from the other. A continuous-rotation servo has acceleration, backlash and load-dependent speed, so the command that actually lands a slot correctly is not "45° worth of runtime". Hardware testing showed a full 45° command **overshoots** the next slot; the effective command is closer to **40°**.
+These are not the same, and one is never derived from the other. A continuous-rotation servo has acceleration, backlash and load-dependent speed, so the command that actually lands a slot correctly is not simply "90° worth of runtime", and it differs between the two directions.
 
 Each movement type therefore has its own independent calibration:
 
 | Movement | Constants | Notes |
 |---|---|---|
-| Adjacent slot CW (N → N+1) | `NEXT_SLOT_CW_MS` | Effective ≈ **40°** |
-| Adjacent slot CCW (N → N−1) | `NEXT_SLOT_CCW_MS` | Effective ≈ **45°** |
-| Half turn (loader ↔ scanner) | `LOAD_TO_SCAN_CW_MS` / `SCAN_TO_LOAD_CCW_MS` | **Independent** — never 4 × adjacent |
+| Adjacent slot CW (N → N+1) | `NEXT_SLOT_CW_MS` | 90° — **not measured**, recalibrate |
+| Adjacent slot CCW (N → N−1) | `NEXT_SLOT_CCW_MS` | 90° — **not measured**, recalibrate |
+| Half turn (loader ↔ scanner) | `LOAD_TO_SCAN_CW_MS` / `SCAN_TO_LOAD_CCW_MS` | **Independent** — never 2 × adjacent |
 | Fine alignment | `CW_MS_PER_DEGREE` / `CCW_MS_PER_DEGREE` | Small corrections only |
 
 > [!IMPORTANT]
-> **The two directions are not symmetric.** Measured on the real mechanism: a ~40° command lands the next slot correctly going clockwise, but the *same* command stops about 5° short coming back counter-clockwise, which needs ~45°. Backlash and servo asymmetry both contribute. Never share one calibration between directions — including for fine alignment.
+> **The two directions are not symmetric.** Backlash and servo asymmetry mean the same command travels a different distance clockwise and counter-clockwise. Never share one calibration between directions — including for fine alignment.
 
 > [!IMPORTANT]
-> The half turn is **not** four adjacent-slot moves. Four adjacent commands total roughly 4 × 40° = **160°**, which falls well short of the scanner. It is one continuous sweep with its own calibrated runtime, which also pays the servo's acceleration ramp only once.
+> The half turn is **not** two adjacent-slot moves. A continuous servo pays its acceleration ramp once per move, so two short runs and one long sweep do not cover the same angle. The half turn is one continuous sweep with its own calibrated runtime, and it did **not** change when the carousel went from 8 slots to 4 — half a turn is half a turn.
 
 ### Fine alignment
 
@@ -213,24 +220,30 @@ Milliseconds are an internal implementation detail. They appear only in `config.
 
 Measurement is strict about what it will run on. The PC refuses unless the sample is `LOADED`, and the ESP32 independently refuses unless the slot is **the currently selected one** and physically **at the loading hole**. A slot that is not selected is refused with `SLOT_NOT_SELECTED`; a selected slot that is not at the loader is refused with `SLOT_NOT_AT_LOADER`. This is what stops the software's idea of the carousel from drifting away from the mechanism.
 
-It then swings out to the scanner and **stops there**:
+It then performs the full cycle — out, acquire, back:
 
 ```text
 Slot X at LOAD
   -> 180 deg calibrated half turn (LOAD_TO_SCAN_CW_MS)
-Slot X at SCAN  ->  acquire RAW, return it to the PC
-                    carousel_phase = SCAN
+Slot X at SCAN
+  -> settle, acquire RAW
+  -> 180 deg calibrated return (SCAN_TO_LOAD_CCW_MS)
+Slot X at LOAD  ->  exactly where it started, phase = LOAD
 ```
 
-No hidden return: after a measurement the sample really is at the scanner, and the status says so. **Choose Slot** restores the loading orientation automatically when the operator moves on to the next sample:
+A successful measurement therefore leaves the sample at its original physical position and the tracked position identical to what it was before. The soil is still in the slot — `MEASURED` is not `EMPTY`.
 
-```text
-Choose Slot 3  ->  180 deg calibrated return (SCAN_TO_LOAD_CCW_MS)
-               ->  one clockwise slot transition
-               ->  Slot 3 at the loading hole, phase = LOAD
-```
+The return is reported as its **own** outcome, separate from the acquisition:
 
-If a measurement *fails* after the outward swing, the carousel is returned to the loading position automatically so the retry is not blocked, and the slot stays `LOADED`. If that recovery move itself fails, `position_valid` is set to `False` so the operator re-synchronizes rather than moving blind.
+| Acquisition | Return | Result |
+|---|---|---|
+| fails before the first move | not attempted | nothing moved, sample stays `LOADED` |
+| fails at the scanner | attempted | failure reported, position restored if possible |
+| succeeds | fails | **measurement is kept**, position invalidated, re-sync required |
+
+Science acquisition and mechanical recovery are separate outcomes. A servo that could not come home never destroys a spectrum that was already read.
+
+Whenever the return move fails, or completes but leaves the tracked position somewhere other than where it started, `position_valid` is set to `False` so the operator re-synchronizes rather than moving blind.
 
 ### One record per sample
 
@@ -250,7 +263,7 @@ Measure Sample   ->  state MEASURED, measured_at, three spectra,
 A continuous-rotation servo has no angle command, only a neutral pulse, direction pulses, and time. Every value that depends on the real mechanism lives in [`firmware/ESP32/config.py`](firmware/ESP32/config.py).
 
 > [!IMPORTANT]
-> The shipped values are safe starting points, **not** known-good values. `SERVO_STOP_US`, the direction pulses and the 45° step timing **must be calibrated on the real mechanism**. Load, gearing, battery voltage and the individual servo all change them.
+> The shipped values are safe starting points, **not** known-good values. `SERVO_STOP_US`, the direction pulses and the 90° step timing **must be calibrated on the real mechanism**. Load, gearing, battery voltage and the individual servo all change them.
 
 Recommended order, using **Tools → Servo / Carousel Test**:
 
@@ -258,7 +271,7 @@ Recommended order, using **Tools → Servo / Carousel Test**:
 2. **Direction.** Move one slot and note which way it turns. If the labels are inverted, swap `SERVO_CW_US` and `SERVO_CCW_US`.
 3. **Slot order.** Move one slot clockwise and check whether the *next higher* or *next lower* slot number arrives at the scanner. Set `CAROUSEL_FORWARD_DIRECTION` accordingly.
 4. **Step time.** Adjust `NEXT_SLOT_CW_MS` and `NEXT_SLOT_CCW_MS` until one step lands cleanly on the next slot. The two directions are separate because backlash and servo asymmetry are rarely symmetric.
-5. **Half turn.** Adjust `LOAD_TO_SCAN_CW_MS` and `SCAN_TO_LOAD_CCW_MS` until the 180° sweep lands on the scanner and returns. These are **independently calibrated** and must never be derived from four adjacent-slot moves.
+5. **Half turn.** Adjust `LOAD_TO_SCAN_CW_MS` and `SCAN_TO_LOAD_CCW_MS` until the 180° sweep lands on the scanner and returns. These are **independently calibrated** and must never be derived from two adjacent-slot moves.
 6. **Fine alignment.** Trim `CW_MS_PER_DEGREE` and `CCW_MS_PER_DEGREE` by requesting ±5° and measuring the actual travel.
 
 Multi-slot moves run as N discrete single steps rather than one long rotation, so the servo's start-up acceleration is paid once per step and the calibration stays linear in the step count.
@@ -269,7 +282,7 @@ Multi-slot moves run as N discrete single steps rather than one long rotation, s
 
 - 18-channel spectral acquisition from approximately 410 nm to 940 nm;
 - ESP32-based sensor and actuator control;
-- eight-slot 360° sample carousel with software position tracking;
+- four-slot 360° sample carousel with software position tracking;
 - deterministic USB-serial JSON command protocol for the main computer;
 - persistent scientific sample storage on the main computer;
 - fixed white and dark calibration references, never re-measured mid-run;
@@ -330,7 +343,7 @@ The PCB is a two-layer carrier and interface board. The ESP32 development board,
 |---|---|---|
 | Controller | ESP-WROOM-32 development board with CP2102 | Sensor control, carousel control, USB serial communication and data processing |
 | Spectral sensor | AS7265x multispectral triad | 18-channel VIS-NIR measurement |
-| Servo | MG995 modified for 360° continuous rotation | Timed rotation of the eight-slot sample carousel |
+| Servo | MG995 modified for 360° continuous rotation | Timed rotation of the four-slot sample carousel |
 | Sensor regulator | TLV75533PDBVR | Protected 3.3 V sensor supply |
 | Reverse-polarity protection | AO4407A | Protects the board from incorrect input polarity |
 | Main and servo fuses | Littelfuse 2920L300/15DR | Resettable overcurrent protection |
@@ -584,7 +597,7 @@ firmware/ESP32/
 ├─ config.py     hardware settings only: pins, gain, servo, carousel timing
 ├─ as7265x.py    AS7265x driver + the one sensor runtime lifecycle
 ├─ mg995.py      timed continuous-rotation servo driver
-└─ carousel.py   8-slot geometry and software position tracking
+└─ carousel.py   4-slot geometry and software position tracking
 ```
 
 Six files, and every one of them is uploaded to the device. Nothing else is.
@@ -681,10 +694,13 @@ Ten commands, all of them hardware operations:
 | `get_status` | Sensor, carousel, servo and physical slot state |
 | `sync_position` | Declare the origin: Slot 1 at the loading hole (moves nothing) |
 | `select_slot` | Choose the physical slot and bring it to the loader |
-| `move_slots` | Whole-slot movement, exactly 45° per slot |
+| `move_slots` | Whole-slot movement, exactly 90° per slot |
+| `acquire_block` | Repeat ONE illumination; every reading returned |
+| `acquire_triad` | WHITE + UV + IR without moving the carousel |
+| `led_test` | Exercise each lamp, reading its state back |
 | `fine_adjust` | Small alignment correction in degrees; logical slot unchanged |
 | `clear_slot` | Free a physical slot; the PC's scientific record is untouched |
-| `measure_raw` | Swing to the scanner and acquire one RAW 18-channel spectrum |
+| `measure_raw` | Swing to the scanner, acquire RAW under WHITE, UV and IR, swing back |
 | `sensor_test_raw` | Exercise the whole sensor path and return RAW; moves nothing |
 | `servo_stop` | Brake the servo and release the pin |
 
@@ -866,11 +882,12 @@ Selected: Slot 1 / S001
 State:    LOADED
 Position: LOAD
 
-Loader: Slot 1    Scanner: Slot 5
+Loader: Slot 1    Scanner: Slot 3
 
 1  S001     LOADED
 2  ----     EMPTY
-...
+3  ----     EMPTY
+4  ----     EMPTY
 
 [1] Choose Sample / Slot
 [2] Prepare Sample [DONE]
@@ -883,9 +900,11 @@ Loader: Slot 1    Scanner: Slot 5
 [q] Exit
 ```
 
-Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot.
+Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot, Sync ESP32 Samples to PC.
 
 **Sensor Test is one command.** The operator never has to decide which internal layer to test: it runs the whole chain — ESP32 sensor recovery, I2C, internal devices, configuration, illumination, a new 18-channel acquisition, then the PC's dark correction, normalization and database comparison — through the production code path, prints every stage as PASS or FAIL, and saves nothing.
+
+**Sync ESP32 Samples to PC.** The ESP32 keeps the last raw acquisition per slot in RAM so a result is not lost if this application crashes, is restarted, or is replaced by a different laptop mid-run. Tools → *Sync ESP32 Samples to PC* copies anything the archive is missing, runs it through the normal BD pipeline, and stores it as a complete record. It is a copy, not a move: an existing Sample ID is skipped rather than overwritten, the device keeps its own copy, and running it twice transfers nothing the second time.
 
 For installation, upload, startup and recovery procedures, see **[firmware/OPERATIONS.md](firmware/OPERATIONS.md)**.
 
@@ -907,6 +926,7 @@ CONFIRM LOADED                 state = LOADED
 MEASURE SAMPLE
     ↓        ESP32   180° swing to the scanner
     ↓        ESP32   RAW 18-channel acquisition
+    ↓        ESP32   180° swing back to the loading position
     ↓        PC      receives RAW
     ↓        BD      validation, C = S - D, R = (S-D)/(W-D)
     ↓        BD      comparison against ALL materials, interpretation
@@ -924,12 +944,8 @@ A typical mid-run state:
 ```text
 Slot 1   S001   MEASURED
 Slot 2   S002   LOADED
-Slot 3   ----   EMPTY
+Slot 3   S003   MEASURED
 Slot 4   ----   EMPTY
-Slot 5   S003   MEASURED
-Slot 6   ----   EMPTY
-Slot 7   ----   EMPTY
-Slot 8   ----   EMPTY
 ```
 
 ---
@@ -1005,7 +1021,7 @@ ch_940
 
 The database is intended for training and validating comparative classification methods. It does not provide definitive chemical identification from a single spectrum.
 
-`firmware/BD/database.json` holds **known reference materials only**. Measured competition samples are stored separately under `firmware/PC/data/`, and nothing in the system writes to the reference database.
+`firmware/BD/database.json` holds **known reference materials only**. Measured competition samples are stored separately in `firmware/BD/samples.json`, and nothing in the system writes to the reference database.
 
 Each measurement is compared against every entry in the database, and all results are stored ranked by descending similarity — not only the top few.
 
@@ -1054,7 +1070,7 @@ The module was developed through the following stages:
 - AS7265x communication;
 - multispectral channel acquisition;
 - MG995 continuous-rotation carousel driver;
-- eight-slot carousel state model with software position tracking;
+- four-slot carousel state model with software position tracking;
 - USB-serial JSON command protocol (CP2102 console, no UART peripheral);
 - three-layer software split: ESP32 hardware / BD science / PC mission control;
 - single authoritative sensor lifecycle with automatic recovery;
@@ -1071,7 +1087,7 @@ The module was developed through the following stages:
 
 ### Ongoing Work
 
-- servo calibration on the assembled mechanism (neutral pulse, direction, 45° step timing);
+- servo calibration on the assembled mechanism (neutral pulse, direction, 90° step timing);
 - final rover mechanical integration;
 - measurement repeatability testing;
 - distance-dependent spectral correction;

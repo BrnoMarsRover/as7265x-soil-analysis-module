@@ -41,6 +41,7 @@ V_DEVICE_TYPE = 0x00
 V_HW_VERSION = 0x01
 V_CONFIG = 0x04
 V_INTEGRATION_TIME = 0x05
+V_DEVICE_TEMP = 0x06
 V_LED_CONFIG = 0x07
 V_DEV_SELECT_CONTROL = 0x4F
 
@@ -66,7 +67,36 @@ GAIN_3_7X = 0b01
 GAIN_16X = 0b10
 GAIN_64X = 0b11
 
+# Illumination lamps. Each of the three internal devices drives one
+# bulb, and DEV_SELECT_CONTROL chooses whose LED_CONFIG register is
+# visible - so the lamp is addressed by the device that owns it, not by
+# a separate LED index.
+#
+#   WHITE lamp -> device 0x00
+#   IR lamp    -> device 0x01
+#   UV lamp    -> device 0x02
 LED_WHITE = 0x00
+LED_IR = 0x01
+LED_UV = 0x02
+
+LAMPS = (LED_WHITE, LED_IR, LED_UV)
+
+LAMP_NAMES = {LED_WHITE: "white", LED_IR: "ir", LED_UV: "uv"}
+LAMP_BY_NAME = {"white": LED_WHITE, "ir": LED_IR, "uv": LED_UV}
+
+# Per-lamp current, read from config at call time so a runtime change
+# is picked up without rebuilding the driver.
+LAMP_CURRENTS = {
+    LED_WHITE: lambda: config.WHITE_LED_CURRENT,
+    LED_IR: lambda: config.IR_LED_CURRENT,
+    LED_UV: lambda: config.UV_LED_CURRENT,
+}
+
+# LED_CONFIG bit layout. Only these two fields belong to the bulb; the
+# indicator LED shares the register and must survive every write.
+LED_DRV_ENABLE_BIT = 1 << 3
+LED_DRV_CURRENT_MASK = 0b00110000
+LED_DRV_CURRENT_SHIFT = 4
 
 # The 18 calibrated channels, in wavelength order:
 #   channel, nanometres, internal device name, register base, device id
@@ -332,26 +362,80 @@ class AS7265X:
     def set_integration_cycles(self, cycles):
         self.virtual_write(V_INTEGRATION_TIME, cycles & 0xFF)
 
-    def set_led_current(self, current):
+    # ------------------------------------------------------------------
+    # illumination
+    #
+    # Three separate lamps, each addressed through the device that owns
+    # it. Every write is read-modify-write so the indicator LED bits,
+    # which live in the same register, are preserved.
+    # ------------------------------------------------------------------
+
+    def set_bulb_current(self, device, current):
+        self.select_device(device)
+
         value = self.virtual_read(V_LED_CONFIG)
-        value &= 0b11001111
-        value |= (min(current, 0b11) & 0b11) << 4
+        value &= ~LED_DRV_CURRENT_MASK & 0xFF
+        value |= (min(current, 0b11) & 0b11) << LED_DRV_CURRENT_SHIFT
+
         self.virtual_write(V_LED_CONFIG, value)
 
-    def read_led_current(self):
-        return (self.virtual_read(V_LED_CONFIG) >> 4) & 0b11
+    def read_bulb_current(self, device):
+        self.select_device(device)
 
-    def set_led(self, on):
-        """Onboard white illumination LED."""
-        self.select_device(LED_WHITE)
         value = self.virtual_read(V_LED_CONFIG)
 
-        if on:
-            value |= 1 << 3
-        else:
-            value &= ~(1 << 3)
+        return (value & LED_DRV_CURRENT_MASK) >> LED_DRV_CURRENT_SHIFT
+
+    def enable_bulb(self, device):
+        self.select_device(device)
+
+        value = self.virtual_read(V_LED_CONFIG)
+        value |= LED_DRV_ENABLE_BIT
 
         self.virtual_write(V_LED_CONFIG, value & 0xFF)
+
+    def disable_bulb(self, device):
+        self.select_device(device)
+
+        value = self.virtual_read(V_LED_CONFIG)
+        value &= ~LED_DRV_ENABLE_BIT & 0xFF
+
+        self.virtual_write(V_LED_CONFIG, value)
+
+    def bulb_enabled(self, device):
+        self.select_device(device)
+
+        return (self.virtual_read(V_LED_CONFIG) & LED_DRV_ENABLE_BIT) != 0
+
+    def disable_all_bulbs(self):
+        """
+        Every lamp off, unconditionally.
+
+        Called before selecting an illumination and again from the
+        finally block of every acquisition. Two lamps on at once would
+        silently produce a spectrum nothing can interpret.
+        """
+        for device in LAMPS:
+            self.disable_bulb(device)
+
+    def bulb_states(self):
+        """Which lamps are currently on - read back, not assumed."""
+        return {
+            LAMP_NAMES[device]: self.bulb_enabled(device)
+            for device in LAMPS
+        }
+
+    def apply_bulb_currents(self):
+        """Push the configured current into all three lamps."""
+        self.set_bulb_current(LED_WHITE, config.WHITE_LED_CURRENT)
+        self.set_bulb_current(LED_IR, config.IR_LED_CURRENT)
+        self.set_bulb_current(LED_UV, config.UV_LED_CURRENT)
+
+    def read_bulb_currents(self):
+        return {
+            LAMP_NAMES[device]: self.read_bulb_current(device)
+            for device in LAMPS
+        }
 
     def apply_configuration(self):
         """
@@ -362,25 +446,37 @@ class AS7265X:
         still running its power-on defaults, because nothing ever
         verified that the writes landed.
         """
-        self.select_device(LED_WHITE)
-        self.set_led_current(config.ONBOARD_LED_CURRENT)
-        self.set_led(False)
+        self.disable_all_bulbs()
+        self.apply_bulb_currents()
 
         self.set_integration_cycles(config.SENSOR_INTEGRATION_CYCLES)
         self.set_gain(config.SENSOR_GAIN)
         self.set_measurement_mode(config.SENSOR_MEASUREMENT_MODE)
 
+        currents = self.read_bulb_currents()
+
         applied = self.read_configuration()
-        applied["led_current"] = self.read_led_current()
+        applied["led_current"] = currents["white"]
         applied["led_current_ma"] = config.SENSOR_LED_CURRENT_NAMES.get(
-            applied["led_current"], "unknown"
+            currents["white"], "unknown"
         )
+        applied["led_currents"] = currents
+        applied["led_currents_ma"] = {
+            name: config.SENSOR_LED_CURRENT_NAMES.get(value, "unknown")
+            for name, value in currents.items()
+        }
+        applied["measurement_mode_name"] = (
+            config.SENSOR_MEASUREMENT_MODE_NAMES.get(
+                applied["measurement_mode"], "unknown"
+            )
+        )
+        applied["bulbs_off"] = not any(self.bulb_states().values())
 
         expected = {
             "integration_cycles": config.SENSOR_INTEGRATION_CYCLES,
             "gain": config.SENSOR_GAIN,
             "measurement_mode": config.SENSOR_MEASUREMENT_MODE,
-            "led_current": config.ONBOARD_LED_CURRENT,
+            "led_current": config.WHITE_LED_CURRENT,
         }
 
         mismatched = [
@@ -423,8 +519,31 @@ class AS7265X:
         return max(estimate, 1500)
 
     def start_measurement(self):
-        """Re-arm the measurement mode so the next result is a NEW one."""
+        """
+        Arm ONE conversion.
+
+        In one-shot mode writing the measurement mode is the trigger, so
+        every spectrum is a new conversion that started after this call
+        - and therefore after the illumination was switched and settled.
+        """
         self.set_measurement_mode(config.SENSOR_MEASUREMENT_MODE)
+
+    def read_temperatures(self):
+        """
+        Device temperature in degrees C, per internal device.
+
+        Metadata only. Nothing here compensates for temperature; the
+        value is recorded so a drift can be recognised later.
+        """
+        temperatures = {}
+
+        for name, device in (
+            ("uv", DEV_UV), ("visible", DEV_VISIBLE), ("nir", DEV_NIR)
+        ):
+            self.select_device(device)
+            temperatures[name] = self.virtual_read(V_DEVICE_TEMP)
+
+        return temperatures
 
     def wait_data_ready(self, timeout_ms=None):
         if timeout_ms is None:
@@ -728,23 +847,60 @@ class SensorRuntime:
     # acquisition
     # ------------------------------------------------------------------
 
-    def acquire_raw_spectrum(self):
+    @staticmethod
+    def _validate_spectrum(spectrum, stage):
+        missing = [
+            channel for channel in CHANNELS
+            if not isinstance(spectrum.get(channel), (int, float))
+            or isinstance(spectrum.get(channel), bool)
+        ]
+
+        if missing:
+            raise SensorError(
+                "INCOMPLETE_SPECTRUM",
+                "Acquisition returned {}/{} channels; missing {}.".format(
+                    len(CHANNELS) - len(missing),
+                    len(CHANNELS),
+                    ",".join(missing),
+                ),
+                stage=stage,
+                details={"missing_channels": missing},
+            )
+
+        return spectrum
+
+    def acquire_one(self, lamp=None):
         """
-        The ONE raw acquisition path.
+        The ONE raw acquisition path. Every spectrum in the system -
+        sample, calibration, dark, sensor test - comes through here.
 
-        Illumination on, settle, start a new integration, wait for
-        DATA_READY, read all 18 channels, validate, illumination off.
-        The LED is switched off from a finally block, so no failure can
-        leave it burning.
+            all bulbs OFF
+              -> select illumination (if any)
+              -> set configured bulb current
+              -> enable bulb
+              -> wait for the illumination to settle
+              -> trigger the one-shot conversion
+              -> wait DATA_READY
+              -> read all 18 calibrated channels
+              -> all bulbs OFF
 
-        Returns raw counts only. No dark correction, no white
-        normalization, no database - that is the PC's and BD's work.
+        `lamp` is LED_WHITE / LED_IR / LED_UV, or None for a dark
+        acquisition with every lamp off.
+
+        The lamps are killed from a finally block, so no failure at any
+        point can leave one burning. Returns raw counts only - no dark
+        correction, no normalization, no database.
         """
         driver = self.ensure_ready()
 
         try:
-            driver.set_led(True)
-            time.sleep_ms(config.ILLUMINATION_SETTLE_MS)
+            # Never change illumination from an unknown state.
+            driver.disable_all_bulbs()
+
+            if lamp is not None:
+                driver.set_bulb_current(lamp, LAMP_CURRENTS[lamp]())
+                driver.enable_bulb(lamp)
+                time.sleep_ms(config.ILLUMINATION_SETTLE_MS)
 
             driver.start_measurement()
             waited_ms = driver.wait_data_ready()
@@ -761,39 +917,104 @@ class SensorRuntime:
 
         finally:
             try:
-                driver.set_led(False)
+                driver.disable_all_bulbs()
 
             except Exception:
                 pass
 
-        missing = [
-            channel for channel in CHANNELS
-            if not isinstance(spectrum.get(channel), (int, float))
-            or isinstance(spectrum.get(channel), bool)
-        ]
-
-        if missing:
-            raise SensorError(
-                "INCOMPLETE_SPECTRUM",
-                "Acquisition returned {}/{} channels; missing {}.".format(
-                    len(CHANNELS) - len(missing),
-                    len(CHANNELS),
-                    ",".join(missing),
-                ),
-                stage="CHANNEL_VALIDATION",
-                details={"missing_channels": missing},
-            )
-
+        self._validate_spectrum(spectrum, "CHANNEL_VALIDATION")
         self.current_error = None
 
         return {
             "spectrum": spectrum,
             "data_ready_wait_ms": waited_ms,
+            "illumination": (
+                LAMP_NAMES[lamp] if lamp is not None else "dark"
+            ),
             "zero_channels": [
                 channel for channel in CHANNELS
                 if spectrum[channel] == 0.0
             ],
         }
+
+    def acquire_block(self, lamp=None, repeats=1):
+        """
+        Repeat one illumination N times and return every reading.
+
+        The ESP32 does no statistics: the individual acquisitions travel
+        to the PC intact, so aggregation, outlier handling and
+        repeatability all happen where there is real floating point and
+        where the raw readings can be archived and audited.
+        """
+        repeats = max(1, min(int(repeats), config.MAX_REPEATS))
+
+        acquisitions = []
+        waits = []
+
+        for index in range(repeats):
+            result = self.acquire_one(lamp)
+
+            acquisitions.append(result["spectrum"])
+            waits.append(result["data_ready_wait_ms"])
+
+            if index < repeats - 1:
+                time.sleep_ms(config.REPEAT_DELAY_MS)
+
+        return {
+            "illumination": (
+                LAMP_NAMES[lamp] if lamp is not None else "dark"
+            ),
+            "repeats": repeats,
+            "acquisitions": acquisitions,
+            "data_ready_wait_ms": waits,
+        }
+
+    def acquire_triad(self, repeats=None):
+        """
+        One complete sample measurement: WHITE, then UV, then IR.
+
+        18 channels under each of the three illuminations - up to 54
+        spectral features per sample. Each block is fully independent
+        and every lamp is off between them.
+        """
+        if repeats is None:
+            repeats = config.SAMPLE_REPEATS
+
+        blocks = {}
+        codes = {
+            "white": ("WHITE_ACQUISITION_FAILED", LED_WHITE),
+            "uv": ("UV_ACQUISITION_FAILED", LED_UV),
+            "ir": ("IR_ACQUISITION_FAILED", LED_IR),
+        }
+
+        for name in ("white", "uv", "ir"):
+            code, lamp = codes[name]
+
+            try:
+                blocks[name] = self.acquire_block(lamp, repeats)
+
+            except SensorError as error:
+                raise SensorError(
+                    code,
+                    "{} illumination acquisition failed: {}".format(
+                        name.upper(), error.message
+                    ),
+                    stage=error.stage,
+                    details={
+                        "illumination": name,
+                        "completed": sorted(blocks.keys()),
+                        "underlying_code": error.code,
+                        "underlying_details": error.details,
+                    },
+                )
+
+        return blocks
+
+    # Historical name; the white block is what the old callers wanted.
+    def acquire_raw_spectrum(self):
+        result = self.acquire_one(LED_WHITE)
+
+        return result
 
     # ------------------------------------------------------------------
     # reporting

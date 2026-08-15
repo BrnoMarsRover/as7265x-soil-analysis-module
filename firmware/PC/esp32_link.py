@@ -34,14 +34,19 @@ DEFAULT_BAUDRATE = 115200
 # Ordinary query/response round trips: ping, status.
 DEFAULT_TIMEOUT = 10.0
 
-# Commands that move the carousel: up to four 45 deg steps plus settling.
+# Commands that move the carousel: whole 90 deg slot steps plus settling.
 MOVE_TIMEOUT = 30.0
 
-# A raw acquisition: half turn, mechanical settling, illumination
-# settling and a full 18-channel integration. Far slower than a ping,
-# and a premature timeout is exactly what makes an operator think
-# nothing happened.
-MEASUREMENT_TIMEOUT = 120.0
+# A full measurement: 180 deg out, mechanical settling, illumination
+# settling, a full 18-channel integration, then 180 deg back. Far slower
+# than a ping, and a premature timeout is exactly what makes an operator
+# think nothing happened.
+MEASUREMENT_TIMEOUT = 180.0
+
+# A calibration block is ten one-shot conversions at 100 integration
+# cycles, plus settling between each. Generous on purpose: cutting one
+# short mid-block would waste the whole calibration step.
+ACQUISITION_TIMEOUT = 180.0
 
 # Budget for the module to come up after the port is opened. Opening a
 # serial port resets many ESP32 development boards, and MicroPython then
@@ -398,21 +403,109 @@ class ESP32Link:
     def clear_slot(self, slot):
         return self.request("clear_slot", slot=int(slot))
 
-    def measure_raw(self, slot, sample_id=None):
+    def clear_all_slots(self):
+        """Free every physical slot. Deletes no Sample record anywhere."""
+        return self.request("clear_all_slots")
+
+    def measure_raw(self, slot, sample_id=None, repeats=None):
         payload = {"slot": int(slot)}
 
         if sample_id:
             payload["sample_id"] = sample_id
 
+        if repeats:
+            payload["repeats"] = int(repeats)
+
         return self.request(
             "measure_raw", timeout=MEASUREMENT_TIMEOUT, **payload
         )
 
-    def sensor_test_raw(self, force_reinit=False):
+    def sensor_test_raw(self, force_reinit=False, repeats=None):
+        payload = {"force_reinit": bool(force_reinit)}
+
+        if repeats:
+            payload["repeats"] = int(repeats)
+
         return self.request(
-            "sensor_test_raw",
-            timeout=MEASUREMENT_TIMEOUT,
-            force_reinit=bool(force_reinit),
+            "sensor_test_raw", timeout=MEASUREMENT_TIMEOUT, **payload
+        )
+
+    def acquire_block(self, illumination, repeats):
+        """
+        One illumination, repeated. 'dark' means every lamp off.
+
+        The building block of a calibration; every individual reading
+        comes back so the PC can aggregate and archive them.
+        """
+        return self.request(
+            "acquire_block",
+            timeout=ACQUISITION_TIMEOUT,
+            illumination=illumination,
+            repeats=int(repeats),
+        )
+
+    def acquire_triad(self, repeats=None):
+        """WHITE, UV and IR, without moving the carousel."""
+        payload = {}
+
+        if repeats:
+            payload["repeats"] = int(repeats)
+
+        return self.request(
+            "acquire_triad", timeout=ACQUISITION_TIMEOUT, **payload
+        )
+
+    def led_test(self, hold_ms=400):
+        """Exercise each lamp on its own and read its state back."""
+        return self.request(
+            "led_test", timeout=MOVE_TIMEOUT, hold_ms=int(hold_ms)
+        )
+
+    def list_saved_samples(self):
+        """Index of the raw acquisitions the ESP32 is still holding."""
+        return self.request("list_saved_samples")
+
+    def get_saved_sample(self, sample_id):
+        """One retained acquisition, fetched individually to stay small."""
+        return self.request("get_saved_sample", sample_id=sample_id)
+
+    def delete_saved_samples(self):
+        """
+        Delete every acquisition held on the ESP32.
+
+        Touches nothing else: not the PC archive, not physical slot
+        state, and certainly not the BD reference data.
+        """
+        return self.request("delete_saved_samples")
+
+    # ------------------------------------------------------------------
+    # servo calibration
+    # ------------------------------------------------------------------
+
+    def get_servo_calibration(self):
+        return self.request("get_servo_calibration")
+
+    def set_servo_calibration(self, values=None, reset=False):
+        if reset:
+            return self.request("set_servo_calibration", reset=True)
+
+        return self.request("set_servo_calibration", values=values or {})
+
+    def servo_test_move(self, kind, repeat=1, hold_ms=None):
+        """
+        Run one calibration movement.
+
+        Generously timed: a deliberately slow move repeated a few times
+        can take most of a minute, and cutting it short mid-sweep would
+        leave the carousel somewhere unknown.
+        """
+        payload = {"kind": kind, "repeat": int(repeat)}
+
+        if hold_ms is not None:
+            payload["hold_ms"] = int(hold_ms)
+
+        return self.request(
+            "servo_test_move", timeout=MEASUREMENT_TIMEOUT, **payload
         )
 
     def servo_stop(self):

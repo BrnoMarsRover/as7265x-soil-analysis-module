@@ -1,19 +1,17 @@
 """
 Persistent scientific sample storage on the main computer.
 
-This is the authoritative archive of the competition run. The ESP32
-stores no science history at all: it forgets everything on reset except
-which slots physically hold soil, and even that is only a convenience.
+This is the authoritative archive of the competition run, and it lives
+beside the science data it was produced against:
 
-Layout
-------
-    data/samples.json        index of every sample (small)
-    data/samples/S001.json   one complete scientific record per sample
+    firmware/BD/database.json     reference materials     READ ONLY
+    firmware/BD/references.json   fixed White/Dark        READ ONLY
+    firmware/BD/samples.json      measured Samples        READ/WRITE
 
-The records are split on purpose. A full record holds three 18-channel
-spectra plus a match against every database material; the index stays
-small enough to load at any time, and one record is read only when it
-is actually opened.
+One file holds COMPLETE records - all three 18-channel spectra, the
+White and Dark actually used, the comparison against every material, and
+the full analysis - so a measurement can be reproduced from the archive
+alone without needing the reference files to be unchanged.
 
 Paths come from this file's location, so the application finds its data
 whatever directory it was started from.
@@ -25,12 +23,18 @@ from pathlib import Path
 
 
 PC_DIR = Path(__file__).resolve().parent
+BD_DIR = PC_DIR.parent / "BD"
 
-DATA_DIR = PC_DIR / "data"
-INDEX_PATH = DATA_DIR / "samples.json"
-RECORD_DIR = DATA_DIR / "samples"
+ARCHIVE_PATH = BD_DIR / "samples.json"
 
-INDEX_VERSION = 1
+# Retired: the split index-plus-one-file-per-sample layout under
+# firmware/PC/data. load() migrates it automatically and leaves the old
+# files alone.
+LEGACY_DATA_DIR = PC_DIR / "data"
+LEGACY_INDEX_PATH = LEGACY_DATA_DIR / "samples.json"
+LEGACY_RECORD_DIR = LEGACY_DATA_DIR / "samples"
+
+ARCHIVE_VERSION = 2
 
 # Sample IDs double as filenames, so the character set is restricted.
 SAMPLE_ID_MAX_LENGTH = 24
@@ -183,16 +187,61 @@ def _read_json(path, default=None):
         return default
 
 
-class SampleStore:
-    """Persistent index plus one file per sample."""
+def summary_of(record):
+    """
+    The compact fields the Sample Database table shows.
 
-    def __init__(self, index_path=None, record_dir=None):
-        self.index_path = Path(index_path or INDEX_PATH)
-        self.record_dir = Path(record_dir or RECORD_DIR)
+    Reads the full schema first and falls back to the flat fields an
+    older short record used, so archives written before this layout keep
+    listing correctly instead of showing blanks.
+    """
+    record = record or {}
+    analysis = record.get("analysis") or {}
+    timestamps = record.get("timestamps") or {}
+    measurement = record.get("measurement") or {}
+
+    def pick(*names):
+        for name in names:
+            if analysis.get(name) is not None:
+                return analysis[name]
+
+            if record.get(name) is not None:
+                return record[name]
+
+        return None
+
+    return {
+        "sample_id": record.get("sample_id"),
+        "slot_id": record.get("slot_id"),
+        "state": record.get("state"),
+        "measured": bool(measurement) or bool(record.get("measured")),
+        "created_at": timestamps.get("created_at")
+        or record.get("created_at"),
+        "measured_at": timestamps.get("measured_at")
+        or record.get("measured_at"),
+        "best_match": pick("best_match"),
+        "best_similarity": pick("best_similarity", "best_match_score"),
+        "status": pick("status"),
+        "analysis_status": record.get("analysis_status"),
+    }
+
+
+class SampleStore:
+    """
+    One JSON archive holding every complete Sample record.
+
+    firmware/BD/samples.json sits beside database.json and
+    references.json - the measured half of the science data, and the
+    only one of the three that is ever written.
+    """
+
+    def __init__(self, archive_path=None):
+        self.archive_path = Path(archive_path or ARCHIVE_PATH)
 
         self.ready = False
         self.error = None
-        self.index = {"version": INDEX_VERSION, "samples": []}
+        self.migrated_from = None
+        self.archive = {"version": ARCHIVE_VERSION, "samples": []}
 
         self.load()
 
@@ -202,83 +251,137 @@ class SampleStore:
 
     def load(self):
         """
-        Load the index, creating an empty one in memory if none exists.
+        Load the archive, creating an empty one in memory if none exists.
 
-        A missing index is normal on a fresh install and is not an
-        error. A PRESENT but unparseable index is a different situation
-        entirely: it is reported and every write is refused, because
-        overwriting it would destroy data that is probably still
+        A missing archive is normal on a fresh install and is not an
+        error. A PRESENT but unparseable archive is a different
+        situation entirely: it is reported and every write is refused,
+        because overwriting it would destroy data that is probably still
         recoverable by hand.
         """
         self.error = None
+        self.migrated_from = None
 
-        if not self.index_path.exists():
-            self.index = {"version": INDEX_VERSION, "samples": []}
+        if not self.archive_path.exists():
+            migrated = self._load_legacy()
+
+            self.archive = migrated or {
+                "version": ARCHIVE_VERSION, "samples": []
+            }
             self.ready = True
 
-            return self.index
+            return self.archive
 
-        data = _read_json(self.index_path)
+        data = _read_json(self.archive_path)
 
         if not isinstance(data, dict) or not isinstance(
             data.get("samples"), list
         ):
-            self.index = {"version": INDEX_VERSION, "samples": []}
+            self.archive = {"version": ARCHIVE_VERSION, "samples": []}
             self.ready = False
             self.error = (
-                "{} exists but could not be parsed as a sample index. It "
+                "{} exists but could not be parsed as a Sample archive. It "
                 "has NOT been modified - recover or move it aside by hand "
-                "before measuring again.".format(self.index_path)
+                "before measuring again.".format(self.archive_path)
             )
 
-            return self.index
+            return self.archive
 
-        data.setdefault("version", INDEX_VERSION)
-        self.index = data
+        data.setdefault("version", ARCHIVE_VERSION)
+        self.archive = data
         self.ready = True
 
-        return self.index
+        return self.archive
+
+    def _load_legacy(self):
+        """
+        Pull records out of the retired PC/data layout, if it is there.
+
+        Read-only: the old files are left exactly where they are, so a
+        migration that goes wrong costs nothing. The full per-sample
+        records are preferred; the index entry is the fallback for a
+        sample whose record file has gone missing.
+        """
+        if self.archive_path != ARCHIVE_PATH:
+            return None
+
+        if not LEGACY_INDEX_PATH.exists():
+            return None
+
+        index = _read_json(LEGACY_INDEX_PATH)
+
+        if not isinstance(index, dict) or not isinstance(
+            index.get("samples"), list
+        ):
+            return None
+
+        samples = []
+
+        for entry in index["samples"]:
+            sample_id = entry.get("sample_id")
+
+            if not sample_id:
+                continue
+
+            record = _read_json(
+                LEGACY_RECORD_DIR / "{}.json".format(sample_id)
+            )
+
+            samples.append(record if isinstance(record, dict) else entry)
+
+        if not samples:
+            return None
+
+        self.migrated_from = str(LEGACY_INDEX_PATH)
+
+        return {"version": ARCHIVE_VERSION, "samples": samples}
 
     def _require_ready(self):
         if not self.ready:
             raise StorageError(
                 self.error or "{} could not be parsed.".format(
-                    self.index_path
+                    self.archive_path
                 ),
-                "SAMPLES_INDEX_INVALID",
+                "SAMPLES_ARCHIVE_INVALID",
             )
 
-    def _record_path(self, sample_id):
-        return self.record_dir / "{}.json".format(sample_id)
+    def _records(self):
+        return self.archive.setdefault("samples", [])
+
+    def _write(self):
+        _write_json(self.archive_path, self.archive)
 
     # ------------------------------------------------------------------
     # queries
     # ------------------------------------------------------------------
 
     def count(self):
-        return len(self.index.get("samples", []))
+        return len(self.archive.get("samples", []))
 
     def summaries(self):
-        return list(self.index.get("samples", []))
+        """Compact rows for the Sample Database table."""
+        return [summary_of(record) for record in self._records()]
 
     def find_summary(self, sample_id):
-        for entry in self.index.get("samples", []):
-            if entry.get("sample_id") == sample_id:
-                return entry
+        record = self.get_sample(sample_id)
 
-        return None
+        return summary_of(record) if record is not None else None
 
     def has_sample(self, sample_id):
-        return self.find_summary(sample_id) is not None
+        return self.get_sample(sample_id) is not None
 
     def get_state(self, sample_id):
-        summary = self.find_summary(sample_id)
+        record = self.get_sample(sample_id)
 
-        return summary.get("state") if summary else None
+        return record.get("state") if record else None
 
     def get_sample(self, sample_id):
         """Full scientific record for one Sample ID, or None."""
-        return _read_json(self._record_path(validate_sample_id(sample_id)))
+        for record in self._records():
+            if record.get("sample_id") == sample_id:
+                return record
+
+        return None
 
     def active_samples(self):
         """
@@ -304,54 +407,35 @@ class SampleStore:
     # writes
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _summarize(record):
-        analysis = record.get("analysis") or {}
-        timestamps = record.get("timestamps") or {}
-
-        return {
-            "sample_id": record.get("sample_id"),
-            "slot_id": record.get("slot_id"),
-            "state": record.get("state"),
-            "measured": bool(record.get("measurement")),
-            "created_at": timestamps.get("created_at"),
-            "measured_at": timestamps.get("measured_at"),
-            "best_match": analysis.get("best_match"),
-            "best_similarity": analysis.get("best_similarity"),
-            "status": analysis.get("status"),
-            "analysis_status": record.get("analysis_status"),
-        }
-
     def save(self, record):
         """
-        Persist one sample record and refresh its index entry.
+        Persist one COMPLETE sample record.
 
-        The record file is written first and the index second, so a
-        failure never leaves the index pointing at a file that does not
-        exist.
+        Everything the record carries is written: all three 18-channel
+        spectra, the White and Dark actually used, the comparison
+        against every material and the whole analysis block. Nothing is
+        summarised away - the compact table derives its columns from the
+        stored record at read time instead.
         """
         self._require_ready()
 
         sample_id = validate_sample_id(record.get("sample_id"))
         record["sample_id"] = sample_id
 
-        _write_json(self._record_path(sample_id), record)
+        records = self._records()
 
-        summary = self._summarize(record)
-        samples = self.index.setdefault("samples", [])
-
-        for position, entry in enumerate(samples):
-            if entry.get("sample_id") == sample_id:
-                samples[position] = summary
+        for position, existing in enumerate(records):
+            if existing.get("sample_id") == sample_id:
+                records[position] = record
 
                 break
 
         else:
-            samples.append(summary)
+            records.append(record)
 
-        _write_json(self.index_path, self.index)
+        self._write()
 
-        return summary
+        return summary_of(record)
 
     def create(self, sample_id, slot_id, created_at, metadata=None):
         """Open a new record at READY_TO_LOAD. Nothing scientific yet."""
@@ -433,12 +517,7 @@ class SampleStore:
         return record
 
     def rename(self, old_id, new_id):
-        """
-        Change a Sample ID, keeping every scientific value intact.
-
-        The record is written under the new name before the old file is
-        removed, so an interruption leaves both rather than neither.
-        """
+        """Change a Sample ID, keeping every scientific value intact."""
         self._require_ready()
 
         old_id = validate_sample_id(old_id)
@@ -455,74 +534,47 @@ class SampleStore:
         if new_id == old_id:
             return record
 
-        if self.find_summary(new_id) is not None:
+        if self.has_sample(new_id):
             raise StorageError(
                 "Sample ID {} already exists.".format(new_id),
                 "SAMPLE_ID_ALREADY_EXISTS",
             )
 
         record["sample_id"] = new_id
-        _write_json(self._record_path(new_id), record)
 
-        samples = self.index.setdefault("samples", [])
-
-        for position, entry in enumerate(samples):
-            if entry.get("sample_id") == old_id:
-                samples[position] = self._summarize(record)
-
-                break
-
-        _write_json(self.index_path, self.index)
-
-        # Only now is the old copy redundant.
-        try:
-            self._record_path(old_id).unlink(missing_ok=True)
-
-        except OSError:
-            pass
+        self._write()
 
         return record
 
     def delete(self, sample_id):
-        """
-        Permanently remove one sample.
-
-        The index is rewritten first: it is the authoritative list, so a
-        record file left behind by an interrupted delete is harmless,
-        while an index entry pointing at a deleted file is not.
-        """
+        """Permanently remove one sample from the archive."""
         self._require_ready()
 
         sample_id = validate_sample_id(sample_id)
-        summary = self.find_summary(sample_id)
+        record = self.get_sample(sample_id)
 
-        if summary is None:
+        if record is None:
             raise StorageError(
                 "No stored sample with ID {}.".format(sample_id),
                 "SAMPLE_NOT_FOUND",
             )
 
-        previous = list(self.index.get("samples", []))
+        summary = summary_of(record)
+        previous = list(self._records())
 
-        self.index["samples"] = [
+        self.archive["samples"] = [
             entry for entry in previous
             if entry.get("sample_id") != sample_id
         ]
 
         try:
-            _write_json(self.index_path, self.index)
+            self._write()
 
         except StorageError:
-            # Put the entry back: nothing was actually deleted.
-            self.index["samples"] = previous
+            # Put the record back: nothing was actually deleted.
+            self.archive["samples"] = previous
 
             raise
-
-        try:
-            self._record_path(sample_id).unlink(missing_ok=True)
-
-        except OSError:
-            pass
 
         return summary
 
@@ -534,7 +586,7 @@ class SampleStore:
         return {
             "ready": self.ready,
             "error": self.error,
-            "index_file": str(self.index_path),
-            "record_dir": str(self.record_dir),
+            "archive_file": str(self.archive_path),
             "samples_saved": self.count(),
+            "migrated_from": self.migrated_from,
         }

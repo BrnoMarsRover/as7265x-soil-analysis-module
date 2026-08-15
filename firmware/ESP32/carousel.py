@@ -1,23 +1,26 @@
 # carousel.py
-# Software model of the 8-slot sample carousel.
+# Software model of the 4-slot sample carousel.
 #
 # There is no encoder, no Hall sensor and no position feedback of any
 # kind. The carousel position is therefore purely virtual: it is
 # established once by the operator through sync_position and then
-# maintained by counting calibrated 45 degree steps.
+# maintained by counting calibrated 90 degree steps.
 #
 # Two fixed mechanical positions exist, exactly 180 degrees apart:
 #
 #     SCAN  - the slot under the AS7265x
 #     LOAD  - the slot under the loading hole
 #
-# 180 degrees is 4 of the 8 slots, so:
+# 180 degrees is 2 of the 4 slots, so:
 #
-#     load_slot = ((scan_slot - 1 + 4) % 8) + 1
+#     load_slot = ((scan_slot - 1 + 2) % 4) + 1
 #
-# which for scan_slot = 1 gives load_slot = 5, and is its own inverse:
-# putting Slot 3 under the loader necessarily puts Slot 7 under the
+# which for scan_slot = 3 gives load_slot = 1, and is its own inverse:
+# putting Slot 1 under the loader necessarily puts Slot 3 under the
 # scanner.
+#
+# Both the slot count and the offset come from config.py; nothing here
+# hardcodes the geometry.
 #
 # Physical slot occupancy and the tracked position live in RAM only and
 # are intentionally forgotten on reset.
@@ -49,7 +52,11 @@ def new_slot(slot_id):
     return {
         "slot_id": slot_id,
         "occupied": False,
-        "sample_id": None
+        "sample_id": None,
+
+        # Last raw acquisition taken from this slot, so the PC can pull
+        # back a measurement it lost. RAM only, cleared with the slot.
+        "measurement": None
     }
 
 
@@ -134,13 +141,58 @@ class Carousel:
 
         return self.slots[slot_id]
 
-    def mark_occupied(self, slot_id, sample_id=None):
+    def reset_all_slots(self):
+        """
+        Free every physical slot at once.
+
+        Runtime occupancy only, exactly like reset_slot repeated: the
+        carousel is not moved, the tracked position is untouched, and no
+        saved Sample record anywhere is affected.
+        """
+        cleared = []
+
+        for slot_id in range(1, self.slot_count + 1):
+            slot = self.slots[slot_id]
+
+            if slot["occupied"] or slot["sample_id"] or slot["measurement"]:
+                cleared.append({
+                    "slot_id": slot_id,
+                    "sample_id": slot["sample_id"],
+                })
+
+            self.reset_slot(slot_id)
+
+        return cleared
+
+    def clear_retained_samples(self):
+        """
+        Drop every retained acquisition, keeping physical slot state.
+
+        Deleting saved measurements and freeing the mechanism are
+        different things: soil may still physically sit in a slot whose
+        record has been exported and deleted, so `occupied` and
+        `sample_id` are deliberately left alone here.
+        """
+        cleared = []
+
+        for slot in self.slot_list():
+            if slot.get("measurement") is not None:
+                cleared.append(slot.get("sample_id"))
+                slot["measurement"] = None
+
+        return cleared
+
+    def mark_occupied(self, slot_id, sample_id=None, measurement=None):
         """
         Record that a slot physically holds soil.
 
         Set after a successful acquisition: the soil really is in the
         slot, and stays there until clear_slot. The Sample ID is carried
         only so a response can be correlated with the PC's record.
+
+        `measurement` is the raw acquisition kept in RAM so the PC can
+        pull it back later if it lost the response. It is stored, never
+        interpreted - the ESP32 still performs no science.
         """
         slot_id = self.validate_slot(slot_id)
         slot = self.slots[slot_id]
@@ -150,7 +202,63 @@ class Carousel:
         if sample_id is not None:
             slot["sample_id"] = sample_id
 
+        if measurement is not None and config.RETAIN_LAST_SPECTRUM:
+            slot["measurement"] = measurement
+
         return slot
+
+    def slot_summary(self):
+        """
+        Slot state without the retained spectra.
+
+        get_status is polled on every screen refresh, and a full raw
+        acquisition per slot would add kilobytes to each poll. The
+        spectra are fetched deliberately, with get_saved_sample.
+        """
+        return [
+            {
+                "slot_id": slot["slot_id"],
+                "occupied": slot["occupied"],
+                "sample_id": slot["sample_id"],
+                "has_measurement": slot.get("measurement") is not None,
+            }
+            for slot in self.slot_list()
+        ]
+
+    def retained_samples(self):
+        """
+        Every slot holding a raw acquisition.
+
+        Keyed on the measurement ALONE. It used to also require a Sample
+        ID, which meant a measurement taken without one was held in RAM
+        but never listed - so the delete screen saw an empty index,
+        reported "already empty" and returned without deleting anything,
+        while the data was still there. Anything stored must be visible.
+        """
+        return [
+            slot for slot in self.slot_list()
+            if slot.get("measurement") is not None
+        ]
+
+    def retained_sample(self, sample_id):
+        """
+        One retained acquisition by Sample ID.
+
+        Also accepts the SLOTn placeholder the index reports for a
+        measurement that was taken without a Sample ID, so everything
+        listed can actually be fetched.
+        """
+        for slot in self.slot_list():
+            if slot.get("measurement") is None:
+                continue
+
+            if slot.get("sample_id") == sample_id:
+                return slot
+
+            if sample_id == "SLOT{}".format(slot["slot_id"]):
+                return slot
+
+        return None
 
     # ------------------------------------------------------------------
     # geometry
@@ -234,7 +342,7 @@ class Carousel:
         aligns Slot 1 with the soil loading hole and confirms it, which
         makes that position the carousel origin. Everything else follows
         from the fixed 180 deg scanner/loader relationship, so declaring
-        Slot 1 at the loader also declares Slot 5 at the scanner.
+        Slot 1 at the loader also declares Slot 3 at the scanner.
 
         Nothing moves here; the carousel is already where the operator
         put it.
@@ -371,13 +479,13 @@ class Carousel:
         """
         Swing the carousel 180 degrees between loader and scanner.
 
-        Uses the servo's dedicated half-turn calibration, NOT four
-        adjacent-slot moves. Four adjacent moves command roughly
-        4 x 40 = 160 effective degrees, which does not reach the far
-        position.
+        Uses the servo's dedicated half-turn calibration, NOT two
+        adjacent-slot moves: a continuous servo pays its acceleration
+        ramp once per move, so two short runs and one long sweep do not
+        cover the same angle.
 
-        Four slots is half of eight, so the tracked scanner slot moves by
-        the same amount whichever way the carousel swings.
+        The offset is half the slot count, so the tracked scanner slot
+        moves by the same amount whichever way the carousel swings.
         """
         if self.servo is None:
             raise CarouselError(
@@ -434,16 +542,17 @@ class Carousel:
         """
         Choose the physical slot to work with and bring it to the loader.
 
-        If the previous sample is still sitting at the SCANNER - which is
-        where measure_sample leaves it - the loading orientation is
-        restored first with the calibrated half turn, and only then does
-        the carousel step to the requested slot. The operator never has
-        to run the 180 degree return by hand.
+        A measurement now swings the sample back to the loading position
+        by itself, so normally there is nothing to restore. If the
+        carousel is nonetheless found at SCAN - an interrupted return,
+        say - the loading orientation is restored first with the
+        calibrated half turn, and only then does the carousel step to the
+        requested slot.
 
-        Sequential progression 1 -> 2 -> 3 ... is then one clockwise slot
-        transition, because plan_move resolves any delta of four slots or
-        fewer in the forward direction. Selecting a distant slot still
-        takes the shortest path.
+        Sequential progression 1 -> 2 -> 3 -> 4 is then one clockwise slot
+        transition, because plan_move resolves any delta of half the slot
+        count or fewer in the forward direction. Selecting a distant slot
+        still takes the shortest path.
         """
         slot_id = self.validate_slot(slot_id)
 
@@ -544,7 +653,7 @@ class Carousel:
         """
         Whole-slot movement, used during synchronization and maintenance.
 
-        Each slot is exactly 45 deg. Before synchronization this simply
+        Each slot is exactly 90 deg. Before synchronization this simply
         turns the carousel so the operator can line Slot 1 up with the
         loading hole; afterwards it keeps the tracked position and the
         selected slot in step.
@@ -560,7 +669,7 @@ class Carousel:
 
     def jog_steps(self, direction, steps):
         """
-        Manual jog by whole 45 degree slots.
+        Manual jog by whole 90 degree slots.
 
         This is a known movement, so the tracked position survives it.
         If the position was already unknown it simply stays unknown.
