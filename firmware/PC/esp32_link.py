@@ -1,4 +1,4 @@
-"""
+﻿"""
 Serial link to the ESP32 hardware controller.
 
     one command  = one JSON object followed by "\\n"
@@ -34,7 +34,8 @@ DEFAULT_BAUDRATE = 115200
 # Ordinary query/response round trips: ping, status.
 DEFAULT_TIMEOUT = 10.0
 
-# Commands that move the carousel: whole 90 deg slot steps plus settling.
+# Commands that move the carousel: whole slot steps, each one commanded
+# in encoder counts, polled to completion and then verified.
 MOVE_TIMEOUT = 30.0
 
 # A full measurement: 180 deg out, mechanical settling, illumination
@@ -48,6 +49,14 @@ MEASUREMENT_TIMEOUT = 180.0
 # short mid-block would waste the whole calibration step.
 ACQUISITION_TIMEOUT = 180.0
 
+# How many times a PURE READ is re-sent when its answer arrives damaged.
+#
+# Only commands that change nothing carry this: an acquisition, a status,
+# a diagnostic. Anything that moves the carousel is sent exactly once,
+# because a relative movement whose acknowledgement was lost has still
+# happened. See ESP32Link.request.
+READ_RETRIES = 2
+
 # Budget for the module to come up after the port is opened. Opening a
 # serial port resets many ESP32 development boards, and MicroPython then
 # needs to boot and run main.py before it can answer.
@@ -60,6 +69,24 @@ def utc_timestamp():
     The ESP32 has no reliable wall clock, so it never invents one.
     """
     return datetime.now(timezone.utc).isoformat()
+
+
+class CorruptFrameError(Exception):
+    """
+    A response arrived, and it was unreadable.
+
+    Kept apart from TimeoutError on purpose. "Nothing came back" and "the
+    answer came back damaged" have different causes and different cures:
+    the first means the module is not answering, the second means the
+    bytes were mangled between the two ends and asking again will very
+    probably work.
+    """
+
+    def __init__(self, message, sample=None):
+        super().__init__(message)
+
+        self.message = message
+        self.sample = sample or ""
 
 
 class LinkError(Exception):
@@ -118,6 +145,48 @@ def diagnose_noise(skipped):
     return None
 
 
+# Fragments that only ever appear inside a response frame. A line that
+# carries one of these and still will not parse is a damaged answer, not
+# console noise.
+FRAME_FINGERPRINTS = ('"request_id"', '"ok":', '"data":', '"cmd":')
+
+
+def salvage_json(text):
+    """
+    Recover a JSON object from a line with rubbish in front of it.
+
+    The cheap case, and worth trying first: the frame itself is intact
+    but something landed on the console immediately before it. Parsing
+    from the first '{' recovers the whole response.
+
+    Returns None when there is nothing recoverable - including the case
+    where the damage ate into the object itself, which no amount of
+    scanning can undo.
+    """
+    start = text.find("{")
+
+    while start != -1:
+        try:
+            value = json.loads(text[start:])
+
+        except ValueError:
+            start = text.find("{", start + 1)
+
+            continue
+
+        if isinstance(value, dict):
+            return value
+
+        start = text.find("{", start + 1)
+
+    return None
+
+
+def looks_like_a_frame(text):
+    """Was this unparseable line a response of ours, damaged in transit?"""
+    return any(mark in text for mark in FRAME_FINGERPRINTS)
+
+
 class ESP32Link:
     """JSON-over-USB client for the ESP32 hardware controller."""
 
@@ -144,6 +213,14 @@ class ESP32Link:
         self.serial = None
         self.online = False
         self.last_noise = []
+
+        # Answers that arrived damaged, and answers recovered from a line
+        # with rubbish in front of them. Not fatal on their own - both are
+        # handled - but a rising count is the difference between "one
+        # unlucky frame" and "this link is not healthy".
+        self.corrupt_frames = 0
+        self.salvaged_frames = 0
+
         self._request_id = 0
 
     # ------------------------------------------------------------------
@@ -245,13 +322,21 @@ class ESP32Link:
 
         return str(self._request_id)
 
-    def request(self, cmd, timeout=None, **payload):
+    def request(self, cmd, timeout=None, retries=0, **payload):
         """
         Send one command and return its ``data`` object.
 
         Raises LinkError if the module answered ``ok: false``; the
         error's ``data`` carries whatever partial result the firmware
         managed to produce.
+
+        `retries` re-sends the command when the answer arrives DAMAGED,
+        and it defaults to zero because most commands must never be
+        repeated: a carousel step is relative, so a movement whose
+        acknowledgement was lost has still happened and sending it again
+        would move the mechanism twice. Only callers that know their
+        command is a pure read - a ping, a status, an acquisition - ask
+        for retries.
         """
         if self.serial is None:
             raise RuntimeError("Link is not open; call open() first.")
@@ -259,33 +344,63 @@ class ESP32Link:
         if timeout is None:
             timeout = self.timeout
 
-        request_id = self._next_request_id()
+        attempts = int(retries) + 1
+        last_error = None
 
-        message = {"request_id": request_id, "cmd": cmd}
-        message.update(payload)
-        message.setdefault("timestamp", utc_timestamp())
+        for attempt in range(attempts):
+            request_id = self._next_request_id()
 
-        line = json.dumps(message) + "\n"
+            message = {"request_id": request_id, "cmd": cmd}
+            message.update(payload)
+            message["timestamp"] = utc_timestamp()
 
-        if self.verbose:
-            print(">>", line.strip())
+            line = json.dumps(message) + "\n"
 
-        self.serial.reset_input_buffer()
-        self.serial.write(line.encode("utf-8"))
-        self.serial.flush()
+            if self.verbose:
+                print(">>", line.strip())
 
-        response = self._read_response(request_id, timeout)
+            self.serial.reset_input_buffer()
+            self.serial.write(line.encode("utf-8"))
+            self.serial.flush()
 
-        if not response.get("ok"):
-            error = response.get("error") or {}
+            try:
+                response = self._read_response(request_id, timeout)
 
-            raise LinkError(
-                error.get("code", "UNKNOWN_ERROR"),
-                error.get("message", "No error message supplied."),
-                response.get("data") or error.get("details"),
-            )
+            except CorruptFrameError as error:
+                self.corrupt_frames += 1
+                last_error = error
 
-        return response.get("data")
+                if attempt + 1 < attempts:
+                    if self.verbose:
+                        print("?? damaged answer, asking again:",
+                              error.message)
+
+                    continue
+
+                # Out of attempts. Reported as a timeout because that is
+                # what the caller has to handle either way, but the text
+                # says plainly that an answer DID come back - the two
+                # faults have completely different causes.
+                raise TimeoutError(
+                    "Request {} was answered, but the answer was damaged "
+                    "in transit and could not be read after {} "
+                    "attempt(s).\n{}".format(
+                        request_id, attempts, error.message
+                    )
+                )
+
+            if not response.get("ok"):
+                error = response.get("error") or {}
+
+                raise LinkError(
+                    error.get("code", "UNKNOWN_ERROR"),
+                    error.get("message", "No error message supplied."),
+                    response.get("data") or error.get("details"),
+                )
+
+            return response.get("data")
+
+        raise TimeoutError(str(last_error))
 
     def _read_response(self, request_id, timeout):
         """
@@ -294,6 +409,13 @@ class ESP32Link:
         Lines that are not valid JSON are skipped rather than treated as
         protocol failures, but they are kept and reported if the wait
         times out - a traceback is usually the reason no answer came.
+
+        A line that will not parse and yet carries the fingerprint of a
+        response frame is a different matter: the module DID answer and
+        the answer was mangled on the way. Waiting out the rest of the
+        timeout for a reply that has already been and gone is the worst
+        possible response to that, so it raises CorruptFrameError
+        immediately and the caller decides whether asking again is safe.
         """
         deadline = time.monotonic() + timeout
         skipped = []
@@ -331,14 +453,37 @@ class ESP32Link:
                 response = json.loads(line.decode("utf-8", "replace"))
 
             except (ValueError, UnicodeDecodeError):
-                text = line.decode("utf-8", "replace")[:120]
+                text = line.decode("utf-8", "replace")
 
-                if self.verbose:
-                    print("?? (not JSON)", text)
+                # Cheap case first: the frame is whole, something just
+                # landed in front of it. Recovering it costs nothing and
+                # saves an acquisition.
+                recovered = salvage_json(text)
 
-                skipped.append(text)
+                if isinstance(recovered, dict) and "ok" in recovered:
+                    self.salvaged_frames += 1
 
-                continue
+                    if self.verbose:
+                        print("?? recovered a frame from a damaged line")
+
+                    response = recovered
+
+                elif looks_like_a_frame(text):
+                    raise CorruptFrameError(
+                        "A response frame arrived damaged: {} byte(s), "
+                        "unparseable, but carrying response fields. This "
+                        "is line noise on the USB console, not a module "
+                        "fault.".format(len(text)),
+                        sample=text[:160],
+                    )
+
+                else:
+                    if self.verbose:
+                        print("?? (not JSON)", text[:120])
+
+                    skipped.append(text[:120])
+
+                    continue
 
             if not isinstance(response, dict):
                 skipped.append("non-object JSON: {}".format(line[:80]))
@@ -373,7 +518,7 @@ class ESP32Link:
         return self.request("ping")
 
     def get_status(self):
-        return self.request("get_status")
+        return self.request("get_status", retries=READ_RETRIES)
 
     def sync_load_slot(self, load_slot):
         """Declare which slot is now under the loading hole. Moves nothing."""
@@ -427,7 +572,8 @@ class ESP32Link:
             payload["repeats"] = int(repeats)
 
         return self.request(
-            "sensor_test_raw", timeout=MEASUREMENT_TIMEOUT, **payload
+            "sensor_test_raw", timeout=MEASUREMENT_TIMEOUT,
+            retries=READ_RETRIES, **payload
         )
 
     def acquire_block(self, illumination, repeats):
@@ -440,6 +586,7 @@ class ESP32Link:
         return self.request(
             "acquire_block",
             timeout=ACQUISITION_TIMEOUT,
+            retries=READ_RETRIES,
             illumination=illumination,
             repeats=int(repeats),
         )
@@ -452,7 +599,8 @@ class ESP32Link:
             payload["repeats"] = int(repeats)
 
         return self.request(
-            "acquire_triad", timeout=ACQUISITION_TIMEOUT, **payload
+            "acquire_triad", timeout=ACQUISITION_TIMEOUT,
+            retries=READ_RETRIES, **payload
         )
 
     def led_test(self, hold_ms=400):
@@ -463,11 +611,13 @@ class ESP32Link:
 
     def list_saved_samples(self):
         """Index of the raw acquisitions the ESP32 is still holding."""
-        return self.request("list_saved_samples")
+        return self.request("list_saved_samples", retries=READ_RETRIES)
 
     def get_saved_sample(self, sample_id):
         """One retained acquisition, fetched individually to stay small."""
-        return self.request("get_saved_sample", sample_id=sample_id)
+        return self.request(
+            "get_saved_sample", retries=READ_RETRIES, sample_id=sample_id
+        )
 
     def delete_saved_samples(self):
         """
@@ -479,27 +629,117 @@ class ESP32Link:
         return self.request("delete_saved_samples")
 
     # ------------------------------------------------------------------
-    # servo calibration
+    # ST3215 servo
     # ------------------------------------------------------------------
 
+    def get_servo_options(self):
+        """Which actuators the firmware supports, and which is selected."""
+        return self.request("get_servo_options")
+
+    def select_servo(self, servo):
+        """
+        State which servo is physically installed.
+
+        Always invalidates the carousel position on the ESP32: physical
+        position state cannot survive a change of actuator. Pass "none" to
+        release the current backend and block movement again.
+        """
+        return self.request(
+            "select_servo", timeout=MOVE_TIMEOUT, servo=str(servo)
+        )
+
+    def servo_diagnostics(self):
+        """Communication and telemetry check. Moves nothing."""
+        return self.request("servo_diagnostics", retries=READ_RETRIES)
+
+    def servo_bus_scan(self, ids=None, bauds=None, swap=True,
+                       timeout_ms=None):
+        """
+        Search the servo bus for anything that answers. Moves nothing.
+
+        Works with no servo selected - it is the tool for exactly that
+        situation. Generously timed: a full ID sweep is several hundred
+        probes and must not be cut off half way, because a scan that
+        stops early reports "nothing found" for a servo it never reached.
+        """
+        payload = {"swap": bool(swap)}
+
+        if ids is not None:
+            payload["ids"] = ids
+
+        if bauds is not None:
+            payload["bauds"] = bauds
+
+        if timeout_ms is not None:
+            payload["timeout_ms"] = int(timeout_ms)
+
+        return self.request(
+            "servo_bus_scan", timeout=MEASUREMENT_TIMEOUT,
+            retries=READ_RETRIES, **payload
+        )
+
     def get_servo_calibration(self):
+        """The active backend's tunables. Shape differs by backend."""
         return self.request("get_servo_calibration")
 
     def set_servo_calibration(self, values=None, reset=False):
+        """
+        Override the active backend's calibration in RAM.
+
+        Nothing the ST3215 exposes is runtime-editable; it answers
+        SERVO_NOT_SUPPORTED rather than accepting a value it would ignore.
+        """
         if reset:
             return self.request("set_servo_calibration", reset=True)
 
         return self.request("set_servo_calibration", values=values or {})
 
-    def servo_test_move(self, kind, repeat=1, hold_ms=None):
+    def servo_configure(self, mode=None, confirm=False):
         """
-        Run one calibration movement.
+        Write the carousel's operating mode into the servo EPROM.
 
-        Generously timed: a deliberately slow move repeated a few times
-        can take most of a minute, and cutting it short mid-sweep would
-        leave the carousel somewhere unknown.
+        Requires confirm=True, because it changes non-volatile servo
+        state. Called once per servo, at bring-up.
         """
-        payload = {"kind": kind, "repeat": int(repeat)}
+        payload = {"confirm": bool(confirm)}
+
+        if mode is not None:
+            payload["mode"] = int(mode)
+
+        return self.request("servo_configure", timeout=MOVE_TIMEOUT, **payload)
+
+    def servo_torque(self, enable=True):
+        """
+        Enable or release the servo's holding torque.
+
+        Releasing it is what lets the carousel be turned by hand, and it
+        invalidates the tracked position on the ESP32.
+        """
+        return self.request(
+            "servo_torque", timeout=MOVE_TIMEOUT, enable=bool(enable)
+        )
+
+    def servo_test_move(self, kind, repeat=1, degrees=None, hold_ms=None,
+                        confirm=False):
+        """
+        Run one movement test on the active backend.
+
+        The available kinds come from the firmware rather than from a
+        list compiled into this client, so a movement test added to the
+        driver appears in the menu without a PC change.
+
+        Generously timed: a deliberately slow movement repeated a few
+        times can take most of a minute, and cutting it short mid-sweep
+        would leave the carousel somewhere unknown.
+        """
+        payload = {
+            "kind": kind,
+            "repeat": int(repeat),
+            "confirm": bool(confirm),
+        }
+
+        if degrees is not None:
+            payload["degrees"] = float(degrees)
 
         if hold_ms is not None:
             payload["hold_ms"] = int(hold_ms)

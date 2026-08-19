@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "seed_id": "FREYA_SESSION_20260817",
+  "description": "The twelve known reference materials measured on 2026-08-17, transcribed verbatim from the session output. This file is the human-readable, version-controllable source the SQLite learning database is built from; the database can be deleted and rebuilt from here at any time.",
+
+  "provenance": {
+    "session_id": "SESSION_20260817",
+    "measured_at": "2026-08-17",
+    "operator_statement": "Twelve labelled laboratory containers, measured one after another under one calibration without moving the sensor. The identity of each is known from its container.",
+    "calibration_id": "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
+    "legacy_calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+    "transcribed_from": "the FULL SPECTRAL DATA blocks of the operator's terminal session",
+    "raw_units": "counts, AS7265x calibrated registers, as reported by the module",
+    "channel_order": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "R", "S", "T", "U", "V", "W"]
+  },
+
+  "sensor_settings": {
+    "measurement_mode": 3,
+    "integration_cycles": 100,
+    "gain": 2,
+    "gain_x": "16x",
+    "white_current_ma": 25,
+    "uv_current_ma": 25,
+    "ir_current_ma": 25
+  },
+
+  "independence_note": "Each material is one INDEPENDENT measurement: a different physical sample, loaded separately. The three acquisitions inside each are sensor repeats and are aggregated, not counted as independent. No material has a second independent measurement yet, so no class has a measurable scatter.",
+
+  "label_policy": {
+    "verification_status": "VERIFIED",
+    "verification_source": "operator_known_reference_material",
+    "certainty": 1.0,
+    "why": "Pure laboratory materials from labelled containers, measured deliberately to be identified. This is the operator asserting a fact about the physical world, not a model asserting a fact about its own output."
+  },
+
+  "previous_pipeline": {
+    "model_version": "LEGACY_ANALYSIS_V2",
+    "description": "What the pipeline in force on 2026-08-17 concluded, recorded so the new model can be compared against it rather than against an impression. Six of the twelve were suppressed entirely by a quality-control FAIL that was really a normalization warning.",
+    "level_mapping": {
+      "REFERENCE_MATCH": "KNOWN_MATERIAL",
+      "METRICS_DISAGREE": "AMBIGUOUS_SET",
+      "AMBIGUOUS": "AMBIGUOUS_SET",
+      "MEASUREMENT_QUALITY_FAIL": "UNKNOWN"
+    }
+  },
+
+  "observations": [
+    {
+      "measurement_id": "SESSION_20260817_01",
+      "order": 1,
+      "operator_label": "Aktivni Uhli Hydrafin CC",
+      "material_key": "Activated Carbon",
+      "raw": {
+        "white": [0.8086, 6.8325, 20.8888, 10.4564, 16.8020, 22.4021, 13.5754, 18.8470, 15.0836, 3.8902, 0.5743, 0.9196, 71.4465, 22.0869, 4.8097, 2.6692, 4.0121, 2.2058],
+        "uv": [71.1530, 8.7847, 2.8485, 1.7427, 0.7637, 0.7226, 0.5028, 0.4712, 0.4190, 0.3890, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "ir": [0.8086, 0.9761, 2.8485, 0.8714, 0.7637, 0.0, 2.0112, 2.8271, 5.0279, 1.5561, 2.8715, 9.1955, 2.1327, 7.7304, 3.2065, 3.5589, 4.0121, 29.7777]
+      },
+      "previous_prediction": {
+        "level": "AMBIGUOUS_SET",
+        "material_key": "Epsom Salt (Magnesium Sulfate)",
+        "status": "METRICS_DISAGREE",
+        "hardware_qc": "PASS",
+        "note": "RMSE placed Activated Carbon first by a factor of 19 over the runner-up; rank aggregation reduced that to one vote and the combined ranking chose Epsom Salt."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_02",
+      "order": 2,
+      "operator_label": "Siran mednaty pentahydrat",
+      "material_key": "Copper(II) Sulfate",
+      "raw": {
+        "white": [9.7027, 106.3920, 421.5744, 209.9988, 281.0511, 289.7818, 153.8545, 164.9113, 59.4964, 11.2816, 4.0201, 4.5978, 420.1480, 51.9041, 12.0244, 9.7871, 24.0729, 11.0288],
+        "uv": [1491.7883, 182.5257, 67.4139, 34.8546, 15.2745, 9.3944, 10.0558, 7.0676, 10.0557, 6.2243, 0.5743, 1.8391, 2.1327, 1.1043, 0.8016, 0.8897, 1.6049, 1.1029],
+        "ir": [0.8086, 4.8804, 48.4241, 20.9127, 2.2912, 0.7226, 2.5140, 3.2982, 5.4469, 1.5561, 3.4458, 10.1151, 2.1327, 8.8347, 3.2065, 4.4487, 5.6170, 44.1151]
+      },
+      "previous_prediction": {
+        "level": "KNOWN_MATERIAL",
+        "material_key": "Copper(II) Sulfate",
+        "status": "REFERENCE_MATCH",
+        "hardware_qc": "PASS",
+        "note": "Correct, and by a wide margin: 17.17 percentage points clear on cosine, all three metrics agreeing."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_03",
+      "order": 3,
+      "operator_label": "Vlockovac siran hlinity",
+      "material_key": "Aluminum Sulfate",
+      "raw": {
+        "white": [42.0450, 203.0233, 656.0989, 364.2304, 567.4482, 750.1084, 495.2505, 748.2263, 592.8689, 144.3262, 18.3775, 26.6670, 2623.2592, 750.9531, 173.1507, 98.7608, 142.0300, 79.4072],
+        "uv": [2153.9968, 265.4920, 93.9997, 54.0246, 25.2029, 15.8983, 16.0894, 12.7217, 16.3406, 8.5584, 0.5743, 2.7587, 9.5973, 2.2087, 1.6032, 1.7795, 2.4073, 2.2058],
+        "ir": [7.2770, 12.6890, 68.3634, 33.1118, 10.6922, 4.3359, 6.5363, 9.4235, 8.3798, 3.8902, 31.5864, 12.8737, 8.5309, 12.1478, 7.2146, 15.1255, 94.6867, 812.8210]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Talc",
+        "note": "Suppressed by 'reflectance out of range' on 18 channels. The raw counts are valid; the sample is simply brighter than the white target."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_04",
+      "order": 4,
+      "operator_label": "Kaolin",
+      "material_key": "Kaolin (White Clay)",
+      "raw": {
+        "white": [38.0022, 171.7889, 557.3518, 316.3053, 506.3501, 685.7927, 449.9992, 684.6176, 545.5232, 136.1568, 16.6546, 23.9084, 2499.5610, 672.5448, 168.3410, 92.5326, 132.4008, 70.5842],
+        "uv": [1677.7566, 207.9037, 75.0099, 41.8255, 18.3294, 11.5624, 12.0670, 9.4235, 12.5697, 6.6133, 0.5743, 2.7587, 7.4646, 2.2087, 0.8016, 0.8897, 1.6049, 1.1029],
+        "ir": [7.2770, 11.7129, 57.9190, 27.8837, 10.6922, 4.3359, 6.5363, 9.4235, 7.9608, 3.8902, 32.7349, 12.8737, 8.5309, 12.1478, 8.0162, 15.1255, 91.4769, 774.2203]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Magnesium Carbonate",
+        "note": "Suppressed by 'reflectance out of range' on 11 channels."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_05",
+      "order": 5,
+      "operator_label": "Siran horecnaty potravinarsky",
+      "material_key": "Epsom Salt (Magnesium Sulfate)",
+      "raw": {
+        "white": [44.4707, 223.5208, 733.9572, 406.0558, 614.7992, 794.9126, 553.0717, 827.3837, 641.0526, 156.3858, 20.1004, 29.4257, 2836.5324, 756.4748, 179.5637, 99.6505, 152.4616, 82.7158],
+        "uv": [2658.5366, 313.3196, 108.2421, 60.9955, 27.4941, 17.3435, 19.1061, 14.6064, 20.1115, 10.8925, 0.5743, 3.6782, 9.5973, 2.2087, 1.6032, 1.7795, 2.4073, 2.2058],
+        "ir": [7.2770, 13.6650, 80.7068, 38.3400, 11.4559, 4.3359, 6.5363, 9.4235, 8.3798, 3.8902, 31.5864, 12.8737, 9.5973, 12.1478, 7.2146, 14.2358, 95.4891, 799.5864]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Citric Acid",
+        "note": "Suppressed by 'reflectance out of range' on 18 channels."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_06",
+      "order": 6,
+      "operator_label": "Kyselina citronova monohydrat",
+      "material_key": "Citric Acid",
+      "raw": {
+        "white": [40.4279, 202.0472, 660.8463, 379.9149, 575.8492, 742.8819, 533.9656, 796.7573, 620.9411, 150.1615, 19.5261, 27.5866, 2690.4404, 718.9272, 169.9442, 95.2018, 144.4373, 78.3043],
+        "uv": [2354.5190, 280.1331, 100.6461, 60.1242, 27.4941, 17.3435, 18.6033, 14.1353, 18.4355, 10.1145, 0.5743, 3.6782, 9.5973, 2.2087, 1.6032, 1.7795, 2.4073, 2.2058],
+        "ir": [6.4685, 12.6890, 73.1109, 35.7259, 10.6922, 4.3359, 6.5363, 9.4235, 8.3798, 3.8902, 30.4378, 12.8737, 8.5309, 12.1478, 7.2146, 14.2358, 90.6745, 776.4260]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Citric Acid",
+        "note": "Suppressed by 'reflectance out of range' on 18 channels - and the suppressed top match was correct."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_07",
+      "order": 7,
+      "operator_label": "Oxid horecnaty",
+      "material_key": "Magnesium Oxide",
+      "raw": {
+        "white": [29.1081, 127.8656, 404.4835, 234.3971, 363.5334, 487.7873, 367.0384, 581.9014, 485.1888, 122.1521, 14.3574, 21.1497, 2034.6256, 581.9886, 141.0858, 77.4071, 109.9328, 60.6583],
+        "uv": [1175.6424, 148.3632, 57.9190, 31.3691, 12.9833, 8.6718, 9.0503, 7.0676, 9.2178, 5.0573, 0.5743, 1.8391, 6.3982, 1.1043, 0.8016, 0.8897, 1.6049, 1.1029],
+        "ir": [6.4685, 10.7368, 46.5251, 22.6555, 9.1647, 3.6132, 6.0335, 8.4812, 7.9608, 3.5012, 28.1406, 12.8737, 7.4646, 12.1478, 7.2146, 13.3460, 79.4405, 698.1217]
+      },
+      "previous_prediction": {
+        "level": "AMBIGUOUS_SET",
+        "material_key": "Magnesium Oxide",
+        "status": "METRICS_DISAGREE",
+        "hardware_qc": "PASS",
+        "note": "Correct material, but reported as a metric disagreement because RMSE favoured Talc."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_08",
+      "order": 8,
+      "operator_label": "Bentonit",
+      "material_key": "Bentonite",
+      "raw": {
+        "white": [15.3626, 56.6123, 169.0096, 102.8210, 177.1844, 263.7664, 189.5527, 299.1963, 246.7843, 64.5772, 7.4659, 11.0346, 1102.6221, 319.1551, 80.1624, 43.5971, 60.1822, 33.0863],
+        "uv": [371.1278, 50.7558, 20.8888, 11.3277, 4.5824, 2.8906, 3.0168, 2.3559, 2.9329, 1.5561, 0.0, 0.9196, 3.1991, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "ir": [4.0428, 5.8564, 18.9898, 10.4564, 5.3461, 2.1679, 4.5251, 6.5965, 6.7038, 2.7231, 19.5261, 11.9542, 5.3318, 9.9391, 5.6114, 9.7871, 48.9482, 425.7108]
+      },
+      "previous_prediction": {
+        "level": "AMBIGUOUS_SET",
+        "material_key": "Green Clay (Illite)",
+        "status": "METRICS_DISAGREE",
+        "hardware_qc": "PASS",
+        "note": "Wrong material named. Bentonite was first by cosine and by Pearson; the combined rank chose Green Clay."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_09",
+      "order": 9,
+      "operator_label": "Uhlicitan horecnaty",
+      "material_key": "Magnesium Carbonate",
+      "raw": {
+        "white": [49.3220, 247.9227, 816.5630, 447.8814, 693.4630, 904.7550, 551.5633, 828.7972, 656.1362, 165.7223, 21.2490, 31.2648, 3116.9866, 856.9701, 206.0173, 114.7760, 167.7077, 91.5389],
+        "uv": [2829.1424, 339.6736, 114.8885, 65.3523, 30.5490, 20.2341, 20.1117, 15.0776, 20.5304, 11.6706, 1.1486, 3.6782, 10.6637, 2.2087, 1.6032, 1.7795, 2.4073, 2.2058],
+        "ir": [8.0856, 15.6172, 83.5553, 40.0828, 12.9833, 5.0585, 7.0391, 9.8947, 8.7988, 4.2792, 36.7550, 13.7933, 9.5973, 13.2521, 8.8179, 16.9050, 110.7353, 963.9152]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Talc",
+        "note": "Suppressed by 'reflectance out of range' on 18 channels."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_10",
+      "order": 10,
+      "operator_label": "Zelena skalice",
+      "material_key": "Iron(II) Sulfate",
+      "raw": {
+        "white": [17.7883, 67.3491, 234.5245, 149.8747, 280.2873, 423.4716, 249.8878, 388.7196, 257.6780, 47.0714, 8.0402, 11.0346, 1580.3538, 354.4940, 75.3526, 46.2663, 85.0575, 43.0122],
+        "uv": [297.5491, 47.8276, 24.6868, 14.8132, 4.5824, 2.8906, 2.5140, 1.8847, 2.0949, 1.1671, 0.0, 0.0, 3.1991, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "ir": [1.6171, 2.9282, 20.8888, 12.1991, 2.2912, 0.7226, 2.5140, 3.7694, 5.8658, 1.9451, 5.7430, 10.1151, 4.2655, 8.8347, 4.0081, 5.3384, 18.4559, 126.8310]
+      },
+      "previous_prediction": {
+        "level": "AMBIGUOUS_SET",
+        "material_key": "Kaolin (White Clay)",
+        "status": "AMBIGUOUS",
+        "hardware_qc": "PASS",
+        "note": "Wrong material named, and the true material was not in the reported top eight."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_11",
+      "order": 11,
+      "operator_label": "Uhlicitan vapenaty",
+      "material_key": "Calcium Carbonate (Chalk)",
+      "raw": {
+        "white": [10.5112, 73.2055, 341.8171, 156.8456, 365.8246, 625.0903, 52.7932, 56.5410, 36.4520, 13.2267, 1.7229, 2.7587, 729.3940, 194.3643, 95.3932, 41.8176, 36.1093, 17.6460],
+        "uv": [1074.5728, 103.4638, 18.0403, 22.6555, 12.9833, 5.7812, 5.0279, 5.6541, 8.7988, 3.1122, 0.5743, 1.8391, 1.0664, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "ir": [2.4257, 2.9282, 8.5454, 5.2282, 3.8186, 1.4453, 6.5363, 8.0100, 7.1228, 4.6682, 37.3293, 12.8737, 6.3982, 12.1478, 6.4130, 11.5666, 69.8114, 805.1008]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Aluminum Sulfate",
+        "note": "Suppressed by a detector-seam discontinuity. This one is a genuine hardware-side finding, not a normalization artefact: the visible die reads far lower than its neighbours."
+      }
+    },
+    {
+      "measurement_id": "SESSION_20260817_12",
+      "order": 12,
+      "operator_label": "Mastek KT",
+      "material_key": "Talc",
+      "raw": {
+        "white": [46.8963, 230.3533, 774.7854, 404.3131, 623.9638, 833.9355, 543.5186, 802.4114, 645.6614, 156.7748, 19.5261, 28.5062, 2975.1600, 853.6570, 198.8026, 112.9966, 163.6956, 92.6417],
+        "uv": [2618.9176, 319.1760, 115.8380, 60.9955, 27.4941, 18.0662, 19.1061, 14.1353, 18.8545, 10.8925, 0.5743, 3.6782, 9.5973, 2.2087, 1.6032, 1.7795, 2.4073, 2.2058],
+        "ir": [8.8941, 16.5933, 87.3533, 40.0828, 12.9833, 5.0585, 8.0447, 10.8370, 9.2178, 4.6682, 40.2008, 14.7129, 10.6637, 14.3565, 8.8179, 17.7947, 113.1425, 1020.1620]
+      },
+      "previous_prediction": {
+        "level": "UNKNOWN",
+        "material_key": null,
+        "status": "MEASUREMENT_QUALITY_FAIL",
+        "hardware_qc": "FAIL",
+        "suppressed_top_match": "Magnesium Carbonate",
+        "note": "Suppressed by 'reflectance out of range' on 18 channels."
+      }
+    }
+  ]
+}

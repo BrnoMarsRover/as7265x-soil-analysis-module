@@ -1,0 +1,55 @@
+{
+  "manifest_version": 1,
+  "generated_at": "2026-08-18T11:30:00+00:00",
+  "note": "SHA256 of every authoritative input. The map image hash demonstrates that the spatial source of truth was never rewritten - annotation produces a separate SVG overlay.",
+  "sources": {
+    "Exact_Science_Task_Rubric.xlsx": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\Photos\\competition 20262027\\Exact_Science_Task_Rubric.xlsx",
+      "present": true,
+      "sha256": "df665c804b94d87714f13bf9582cee5ee849ac4d4bdc4f07981b19a5344f4463",
+      "bytes": 12621
+    },
+    "MarsYard_zones.png": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\Photos\\competition 20262027\\MarsYard_zones.png",
+      "present": true,
+      "sha256": "c396414648d0fbb7146ec23fcdf35a02a12f21c4c15fe3020ff093146acaaf6c",
+      "bytes": 1506612
+    },
+    "Science_Task_Rules_Updated.pdf": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\Photos\\competition 20262027\\Science_Task_Rules_Updated.pdf",
+      "present": true,
+      "sha256": "7f501f8f721d2382c1cf25167988633d80693b5ae60d9a595714c7ebff182631",
+      "bytes": 49255
+    },
+    "Soil.png": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\Photos\\competition 20262027\\Soil.png",
+      "present": true,
+      "sha256": "58f65c7a98b5bfa71dfe13d8fd766e697de8284d72529bd215f85d60eb93b7d6",
+      "bytes": 63669
+    },
+    "erc_science_requirements.json": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\firmware\\Science\\data\\erc_science_requirements.json",
+      "present": true,
+      "sha256": "14f01eda27595fdf18e7fbd70382c55cf8ec7ad9a5d09081e4ddd5f4884fd8dc",
+      "bytes": 24835
+    },
+    "mars_yard_2026.png": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\Photos\\competition 20262027\\mars_yard_2026.png",
+      "present": true,
+      "sha256": "5f954dcd91c27ddf6465a67d15e3d35b45871ed4119172898f578db0a65f1d16",
+      "bytes": 14432938
+    },
+    "mars_yard_points.json": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\firmware\\Science\\data\\mars_yard_points.json",
+      "present": true,
+      "sha256": "a2bc7ae927fe009d8a6e215083128b328a18dde39b580ec15e3c1e75f2fd41c2",
+      "bytes": 9576
+    },
+    "science_plan.json": {
+      "path": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\firmware\\Science\\data\\science_plan.json",
+      "present": true,
+      "sha256": "bf0f0af16e3e8bf3f45c34370dc9f8d1b5a6c8f695827d007562b476efecb40f",
+      "bytes": 16996
+    }
+  }
+}

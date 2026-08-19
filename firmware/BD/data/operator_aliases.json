@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "description": "Bench names the operator uses for materials already in the libraries. An alias is a NAME, never a spectrum: nothing here changes DB1, DB2 or DB3, and an alias that does not resolve to an existing material is refused rather than creating one.",
+  "language_note": "The labels are as they appear on the physical containers, mostly Czech.",
+  "added_by": "operator, 2026-08-18, from the containers used in the 2026-08-17 session",
+
+  "aliases": {
+    "Aktivni Uhli Hydrafin CC": "Activated Carbon",
+    "Aktivni uhli": "Activated Carbon",
+
+    "Siran mednaty pentahydrat": "Copper(II) Sulfate",
+    "Siran mednat pentahydrat": "Copper(II) Sulfate",
+    "Modra skalice": "Copper(II) Sulfate",
+
+    "Vlockovac siran hlinity": "Aluminum Sulfate",
+    "Siran hlinity": "Aluminum Sulfate",
+
+    "Siran horecnaty potravinarsky": "Epsom Salt (Magnesium Sulfate)",
+    "Siran horecnaty": "Epsom Salt (Magnesium Sulfate)",
+    "Horka sul": "Epsom Salt (Magnesium Sulfate)",
+
+    "Kyselina citronova monohydrat": "Citric Acid",
+    "Kyselina cytronova monohydrat": "Citric Acid",
+    "Kyselina citronova": "Citric Acid",
+
+    "Oxid horecnaty": "Magnesium Oxide",
+    "Paleny magnezit": "Magnesium Oxide",
+
+    "Bentonit": "Bentonite",
+
+    "Uhlicitan horecnaty": "Magnesium Carbonate",
+    "Magnezit lehky": "Magnesium Carbonate",
+
+    "Siran zeleznaty heptahydrat": "Iron(II) Sulfate",
+    "Zelena skalice": "Iron(II) Sulfate",
+
+    "Uhlicitan vapenaty": "Calcium Carbonate (Chalk)",
+    "Vapenec": "Calcium Carbonate (Chalk)",
+
+    "Mastek": "Talc",
+    "Mastek KT": "Talc",
+    "Talek": "Talc",
+    "Steatit": "Talc",
+    "Klouzek": "Talc"
+  }
+}

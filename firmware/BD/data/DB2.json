@@ -1,0 +1,44 @@
+{
+  "database_id": "DB2",
+  "database_version": "measured54-v1",
+  "schema_version": 1,
+  "measurement_type": "MEASURED",
+  "feature_space": "AS7265X_54_MULTIILLUM",
+  "instrument": "AS7265x on the Freya science module",
+  "status": "EMPTY",
+
+  "description": "The same materials measured on THIS instrument under all three illuminations: 18 spectral bands x 3 illumination conditions = 54 features per material.",
+
+  "feature_model": {
+    "spectral_bands": 18,
+    "illuminations": ["white", "uv", "ir"],
+    "features": 54,
+    "feature_id_format": "<illumination>:<channel>, e.g. white:A, ir:W",
+    "wording": "18 spectral bands x 3 illumination conditions. NOT 54 wavelengths - the sensor has 18 detectors."
+  },
+
+  "why_empty": "DB2 cannot be derived from DB1. DB1 holds 18 raw Sample values per material under a single unrecorded illumination. The 36 missing UV and IR features per material were never measured, and changing the White reference cannot create them. Populating DB2 requires physically remeasuring the materials under WHITE, UV and IR.",
+
+  "blocked_by": [
+    "No active full spectral calibration exists. Run Tools -> Sensor Test -> Full Spectral Calibration first.",
+    "Each material must then be physically remeasured under all three illuminations."
+  ],
+
+  "record_schema": {
+    "material_id": "string",
+    "display_name": "string",
+    "canonical_name": "string or null",
+    "chemical_formula": "string or null",
+    "material_class": "string or null",
+    "measurement_type": "MEASURED",
+    "calibration_id": "id of the full calibration used",
+    "acquisition_settings": "gain, integration_cycles, measurement_mode, led_current, geometry, repeats",
+    "features": "54 entries keyed <illumination>:<channel>, each with raw_sample, dark_reference, white_reference, reflectance",
+    "quality_flags": "list of strings"
+  },
+
+  "never": "Never populate UV or IR features by copying WHITE, by scaling DB1, or from external reflectance libraries. Those would not be measurements of this instrument.",
+
+  "material_count": 0,
+  "materials": {}
+}

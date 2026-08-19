@@ -1,195 +1,138 @@
 """
-Science configuration for the BD layer.
+Where scientific data lives.
 
-Runs on the main computer only. Nothing here ever reaches the ESP32,
-and nothing here describes hardware: GPIO pins, gain and servo timing
-live in firmware/ESP32/config.py.
+BD remembers. This file names the files; it holds no thresholds and no
+metric settings, which are scientific judgements and live in
+Measurements/config.py.
 
-Paths are derived from this file's own location, so the PC application
-finds the protected data whatever directory it was started from.
+    BD/data/DB1.json                 measured here, 18 bands, 23 materials
+    BD/data/DB1_source.txt           the verbatim source DB1 is built from
+    BD/data/DB2.json                 measured here, 54 features (WHITE/UV/IR)
+    BD/data/DB3.json                 external spectra projected to our bands
+    BD/data/calibration_legacy.json  the White/Dark DB1 was measured against
+    BD/data/calibrations.json        every calibration ever made, and which
+                                     one of them is active
+    BD/data/samples.json             samples measured during a run
+
+One file per thing. Each database carries its own metadata, provenance and
+audit inside it - there are no side-car manifests to fall out of step with
+the data they describe.
+
+Layer rule: BD must never import Measurements.
 """
 
 from pathlib import Path
 
-SCIENCE_VERSION = "4.0.0"
-
-# Bumped when the stored Sample record gains or changes fields.
-SAMPLE_SCHEMA_VERSION = 3
-
-# Bumped when the calibration file layout changes.
-CALIBRATION_SCHEMA_VERSION = 2
-
 BD_DIR = Path(__file__).resolve().parent
+DATA_DIR = BD_DIR / "data"
+
+SAMPLE_SCHEMA_VERSION = 3
+CALIBRATION_SCHEMA_VERSION = 2
+STORAGE_LAYOUT_VERSION = 5
 
 # ----------------------------------------------------------------------
-# PROTECTED SCIENTIFIC DATA - READ ONLY
+# THE THREE DATABASES
 # ----------------------------------------------------------------------
-# Neither file is ever written by this software. references.json holds
-# the one fixed competition White and Dark; database.json holds the
-# reference material spectra. Regenerating either would silently
-# invalidate every measurement taken against it.
+# Three databases, permanently separate. They answer different questions
+# and must never be pooled: a cosine of 0.97 against DB1 means "this looks
+# like something we measured here", while the same number against DB3
+# means "this looks like a laboratory spectrum, after modelling our
+# sensor". Exactly one copy of each - no backups, no legacy duplicates.
 
-REFERENCES_FILE = BD_DIR / "references.json"
-DATABASE_FILE = BD_DIR / "database.json"
+DB1_FILE = DATA_DIR / "DB1.json"
+DB2_FILE = DATA_DIR / "DB2.json"
+DB3_FILE = DATA_DIR / "DB3.json"
+
+# The verbatim historical record DB1 is generated from. Never edited; its
+# SHA256 is stored inside DB1.json so the derivation stays checkable.
+DB1_SOURCE = DATA_DIR / "DB1_source.txt"
+
+# Historical name. "The material database" means DB1 until DB2 exists.
+DATABASE_FILE = DB1_FILE
 
 # ----------------------------------------------------------------------
-# THE TWO CALIBRATIONS
+# CALIBRATIONS
 # ----------------------------------------------------------------------
-# The material spectra in database.json were normalized against ONE
-# specific White/Dark pair. That pair is therefore part of the database:
-# re-normalizing the library against a newer White would silently change
-# what every stored number means.
+# LEGACY   the White/Dark DB1 was measured against. Immutable, and the
+#          only calibration ever used to compare against DB1.
+# ACTIVE   a full Dark + WHITE/UV/IR calibration made by the operator,
+#          used for the scientific record and quality control.
 #
-# So there are two calibrations, permanently:
+# A measurement is normalized BOTH ways, which is what lets the instrument
+# be recalibrated without remeasuring the material library.
+
+REFERENCES_FILE = DATA_DIR / "calibration_legacy.json"
+
+# ONE library file holds every calibration ever made - each with its own
+# timestamp, sensor settings, repeats, statistics and raw acquisitions -
+# together with the id of the one currently in force. The operator picks
+# from that list instead of being pushed into making a new calibration
+# after every restart.
 #
-#   LEGACY   references.json, id FREYA_COMPETITION_2026_CAL_V1.
-#            Immutable. The ONLY calibration ever used to compare a
-#            measurement against database.json.
-#
-#   ACTIVE   a full Dark + WHITE/UV/IR calibration created by the
-#            operator. Used for the new 54-feature scientific record,
-#            measurement QC and any future model.
-#
-# A new measurement is normalized BOTH ways. That is what lets the
-# operator recalibrate the instrument without remeasuring the library.
+# It replaces the earlier layout of one file per calibration plus a
+# separate calibration_active.json pointer, which spread one fact across
+# two files and made "which calibrations do I have?" a directory listing.
+CALIBRATION_LIBRARY_FILE = DATA_DIR / "calibrations.json"
+CALIBRATION_LIBRARY_LAYOUT = "library-v1"
+
+# Read once, on the first run after the upgrade, so calibrations made
+# under the old layout are carried into the library rather than lost.
+# Never written again. See BD/calibrations.py::CalibrationStore._migrate.
+LEGACY_CALIBRATION_POINTER = DATA_DIR / "calibration_active.json"
+CALIBRATION_DIR = DATA_DIR
 
 LEGACY_CALIBRATION_ID = "FREYA_COMPETITION_2026_CAL_V1"
-
-# Historical name, kept so older code and records still resolve.
 CALIBRATION_ID = LEGACY_CALIBRATION_ID
-
-# Immutable, one file per calibration. Nothing here is ever overwritten.
-CALIBRATION_DIR = BD_DIR / "calibrations"
-
-# Names the calibration currently in force. Small and rewritable; the
-# calibration files it points at are not.
-ACTIVE_CALIBRATION_POINTER = CALIBRATION_DIR / "active.json"
-
 CALIBRATION_ID_PREFIX = "FREYA_FULL_SPECTRAL_CAL"
 
 # ----------------------------------------------------------------------
-# STORED PRECISION
+# ACQUISITION PROFILES
 # ----------------------------------------------------------------------
-# Enough to preserve the sensor resolution without bloating a record.
-RAW_DECIMALS = 4
-NORMALIZED_DECIMALS = 6
-
-# ----------------------------------------------------------------------
-# AUTOMATIC INTERPRETATION THRESHOLDS
-# ----------------------------------------------------------------------
-# HEURISTIC COMPETITION-SUPPORT THRESHOLDS - NOT SCIENTIFICALLY VALIDATED.
+# HOW a measurement was made - sensor settings, illumination, geometry,
+# procedure, hardware revision. Three different things that used to be
+# muddled into one:
 #
-# The metric is cosine similarity between 18-channel reflectance
-# vectors. Reflectance is non-negative, so every material in the
-# database tends to score high; the useful information is the DIFFERENCE
-# between the top candidates, not the absolute number.
+#   profile      the conditions       "16x gain, 100 cycles, 25 mA, this
+#                                      chamber, this distance"
+#   calibration  what the REFERENCE   "under those conditions the white
+#                read under them       target read 2311 counts on R730"
+#   measurement  what the SAMPLE      "under those conditions this soil
+#                read under them       read 3116 counts on R730"
 #
-# Tune both against real measurements of known materials.
+# A calibration is only valid for a measurement taken under the same
+# profile. Applying one across profiles is a research operation, never a
+# silent default. See Documentation/DECISION_ARCHITECTURE.md.
+ACQUISITION_PROFILES_FILE = DATA_DIR / "acquisition_profiles.json"
 
-# Below this best-match score the result is reported as a weak match.
-MIN_SIMILARITY_PERCENT = 85.0
-
-# If best and second-best are closer than this many percentage points,
-# the classification is reported as ambiguous.
-AMBIGUITY_MARGIN_PERCENT = 1.5
+# Bench names for materials that already exist in the libraries. A NAME
+# table only - it can never create a material or change a spectrum.
+OPERATOR_ALIASES_FILE = DATA_DIR / "operator_aliases.json"
+ACQUISITION_PROFILE_SCHEMA_VERSION = 1
 
 # ----------------------------------------------------------------------
-# MEASUREMENT QUALITY THRESHOLDS
+# DECISION LEARNING DATABASE
 # ----------------------------------------------------------------------
-# Every one of these is a judgement call, not a physical constant. They
-# exist here, named and commented, so that tuning them is a deliberate
-# act rather than an edit buried in a function.
-
-# --- illumination strength -------------------------------------------
-# White minus Dark is the denominator of the reflectance. Below this the
-# channel is not measuring anything: the lamp does not reach it, or the
-# detector does not respond there.
-MIN_DENOMINATOR = 1.0
-
-# Below this the channel is weak but still arguably usable.
-WEAK_DENOMINATOR = 5.0
-
-# How many of the 18 channels may be weak before the whole measurement
-# is only a warning, and before it fails outright.
-MAX_WEAK_CHANNELS_WARNING = 3
-MAX_WEAK_CHANNELS_FAIL = 6
-
-# Fewer usable channels than this and there is nothing to classify.
-MIN_VALID_CHANNELS = 12
-
-# --- reflectance sanity ----------------------------------------------
-# Reflectance above 1.0 means the sample returned more light than the
-# white reference. A little is measurement uncertainty; a lot means the
-# calibration no longer describes the optical geometry.
+# The history of what was measured, what the Decision Model concluded and
+# what the sample actually was. PC-side only - it never goes near the
+# ESP32.
 #
-# Values are NEVER clamped - these only classify the result.
-REFLECTANCE_WARNING_MAX = 1.15
-REFLECTANCE_FAIL_MAX = 2.0
-
-# Reflectance below this is more than noise around zero.
-REFLECTANCE_WARNING_MIN = -0.05
-REFLECTANCE_FAIL_MIN = -0.25
-
-# Fraction of channels allowed outside the expected range.
-MAX_FRACTION_OUT_OF_RANGE_WARNING = 0.15
-MAX_FRACTION_OUT_OF_RANGE_FAIL = 0.35
-
-# --- triad boundary --------------------------------------------------
-# The 18 channels come from three separate detectors. F535->G560 and
-# L705->R730 are the seams between them, so a mismatch in gain or
-# illumination shows up there first as a step that no real spectrum has.
+# SQLite rather than JSON because this one grows without bound and is
+# queried by selection, join and aggregate: "every VERIFIED observation of
+# a carbonate under profile P, excluding session S".
 #
-# Expressed as a ratio between the two channels either side. Real
-# spectra do have slopes, so the thresholds are deliberately loose.
-BOUNDARY_WARNING_RATIO = 3.0
-BOUNDARY_FAIL_RATIO = 8.0
+# It is NOT a fourth reference database. DB1 and DB2 say what a material
+# looks like; this says what the system has SEEN and how often it was
+# right. Nothing here may modify a measured reference spectrum.
+DECISION_LEARNING_DIR = DATA_DIR / "decision_learning"
+DECISION_LEARNING_DB = DECISION_LEARNING_DIR / "decision_learning.sqlite3"
+DECISION_LEARNING_SCHEMA_VERSION = 1
 
-BOUNDARY_PAIRS = (("F", "G"), ("L", "R"))
-
-# --- repeatability ---------------------------------------------------
-# Coefficient of variation across the repeats of one channel.
-CV_WARNING = 0.05
-CV_FAIL = 0.20
-
-# A CV is meaningless when the mean is essentially zero.
-CV_MINIMUM_MEAN = 1.0
-
-# How many channels may exceed CV_WARNING before it matters.
-MAX_UNSTABLE_CHANNELS_WARNING = 3
-MAX_UNSTABLE_CHANNELS_FAIL = 8
-
-# --- outlier rejection -----------------------------------------------
-# Median-absolute-deviation multiplier. Below the minimum sample count
-# there is not enough data to call anything an outlier.
-OUTLIER_MAD_THRESHOLD = 3.5
-OUTLIER_MINIMUM_SAMPLES = 4
-
-# --- optional distance gate ------------------------------------------
-# A VL53L4CD is planned but not fitted. When a distance is supplied it
-# is a PASS/FAIL gate only - reflectance is never "corrected" for it.
-DISTANCE_EXPECTED_MIN_MM = 8.0
-DISTANCE_EXPECTED_MAX_MM = 25.0
+# The verbatim, human-readable seed the database is built from. Kept
+# beside the binary so the history stays auditable and rebuildable.
+DECISION_LEARNING_SEED = DECISION_LEARNING_DIR / "seed_observations.json"
 
 # ----------------------------------------------------------------------
-# REFERENCE COMPARISON
+# MEASURED SAMPLES
 # ----------------------------------------------------------------------
-# Cosine similarity alone is not enough. Reflectance vectors are
-# non-negative, so almost any two materials score 95-100%: cosine sees
-# the shape and ignores the magnitude entirely. Two spectra of the same
-# shape at completely different brightness are identical to it.
-#
-# So three metrics are computed for every material and their RANKS are
-# combined. Ranks, not scores, because the three are not on comparable
-# scales and inventing a weighted "confidence" would be exactly the kind
-# of fake number this module is supposed to avoid.
-
-# Rank weights for the combined ordering.
-METRIC_WEIGHTS = {"cosine": 1.0, "rmse": 1.0, "pearson": 1.0}
-
-# The metrics "agree" when their best candidates are the same material,
-# or at least all inside this many places of the combined winner.
-METRIC_AGREEMENT_RANK_TOLERANCE = 2
-
-# A strong result needs the runner-up to be at least this far behind in
-# combined rank score.
-MIN_RANK_SEPARATION = 1.0
+# The run's scientific output, and the only file this system writes.
+SAMPLES_FILE = DATA_DIR / "samples.json"

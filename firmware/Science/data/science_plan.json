@@ -1,0 +1,241 @@
+{
+  "plan_id": "FREYA_ERC2026_SCIENCE_PLAN_V001",
+  "schema_version": 1,
+  "created_at": "2026-08-18T00:00:00+00:00",
+  "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW",
+  "subject": "The origin of the light-toned, fine-grained deposit on the southern floor of the Mars Yard: whether it is a depositional unit emplaced separately from the surrounding sand sheet, or an in-place weathered facies of that same sand. The two readings imply different numbers of events in the yard's history. The units are adjacent, both lie inside the Scientific Exploration zone, and both are reachable from S1, so the question can be settled within one traverse.",
+  "importance": "Reconstructing a geological history means counting events. If the light-toned deposit is a separate unit, the yard records at least two emplacement episodes whose order can be read from their contact. If it is a weathered facies, it records one episode followed by alteration, and the apparent contact is a weathering front rather than a stratigraphic boundary - the same landscape, with a different number of chapters. The regional analogue named for ERC 2026 is Hellas Planitia, where volcanic material from Hadriacus Mons meets past and present subsurface ice, and separating emplacement from alteration is precisely the ambiguity that dominates interpretation there. The answer also fixes the relative-age column every other unit on our map is dated against, so it propagates through the whole legend rather than staying a local curiosity.",
+  "predictions_narrative": "If U4 is a separately emplaced unit, its material was delivered by a different process from the sand sheet it sits within, and its bulk composition should differ measurably. We will measure surface material at a U4 site and at a U1 site with the AS7265x, taking independent repositioned repeats at each so that within-site variability is measured rather than assumed. Prediction P1: the two sites yield reflectance populations separated by more than their own within-site spread, consistently across independent metric families. Prediction P2: the CONTROL site in the central gravel plain (U2), measured with the same instrument and calibration in the same run, shows a within-site spread comparable to the other sites, confirming that any U1-U4 separation is a property of the material and not of the instrument or the day. Prediction P3: at the mapped contact between U1 and U4, the transition is visible in the rover imagery as a tonal boundary with a definable edge rather than a gradual fade; a sharp, cross-cutting edge favours emplacement, a diffuse gradient favours weathering. If instead U4 is weathered U1, P1 fails: the populations overlap within spread, and the contact in P3 grades rather than cuts. Spectral similarity alone will not be reported as material identity - the reference libraries available to this instrument contain no material measured from this yard.",
+  "geological_features": [
+    {
+      "feature_id": "U1",
+      "name": "Southern sand sheet",
+      "description": "Pale tan, fine-grained, low-relief surface occupying the south and south-west of the yard. Smooth texture in the orthophoto with no resolvable clasts at image scale.",
+      "outline": [],
+      "anchor_points": [
+        "W6",
+        "W7",
+        "L12",
+        "L14"
+      ],
+      "formation_process": "Aeolian and/or fluvial deposition of fine sand, subsequently reworked at the surface.",
+      "formation_justification": "Uniform pale tone, absence of resolvable clasts at orthophoto scale, low local relief (anchor H from -0.179 to -0.078 m, a range of 0.10 m), and a topographic position lower than the surrounding gravel units.",
+      "relative_age_rank": 2,
+      "relative_age_note": "Younger than the gravel plain it laps against; older than the light-toned deposit that overlies its southern margin.",
+      "older_than": [
+        "U4"
+      ],
+      "younger_than": [
+        "U2"
+      ],
+      "legend_entry": "U1 - Southern sand sheet. Fine aeolian/fluvial sand. Second oldest mapped unit.",
+      "legend_colour": "#d8c090",
+      "provenance": "SOURCE_MAP_ORTHOPHOTO",
+      "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW"
+    },
+    {
+      "feature_id": "U2",
+      "name": "Central gravel plain",
+      "description": "Darker grey, coarser-textured surface across the yard centre, with resolvable clasts and a mottled appearance in the orthophoto.",
+      "outline": [],
+      "anchor_points": [
+        "L6",
+        "L7",
+        "L8",
+        "L10",
+        "W4",
+        "W5",
+        "W2",
+        "W9"
+      ],
+      "formation_process": "Coarse clastic lag, interpreted as a deflation surface from which finer material has been removed.",
+      "formation_justification": "Darker tone and visibly coarser texture than the adjacent sand sheet, with clasts resolvable at orthophoto scale. Occupies the topographic middle of the yard (anchor H from -0.259 to +0.29 m).",
+      "relative_age_rank": 1,
+      "relative_age_note": "Oldest mapped unit: the sand sheet laps onto it and the elevated ridge stands above it.",
+      "older_than": [
+        "U1",
+        "U3"
+      ],
+      "younger_than": [],
+      "legend_entry": "U2 - Central gravel plain. Coarse clastic lag / deflation surface. Oldest mapped unit.",
+      "legend_colour": "#8a8f96",
+      "provenance": "SOURCE_MAP_ORTHOPHOTO",
+      "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW"
+    },
+    {
+      "feature_id": "U3",
+      "name": "North-eastern elevated gravel ridge",
+      "description": "Light grey, coarse-textured ridge in the north-east, standing above the surrounding plain.",
+      "outline": [],
+      "anchor_points": [
+        "L3",
+        "L4",
+        "L5",
+        "W3"
+      ],
+      "formation_process": "Constructional or erosionally resistant ridge of coarse material, standing in relief above the plain.",
+      "formation_justification": "The four anchor points carry the highest surveyed elevations on the yard (H = +0.205 to +0.437 m) against a yard-wide range of -0.302 to +0.437 m, so the elevation contrast is source-grounded rather than read from the photograph. Surface texture is coarse and similar to the central plain.",
+      "relative_age_rank": 3,
+      "relative_age_note": "Stands above and therefore post-dates the central gravel plain.",
+      "older_than": [],
+      "younger_than": [
+        "U2"
+      ],
+      "legend_entry": "U3 - North-eastern elevated gravel ridge. Coarse material in positive relief. Post-dates the gravel plain.",
+      "legend_colour": "#b8bec6",
+      "provenance": "SOURCE_MAP_ORTHOPHOTO",
+      "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW"
+    },
+    {
+      "feature_id": "U4",
+      "name": "Light-toned southern deposit",
+      "description": "Bright, very light-toned, fine-grained deposit on the southern yard floor, tonally distinct from the surrounding sand sheet.",
+      "outline": [],
+      "anchor_points": [
+        "L1",
+        "L2",
+        "L15",
+        "W1",
+        "W8"
+      ],
+      "formation_process": "UNDER TEST. Either deposition of a compositionally distinct fine material, or in-place alteration of the underlying sand sheet. Distinguishing the two is the subject of hypothesis H1.",
+      "formation_justification": "Marked tonal contrast against the adjacent sand sheet in the orthophoto, with no corresponding change in surface texture or relief. That combination is exactly what makes emplacement and alteration hard to separate from imagery alone, which is why the hypothesis targets it.",
+      "relative_age_rank": 4,
+      "relative_age_note": "Youngest mapped unit if emplaced; if it is an alteration facies it has no independent age and this rank must be withdrawn. The rank is therefore conditional on the outcome of H1.",
+      "older_than": [],
+      "younger_than": [
+        "U1"
+      ],
+      "legend_entry": "U4 - Light-toned southern deposit. Origin under test (emplaced unit vs weathered facies of U1). Youngest mapped unit if emplaced.",
+      "legend_colour": "#f0ead6",
+      "provenance": "SOURCE_MAP_ORTHOPHOTO",
+      "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW"
+    },
+    {
+      "feature_id": "U5",
+      "name": "Western boulder margin",
+      "description": "Accumulation of large clasts along the western edge of the yard.",
+      "outline": [],
+      "anchor_points": [
+        "L9",
+        "L11"
+      ],
+      "formation_process": "Coarse clast accumulation along the yard margin.",
+      "formation_justification": "Large individual clasts resolvable in the orthophoto, concentrated along the western boundary and absent from the yard interior.",
+      "relative_age_rank": 3,
+      "relative_age_note": "Overlies the gravel plain; no observed relation to the sand sheet.",
+      "older_than": [],
+      "younger_than": [
+        "U2"
+      ],
+      "legend_entry": "U5 - Western boulder margin. Coarse clast accumulation. Post-dates the gravel plain.",
+      "legend_colour": "#6f767e",
+      "provenance": "SOURCE_MAP_ORTHOPHOTO",
+      "review_status": "DRAFT_REQUIRES_GEOLOGIST_REVIEW"
+    }
+  ],
+  "hypothesis": {
+    "hypothesis_id": "H1",
+    "statement": "The light-toned fine-grained deposit (U4) on the southern yard floor is compositionally distinct from the adjacent southern sand sheet (U1), and is therefore a separately emplaced depositional unit rather than a weathered facies of the same sand.",
+    "support_condition": "Reflectance spectra acquired at the U4 site and at the U1 site form populations whose separation exceeds the within-site spread measured from independent repositioned repeats at both sites, and that separation is reproduced by at least two of the three independent metric families (magnitude, angular, centered_shape). The CONTROL site must not show a comparable separation from its own repeats.",
+    "reject_condition": "The U4 and U1 populations overlap within the within-site spread measured at those sites, on the majority of metric families, while the measurement quality at both sites is adequate. Equivalently: the between-site difference is no larger than the difference between repeats of one site.",
+    "inconclusive_condition": "Any of: measurement quality control fails at either site; fewer than two independent repeats are obtained at either site; the within-site spread is so large that a difference of the expected size could not have been detected; or the metric families disagree about whether a separation exists. In this case the report states what additional measurements would resolve it.",
+    "linked_feature_ids": [
+      "U1",
+      "U4"
+    ],
+    "linked_site_ids": [
+      "SITE-01",
+      "SITE-02",
+      "SITE-04"
+    ],
+    "created_at": "2026-08-18T00:00:00+00:00",
+    "frozen_at": null,
+    "content_hash": null,
+    "outcome": "NOT_EVALUATED"
+  },
+  "predictions": [
+    {
+      "prediction_id": "P1",
+      "hypothesis_id": "H1",
+      "statement": "Surface material at the U4 site and at the U1 site will yield reflectance populations separated by more than the within-site spread measured at those sites.",
+      "expected_observation": "Between-site spectral distance exceeds within-site spread at both sites, reproduced by at least two of the three independent metric families.",
+      "planned_site_ids": [
+        "SITE-01",
+        "SITE-02",
+        "SITE-04"
+      ],
+      "required_measurements": "AS7265x reflectance, at least 3 independent repositioned repeats per site, one calibration in force for the whole run.",
+      "comparison": {
+        "kind": "BETWEEN_SITE_VS_WITHIN_SITE",
+        "feature_ids": [
+          "U1",
+          "U4"
+        ],
+        "statistic": "between-site separation divided by pooled within-site spread"
+      },
+      "support_criterion": "Separation exceeds pooled within-site spread on at least two metric families.",
+      "reject_criterion": "Separation is within the pooled within-site spread on a majority of metric families, with quality control passing at both sites.",
+      "inconclusive_criterion": "Quality control fails at either site, fewer than two independent repeats are obtained, or the metric families disagree.",
+      "required_context_observation": "Surface texture and grain size at each measurement spot, recorded in the observation note.",
+      "required_photograph": true
+    },
+    {
+      "prediction_id": "P2",
+      "hypothesis_id": "H1",
+      "statement": "The control site in the central gravel plain will show a within-site spread comparable to the other sites, confirming that any U1-U4 separation is a property of the material rather than of the instrument or the session.",
+      "expected_observation": "Control within-site spread is of the same order as the within-site spread at the U1 and U4 sites.",
+      "planned_site_ids": [
+        "SITE-03"
+      ],
+      "required_measurements": "AS7265x reflectance, at least 3 independent repositioned repeats, same calibration as the other sites.",
+      "comparison": {
+        "kind": "WITHIN_SITE_SPREAD_COMPARISON",
+        "feature_ids": [
+          "U2"
+        ],
+        "statistic": "within-site spread at the control versus at the targets"
+      },
+      "support_criterion": "Control spread is not markedly larger than the target sites' spread, so a between-site separation cannot be explained by session-wide instability.",
+      "reject_criterion": "Control spread is as large as the claimed U1-U4 separation, which would mean the separation is indistinguishable from instrument or session variation.",
+      "inconclusive_criterion": "The control site yields fewer than two usable repeats.",
+      "required_context_observation": "Confirmation that the control spot is representative of the gravel plain and not on a boundary.",
+      "required_photograph": true
+    },
+    {
+      "prediction_id": "P3",
+      "hypothesis_id": "H1",
+      "statement": "At the mapped contact between the sand sheet and the light-toned deposit, the transition will appear in rover imagery as a definable edge rather than a gradual fade.",
+      "expected_observation": "A tonal boundary with a resolvable edge, photographed from the rover at the transition site.",
+      "planned_site_ids": [
+        "SITE-01",
+        "SITE-02",
+        "SITE-04"
+      ],
+      "required_measurements": "Annotated rover photograph at the transition site; AS7265x measurement optional and secondary.",
+      "comparison": {
+        "kind": "CONTACT_GEOMETRY",
+        "feature_ids": [
+          "U1",
+          "U4"
+        ],
+        "statistic": "qualitative: sharp cross-cutting edge versus diffuse gradient"
+      },
+      "support_criterion": "The contact is sharp and cross-cutting, which favours emplacement of a separate unit.",
+      "reject_criterion": "The contact grades continuously over a distance comparable to the grain scale, which favours in-place alteration.",
+      "inconclusive_criterion": "The contact is obscured, not reached, or cannot be resolved in the available imagery.",
+      "required_context_observation": "Direction of view and approximate distance to the contact.",
+      "required_photograph": true
+    }
+  ],
+  "references": [],
+  "citations": [],
+  "prediction_figure": null,
+  "_authorship_note": "This plan is a WORKED DRAFT produced by the mission software so the pipeline can be exercised end to end. Every geological unit below is photo-interpretation of the supplied orthophoto plus the surveyed H values, and nothing in it has been confirmed on the ground. The unit outlines are anchored to surveyed points rather than digitised as polygons, because the source supplies coordinates for points and not for boundaries - drawing a boundary would be inventing a coordinate. A geologist must review, correct and re-anchor these units, and set review_status to REVIEWED_BY_GEOLOGIST, before any of this is submitted.",
+  "_outstanding": [
+    "references: EMPTY ON PURPOSE. The rules require papers or book chapters and explicitly refuse Wikipedia and NASA web pages. No literature search has been performed by this software, and fabricating citations would be worse than having none. The team must supply them; the validator will fail until they do.",
+    "prediction_figure: NOT PRODUCED. One A4 figure illustrating the predictions is required. Science/figures.py can render the spectral-comparison panel once real measurements exist, but the schematic of expected contact relations is a drawing a human must make.",
+    "geological features: all five units are DRAFT photo-interpretation and must be reviewed, corrected and re-anchored by a geologist.",
+    "unit outlines: anchored to surveyed points, not digitised. The source map gives coordinates for points only; a drawn boundary would be an invented coordinate."
+  ]
+}

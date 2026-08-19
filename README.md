@@ -46,7 +46,7 @@ The engineering work includes:
 - designing the complete schematic in Altium Designer;
 - creating a custom two-layer carrier PCB;
 - designing protected 5 V and 3.3 V power branches;
-- integrating I²C, UART, PWM, and illumination interfaces;
+- integrating I²C, UART (host link and ST3215 servo bus), legacy servo PWM, and illumination interfaces;
 - preparing the component BOM and purchasing documentation;
 - assembling and debugging the first PCB revision;
 - developing ESP32 firmware for sensor and servo control;
@@ -76,7 +76,11 @@ flowchart LR
     LIGHT[Controlled illumination]
     SENSOR[AS7265x spectral sensor]
     ESP[ESP32 hardware controller]
-    SERVO[MG995 360 deg carousel servo]
+    MANAGER[ServoManager: operator selects the fitted servo]
+    MG995[MG995 PWM servo: timed, open loop]
+    DRIVER[Waveshare serial bus servo driver board]
+    SERVO[ST3215 serial bus servo: encoder, closed loop]
+    SUPPLY[External servo power supply]
     PC[PC mission controller]
     BD[BD science layer]
     DATABASE[(database.json<br/>reference materials)]
@@ -88,7 +92,12 @@ flowchart LR
     LIGHT --> SAMPLE
     SAMPLE -->|Reflected VIS-NIR light| SENSOR
     ESP <-->|I²C| SENSOR
-    ESP -->|timed PWM| SERVO
+    ESP -->|selects one actuator| MANAGER
+    MANAGER -->|GPIO25 PWM| MG995
+    MANAGER -->|UART2: GPIO17 TX, GPIO16 RX, GND| DRIVER
+    SUPPLY -->|servo power| DRIVER
+    DRIVER -->|servo bus| SERVO
+    SERVO -->|encoder feedback| DRIVER
     ESP -->|USB serial JSON: RAW spectrum| PC
     PC -->|raw| BD
     DATABASE --> BD
@@ -102,13 +111,42 @@ flowchart LR
 
 ## Sample Carousel
 
-The sample mechanism is a full 360° carousel driven by an **MG995 modified for continuous rotation**. It has no encoder, no Hall sensor and no position feedback of any kind; position is tracked entirely in software.
+The sample mechanism is a full 360° carousel, and **two actuators are supported**:
+
+| | MG995 | Waveshare ST3215 |
+|---|---|---|
+| Interface | GPIO25 PWM | UART2 serial bus, through a Waveshare Serial Bus Servo Driver Board |
+| Positioning | calibrated time | encoder counts |
+| Feedback | none | 360° absolute magnetic encoder, 4096 counts/rev |
+| Movement | commanded and assumed | commanded and **verified** |
+| Telemetry | none | position, speed, load, voltage, temperature, current |
+| Servo power | PCB branch, not switched by firmware | **external supply at the driver board** |
+
+**The firmware never guesses which one is fitted.** After every boot no servo is selected, the carousel position is invalid, and every movement command answers `SERVO_NOT_SELECTED`. The operator states what is installed at **[0] Carousel Setup**.
+
+That is deliberate rather than pedantic: probing UART2 and falling back to the MG995 would silently select timed open-loop control on a correctly fitted ST3215 with one broken wire, and start moving a carousel with no feedback. It would also make an MG995 build depend on a negative result from hardware that is not connected.
+
+Switching actuator **always** invalidates the carousel position. A different servo has a different encoder zero, a different mounting and possibly a different mechanical reference, so no position state may cross that boundary.
+
+What neither servo can know is which physical slot the operator calls Slot 1. There is no limit switch, no Hall sensor and no index mark, so the origin is declared by hand once per power-up. On the ST3215 that declaration also captures the encoder reading, tying the logical model to a real measurement; on the MG995 there is nothing to capture and the position is maintained by counting.
 
 | Property | Value |
 |---|---|
 | Physical sample slots | 4 |
 | Angle between neighbouring slot centres | 360° / 4 = **90°** |
 | Scanning position ↔ loading position | **180°**, i.e. **2 slots** apart |
+| ST3215 encoder resolution | 4096 counts / revolution = **0.0879° per count** |
+| ST3215: one slot transition | 4096 / 4 = **1024 counts** |
+| ST3215: loader ↔ scanner sweep | 4096 / 2 = **2048 counts** |
+| MG995: one slot transition | `MG995_NEXT_SLOT_*_MS`, calibrated per direction |
+| MG995: loader ↔ scanner sweep | `MG995_LOAD_TO_SCAN_CW_MS` / `MG995_SCAN_TO_LOAD_CCW_MS` |
+
+The geometry is a property of the mechanism and is shared by both backends. The
+counts are *derived* in `config.py` from the slot count and the encoder
+resolution; the timings are empirical and belong to the MG995 alone. Nothing in
+the firmware writes an angle or a count out by hand, and no constant is
+ambiguous between the two actuators — every one is namespaced `MG995_*`,
+`ST3215_*` or `CAROUSEL_*`.
 
 Because the two fixed positions are exactly opposite, the slot at the loader follows directly from the slot at the scanner:
 
@@ -132,25 +170,54 @@ Slot 3 = 180° clockwise from Slot 1  (the scanner position)
 Slot 4 = 270° clockwise from Slot 1
 ```
 
-### Software position tracking
+### Two levels of position
 
-There is no sensor to ask, so after every reset:
+The firmware keeps a **logical** position and, where the hardware allows, a
+**measured** one, and insists that they agree:
+
+| Level | What it is | Where it comes from |
+|---|---|---|
+| Logical | which slot is at the scanner and at the loader | slot arithmetic, on either backend |
+| Measured | where the servo actually is | the ST3215 encoder; **not available** on the MG995 |
+
+On the MG995 the second level simply does not exist, and the firmware says so
+rather than inventing it: `drift` is reported as *not measurable*, and the
+backend's capabilities advertise `position_feedback: false` and
+`verified_movement: false`.
+
+After every reset the logical position is unknown:
 
 ```python
 position_valid = False
 current_scan_slot = None
 selected_slot = None
+origin_counts = None
 ```
 
-Synchronization is the **first** operation after boot. The operator moves the carousel with whole-slot and degree commands until Slot 1 sits under the loading hole, then confirms it:
+Synchronization is the **first** operation after boot. The operator moves the
+carousel with whole-slot and degree commands until Slot 1 sits under the
+loading hole, then confirms it:
 
 ```json
 {"cmd": "sync_position", "load_slot": 1}
 ```
 
-`sync_position` never moves anything — it records where the operator has already put the mechanism. Because the scanner is exactly 180° opposite, declaring Slot 1 at the loader also declares **Slot 3 at the scanner**.
+`sync_position` never moves anything. It reads the servo encoder and stores
+that reading as the carousel **origin**, tying the logical model to a real
+measurement. Because the scanner is exactly 180° opposite, declaring Slot 1 at
+the loader also declares **Slot 3 at the scanner**.
 
-From then on the firmware maintains position by counting calibrated slot transitions. If a movement fails, the tracked position is **discarded** rather than guessed, and the operator must re-synchronize.
+If the encoder cannot be read, **no origin is recorded** — an invented origin
+would poison every movement that followed it.
+
+From then on each movement is a relative movement in counts, verified from the
+encoder before the logical position is allowed to change. If a movement cannot
+be proved, the tracked position is **discarded** rather than guessed, and the
+operator must re-synchronize. There is no fallback to timing.
+
+The status block also reports `drift_counts`: how far the last verified reading
+sits from the nominal target for the current slot. That is the number to watch
+over a long session.
 
 ### Three separate position concepts
 
@@ -174,47 +241,125 @@ Slot 2 -> Slot 3   = one clockwise slot transition
 Slot 4 -> Slot 1   = one clockwise slot transition
 ```
 
-Each transition spans 90° of geometry, commanded with its own calibrated runtime — see below.
+Each transition spans 90° of geometry, commanded as **1024 encoder counts**.
 
-Selecting a distant slot still takes the shortest path.
+Selecting a distant slot still takes the shortest path, and the shortest path is
+decided in **slots**, before anything is converted to counts. That is what keeps
+`Slot 4 → Slot 1` a single +1024-count step instead of a 270° journey: the
+absolute encoder crossing 4095 → 0 partway through simply does not enter into
+it.
 
-### Movement calibration: geometry vs servo command
+```text
+encoder at 3900, step +1024  ->  encoder at 828      (one slot, 90°)
+encoder at  100, step -1024  ->  encoder at 3172     (one slot, 90°)
+```
 
-The single most important distinction in the carousel code:
+A multi-slot request runs as N separate single-slot movements, each verified on
+its own. That is not caution for its own sake: a single encoder reading cannot
+distinguish a movement of more than half a turn from its complement, so one
+long movement could not be proved.
 
-| | |
+### Movement: the same request, two very different executions
+
+The carousel asks for the same thing either way — *move two slots clockwise*,
+*swing half a turn*, *adjust by −2.5°* — and the selected backend decides what
+that means physically.
+
+**ST3215.** No duration appears anywhere:
+
+```text
+read start position
+  -> convert the request to encoder counts
+  -> write acceleration, goal, speed in one transaction
+  -> poll the servo until it reports it has STOPPED
+  -> settle
+  -> read the position again
+  -> compare against the target
+  -> within tolerance?  yes -> update the logical position
+                         no -> raise, invalidate, require a re-sync
+```
+
+**MG995.** No feedback appears anywhere:
+
+```text
+look up the calibrated runtime for this movement and direction
+  -> optional start kick
+  -> cruise at the calibrated pulse for that runtime
+  -> optional slow approach, optional reverse brake
+  -> neutral pulse, from a finally block
+  -> settle, release the pin
+  -> update the logical position, because nothing can contradict it
+```
+
+The MG995 keeps its per-movement calibration, because it genuinely needs one:
+the same command travels a different distance clockwise and counter-clockwise,
+and one long sweep does not cover the same angle as several short ones. The
+ST3215 has no timing calibration at all — the servo closes its own loop, and
+1024 counts is 1024 counts either way. Its three verification limits are:
+
+| Constant | Meaning |
 |---|---|
-| **Geometry** | what the carousel *is* — 90° slot spacing, 180° loader↔scanner |
-| **Calibration** | what the servo must be *commanded* to do |
-
-These are not the same, and one is never derived from the other. A continuous-rotation servo has acceleration, backlash and load-dependent speed, so the command that actually lands a slot correctly is not simply "90° worth of runtime", and it differs between the two directions.
-
-Each movement type therefore has its own independent calibration:
-
-| Movement | Constants | Notes |
-|---|---|---|
-| Adjacent slot CW (N → N+1) | `NEXT_SLOT_CW_MS` | 90° — **not measured**, recalibrate |
-| Adjacent slot CCW (N → N−1) | `NEXT_SLOT_CCW_MS` | 90° — **not measured**, recalibrate |
-| Half turn (loader ↔ scanner) | `LOAD_TO_SCAN_CW_MS` / `SCAN_TO_LOAD_CCW_MS` | **Independent** — never 2 × adjacent |
-| Fine alignment | `CW_MS_PER_DEGREE` / `CCW_MS_PER_DEGREE` | Small corrections only |
+| `ST3215_POSITION_TOLERANCE` | how close counts as arrived (**check on the real mechanism**) |
+| `ST3215_MOVE_TIMEOUT_*` | time budget, computed per movement from distance and speed |
+| `ST3215_SETTLE_MS` | pause after the servo stops, before the reading that decides |
 
 > [!IMPORTANT]
-> **The two directions are not symmetric.** Backlash and servo asymmetry mean the same command travels a different distance clockwise and counter-clockwise. Never share one calibration between directions — including for fine alignment.
+> `ST3215_POSITION_TOLERANCE` ships at a deliberately conservative 15 counts
+> (≈1.3°) and **has not been measured on the mechanism**. The servo's own
+> electronic dead zone is 0.176°, so a healthy carousel should settle far inside
+> it. Tighten it once the real repeatability is known — but a tolerance that is
+> too tight turns ordinary backlash into a failed measurement.
 
-> [!IMPORTANT]
-> The half turn is **not** two adjacent-slot moves. A continuous servo pays its acceleration ramp once per move, so two short runs and one long sweep do not cover the same angle. The half turn is one continuous sweep with its own calibrated runtime, and it did **not** change when the carousel went from 8 slots to 4 — half a turn is half a turn.
+> [!NOTE]
+> The direction asymmetry that dominates the MG995 is absent on the ST3215. It
+> is an artefact of open-loop control: the servo runs at different speeds each
+> way and the software has to compensate. A closed-loop actuator lands on its
+> target from either side, which is why the ST3215 has one set of numbers where
+> the MG995 needs two of everything.
+
+Whichever backend is fitted, a movement that cannot be completed **invalidates
+the tracked position** rather than being assumed. There is no fallback from one
+backend's failure to the other backend's method: an ST3215 that loses feedback
+does not revert to timing, and an MG995 does not pretend to have an encoder.
 
 ### Fine alignment
 
-Timed positioning drifts, so alignment is corrected in **degrees**, never milliseconds:
+Alignment is corrected in **degrees**, converted to encoder counts, and verified
+like any other movement:
 
 ```json
 {"cmd": "fine_adjust", "degrees": -2.5}
 ```
 
-Positive is clockwise, and `duration_ms = abs(degrees) x CW_MS_PER_DEGREE`. Fine adjustment is **alignment only** — it deliberately does not change the logical slot numbering, the slot state or the sample ID. A carousel nudged by +1.5° is still on the same logical slot in the same phase. Corrections are capped by `MAX_FINE_ADJUST_DEG` (default ±15°); anything larger must use whole-slot movement.
+Positive is clockwise. On the ST3215, `counts = round(degrees × 4096 / 360)`,
+so 2.5° is 28 counts and one count is the 0.0879° floor below which the request
+is reported as too small rather than silently ignored. On the MG995,
+`duration = |degrees| × MG995_*_MS_PER_DEGREE`, and a request that rounds to no
+runtime at all is reported the same honest way.
 
-Milliseconds are an internal implementation detail. They appear only in `config.py`, the MG995 driver, and `--verbose` debug output.
+Fine adjustment is **alignment only** — it deliberately does not change the
+logical slot numbering, the slot state or the sample ID. A carousel nudged by
++1.5° is still on the same logical slot in the same phase. Corrections are
+capped by `MAX_FINE_ADJUST_DEG` (default ±15°); anything larger must use
+whole-slot movement.
+
+**The correction is remembered.** It accumulates into
+`alignment_offset_deg`, which is part of every later expected position:
+
+```text
+expected position = origin + commanded slot travel + alignment offset
+```
+
+The offset is stored in degrees, not in backend units, so it means the same
+thing on either actuator. On the ST3215 it records the angle actually
+*commanded* after rounding to whole encoder counts — 2.0° becomes 23 counts,
+which is 2.0215° — so quantization never shows up later as apparent drift.
+
+So an operator who trims the carousel by +2° keeps that trim. The next slot
+movement carries it along instead of quietly returning the mechanism to the old
+theoretical centre. Re-synchronizing folds the offset into the new origin and
+resets it to zero, because the position the operator has just confirmed *is* the
+reference from then on.
 
 ### Measurement movement
 
@@ -224,12 +369,20 @@ It then performs the full cycle — out, acquire, back:
 
 ```text
 Slot X at LOAD
-  -> 180 deg calibrated half turn (LOAD_TO_SCAN_CW_MS)
+  -> +2048 counts, polled to completion and verified
 Slot X at SCAN
   -> settle, acquire RAW
-  -> 180 deg calibrated return (SCAN_TO_LOAD_CCW_MS)
+  -> -2048 counts, polled to completion and verified
 Slot X at LOAD  ->  exactly where it started, phase = LOAD
 ```
+
+The two halves are the same number of counts in opposite directions and both are
+verified, so an out-and-back pair now closes on itself **by construction**
+rather than by calibration. The return runs in the reverse direction so backlash
+from the outbound sweep is taken up rather than accumulated.
+
+If the outbound movement cannot be verified, the measurement does not happen:
+there is no acquisition from a position the firmware cannot vouch for.
 
 A successful measurement therefore leaves the sample at its original physical position and the tracked position identical to what it was before. The soil is still in the slot — `MEASURED` is not `EMPTY`.
 
@@ -258,23 +411,104 @@ Measure Sample   ->  state MEASURED, measured_at, three spectra,
 
 ---
 
-## Servo Calibration
+## Servo Bring-up
 
-A continuous-rotation servo has no angle command, only a neutral pulse, direction pulses, and time. Every value that depends on the real mechanism lives in [`firmware/ESP32/config.py`](firmware/ESP32/config.py).
+Which procedure applies depends on what is fitted, and the first step is the
+same either way: **state which servo is installed**, at `[0] Carousel Setup`.
+Nothing will move until you do.
+
+The full procedures are in
+[`Documentation/OPERATIONS.md`](Documentation/OPERATIONS.md) — "MG995 bring-up
+and calibration" and "ST3215 bring-up". In outline:
+
+**MG995.** Ten calibration steps, in order, starting from true neutral and
+ending with the out-and-back pair that Measure Sample depends on. Every value
+is measured on the real mechanism, edited in RAM, and then pasted back into
+`config.py`.
+
+**ST3215.** A sequence of *checks*, of which only the last three move anything:
+select the servo, run diagnostics, write the operating mode to servo EPROM once,
+confirm the forward direction, measure repeatability, cross the encoder
+boundary, then set the position tolerance from what you measured.
+
+Everything configurable lives in [`ESP32/config.py`](ESP32/config.py), in
+sections named for the actuator they belong to.
+
+### ST3215: wiring, before power
+
+```text
+ESP32 PCB                        Waveshare servo driver board
+---------                        ----------------------------
+GPIO17 / TX2  ---------------->  TX
+GPIO16 / RX2  ---------------->  RX
+GND           <-------------->   GND
+
+                NO POWER CONNECTION FROM THE ESP32 PCB
+```
+
+```text
+External servo power supply (6–12.6 V, 12 V recommended)
+          │
+          ▼
+Waveshare serial bus servo driver board
+          │  servo bus
+          ▼
+       ST3215
+          │
+          ▼
+       Carousel
+```
 
 > [!IMPORTANT]
-> The shipped values are safe starting points, **not** known-good values. `SERVO_STOP_US`, the direction pulses and the 90° step timing **must be calibrated on the real mechanism**. Load, gearing, battery voltage and the individual servo all change them.
+> **The ST3215 servo subsystem is externally powered.** The Freya ESP32 science
+> PCB provides only UART TX, UART RX and a common ground reference to the
+> Waveshare serial bus servo driver. **No servo supply current is drawn from the
+> ESP32 PCB**, and the firmware has no servo-power concept at all — no pin, no
+> enable, no switch.
 
-Recommended order, using **Tools → Servo / Carousel Test**:
+> [!CAUTION]
+> The common ground is **not optional**. Two supplies with no shared reference
+> means the UART has no defined logic level, and the symptom is a servo that
+> either never answers or answers intermittently.
 
-1. **Neutral.** Trim `SERVO_STOP_US` until the carousel does not creep in either direction.
-2. **Direction.** Move one slot and note which way it turns. If the labels are inverted, swap `SERVO_CW_US` and `SERVO_CCW_US`.
-3. **Slot order.** Move one slot clockwise and check whether the *next higher* or *next lower* slot number arrives at the scanner. Set `CAROUSEL_FORWARD_DIRECTION` accordingly.
-4. **Step time.** Adjust `NEXT_SLOT_CW_MS` and `NEXT_SLOT_CCW_MS` until one step lands cleanly on the next slot. The two directions are separate because backlash and servo asymmetry are rarely symmetric.
-5. **Half turn.** Adjust `LOAD_TO_SCAN_CW_MS` and `SCAN_TO_LOAD_CCW_MS` until the 180° sweep lands on the scanner and returns. These are **independently calibrated** and must never be derived from two adjacent-slot moves.
-6. **Fine alignment.** Trim `CW_MS_PER_DEGREE` and `CCW_MS_PER_DEGREE` by requesting ±5° and measuring the actual travel.
+### ST3215: communication — **Tools → Servo / Carousel Tools → Diagnostics**
 
-Multi-slot moves run as N discrete single steps rather than one long rotation, so the servo's start-up acceleration is paid once per step and the calibration stays linear in the step count.
+Moves nothing. It reports each stage separately: UART2 open, servo answers,
+servo ID, baud rate, operating mode, torque state, angle limits, and the full
+telemetry block (position, speed, load, voltage, temperature, current).
+
+If it fails, check in this order: external servo supply, common ground, the
+TX/RX pair, then the servo ID and baud rate.
+
+### ST3215: operating mode — **SERVICE: write servo configuration**
+
+Writes the ST3215 EPROM once: step servo mode, both angle limits cleared. It is
+explicit, confirmed, and kept firmly apart from carousel setup: ordinary setup
+establishes a runtime origin and writes nothing persistent to the servo. EPROM
+has a finite write life, and silently reconfiguring a servo somebody set up by
+hand is not something a science instrument should do.
+
+The firmware **refuses to move** a servo that reports any other mode. In
+position servo mode the same register means "go to this absolute count", so a
+request for one slot would send the carousel somewhere else entirely.
+
+### Either servo: forward direction — **Movement tests → One slot forward**
+
+Move one slot and check whether the *next higher* or *next lower* slot number
+arrives at the scanner. Set `CAROUSEL_FORWARD_DIRECTION` accordingly. This is
+the one remaining thing software cannot know: it depends on how the carousel is
+mounted, not on the actuator, so it is shared by both backends.
+
+### Either servo: repeatability — **Movement tests → forward and back**, then
+**Half turn out and back**
+
+Both are symmetrical, so they should close on themselves. The reported closing
+error, in counts, is the repeatability figure that matters for Measure Sample.
+Use it to decide the final `ST3215_POSITION_TOLERANCE`.
+
+Also run **Encoder boundary crossing (4095 → 0)**, which parks the servo just
+short of the encoder seam and steps across it. A driver that thought in absolute
+single-turn targets would take the long way round here; this one cannot.
 
 ---
 
@@ -282,7 +516,9 @@ Multi-slot moves run as N discrete single steps rather than one long rotation, s
 
 - 18-channel spectral acquisition from approximately 410 nm to 940 nm;
 - ESP32-based sensor and actuator control;
-- four-slot 360° sample carousel with software position tracking;
+- four-slot 360° sample carousel with two supported actuators: an MG995
+  (timed, open loop) and a closed-loop ST3215 serial bus servo with
+  encoder-verified positioning, selected explicitly by the operator;
 - deterministic USB-serial JSON command protocol for the main computer;
 - persistent scientific sample storage on the main computer;
 - fixed white and dark calibration references, never re-measured mid-run;
@@ -291,7 +527,8 @@ Multi-slot moves run as N discrete single steps rather than one long rotation, s
 - USB programming and debugging through the ESP32 development board;
 - protected 5 V rover power input;
 - filtered 3.3 V sensor supply;
-- separate protected servo power branch;
+- separate protected servo power branch on the PCB (legacy, unused by the
+  ST3215 configuration);
 - MOSFET-controlled external illumination;
 - JST-XH connectors for external modules;
 - 1206 passive components for easier manual assembly.
@@ -343,7 +580,8 @@ The PCB is a two-layer carrier and interface board. The ESP32 development board,
 |---|---|---|
 | Controller | ESP-WROOM-32 development board with CP2102 | Sensor control, carousel control, USB serial communication and data processing |
 | Spectral sensor | AS7265x multispectral triad | 18-channel VIS-NIR measurement |
-| Servo | MG995 modified for 360° continuous rotation | Timed rotation of the four-slot sample carousel |
+| Servo | Waveshare ST3215 serial bus servo | Encoder-verified rotation of the four-slot sample carousel; **externally powered** |
+| Servo interface | Waveshare Serial Bus Servo Driver Board | UART2 to servo bus; carries the external servo supply |
 | Sensor regulator | TLV75533PDBVR | Protected 3.3 V sensor supply |
 | Reverse-polarity protection | AO4407A | Protects the board from incorrect input polarity |
 | Main and servo fuses | Littelfuse 2920L300/15DR | Resettable overcurrent protection |
@@ -385,6 +623,16 @@ The input stage includes:
 
 The servo branch is separated from the sensor supply to reduce the effect of servo current transients on spectral measurements.
 
+> [!NOTE]
+> **The PCB servo power branch is legacy hardware.** It was designed for the
+> MG995, which drew its 5 V supply from this board. The ST3215 configuration
+> does not use it: the servo subsystem is powered externally at the Waveshare
+> driver board, and the only connection to it from this PCB is UART TX, UART RX
+> and ground. The branch has deliberately **not** been removed from the
+> schematic — it is populated hardware on an existing board, and a software
+> migration is not the place to redesign a PCB. Treat it as unused in the
+> current configuration.
+
 > [!CAUTION]
 > PCB V1.0 is designed for a regulated **5 V input**. It must not be connected directly to a higher-voltage battery rail.
 
@@ -407,19 +655,29 @@ The external AS7265x module is connected through a 6-pin JST-XH interface.
 
 The I²C lines include series resistors and optional pull-up and ESD-protection positions.
 
-### Rover UART connector (reserved)
+### UART2 — ST3215 servo bus
 
-The PCB carries a dedicated 3.3 V UART interface on UART2.
+The PCB's dedicated 3.3 V UART interface now carries the servo link.
 
-| Signal | ESP32 pin | Description |
-|---|---|---|
-| `UART2_TX` | GPIO17 | ESP32 transmit |
-| `UART2_RX` | GPIO16 | ESP32 receive |
-| `3V3_REF` | 3.3 V | Logic-level reference |
-| `GND` | GND | Common ground |
+| Signal | ESP32 pin | Connects to | Description |
+|---|---|---|---|
+| `UART2_TX` | GPIO17 | driver board `TX` | ESP32 transmit |
+| `UART2_RX` | GPIO16 | driver board `RX` | ESP32 receive |
+| `3V3_REF` | 3.3 V | — | Logic-level reference |
+| `GND` | GND | driver board `GND` | **Common ground — required** |
+
+1 Mbps, 8N1. This is the *only* electrical connection between the servo
+subsystem and this PCB, apart from the shared ground.
+
+> [!IMPORTANT]
+> **No servo power crosses this connector.** The ST3215 is supplied externally
+> at the driver board. The ESP32 PCB provides signals and a ground reference,
+> nothing else.
 
 > [!NOTE]
-> **This connector is currently unused and reserved.** The competition system communicates over USB instead (see below), and the firmware never initializes a `machine.UART` peripheral. The hardware interface remains on the board for a future revision.
+> This peripheral is entirely separate from the host link. The PC talks to the
+> ESP32 over USB on `sys.stdin` / `sys.stdout`; the servo talks over UART2. A
+> servo transaction cannot disturb the host console, and vice versa.
 
 ### Main-computer link (USB)
 
@@ -442,17 +700,26 @@ The same cable both powers the ESP32 development board and carries the command p
 
 Commands arrive on `sys.stdin` and responses leave on `sys.stdout`. The PC selects the baud rate (115200) when it opens the port; no pin or peripheral configuration is involved on either side.
 
-### Servo
+### Servo connector (legacy, unused)
 
 | Signal | Description |
 |---|---|
-| `+5V_SERVO` | Protected servo power |
+| `+5V_SERVO` | Protected servo power — **legacy, not used** |
 | `GND` | Servo ground |
-| `SERVO_PWM` | ESP32 PWM control (GPIO25) |
+| `SERVO_PWM` | Former MG995 PWM control (GPIO25) — **legacy, not driven** |
 
-The servo connector has dedicated power protection and local bulk capacitance.
+This connector, its dedicated power protection and its local bulk capacitance
+were designed for the MG995. The ST3215 configuration uses none of it: the servo
+is reached over UART2 and powered externally.
 
-The MG995 is a continuous-rotation servo: the PWM pulse selects direction and speed, not an angle. The firmware creates the PWM peripheral lazily, on the first movement command, so powering up the ESP32 never drives the servo pin and can never nudge the carousel out of position.
+The hardware is left in place and documented rather than hidden — it exists on
+the assembled board. The firmware, however, no longer references GPIO25 at all
+and creates no PWM peripheral anywhere, so nothing drives this connector.
+
+> [!NOTE]
+> GPIO25 is therefore free in the current firmware. It is left unassigned rather
+> than reused, so a board still wired for the MG995 cannot be driven by
+> accident.
 
 ---
 
@@ -497,7 +764,7 @@ Reflectance[i] =
     (White[i] - Dark[i])
 ```
 
-There is exactly **one** white reference and **one** dark reference for the whole competition run. Both live in [`firmware/BD/references.json`](firmware/BD/references.json), which is opened read-only and never written by any part of the system.
+There is exactly **one** white reference and **one** dark reference for the whole competition run. Both live in [`BD/calibrations/legacy/references.json`](BD/calibrations/legacy/references.json), which is opened read-only and never written by any part of the system.
 
 ```json
 {
@@ -552,15 +819,15 @@ The software is split by *what a machine has to be* to run it, not by convenienc
               │
         ┌─────┴─────┐
         ▼           ▼
-      MG995       AS7265x
+  MG995/ST3215    AS7265x
      Carousel      Sensor
 ```
 
 | Layer | Runs on | Owns |
 |---|---|---|
-| `firmware/ESP32/` | MicroPython on the ESP32 | carousel, servo, AS7265x, **raw** 18-channel acquisition, hardware status |
-| `firmware/BD/` | CPython on the PC | fixed White/Dark, material database, dark correction, normalization, comparison, interpretation |
-| `firmware/PC/` | CPython on the PC | operator interface, Sample lifecycle, persistent Sample archive, orchestration |
+| `ESP32/` | MicroPython on the ESP32 | carousel, ST3215 servo bus, AS7265x, **raw** 18-channel acquisition, hardware status |
+| `BD/` | CPython on the PC | fixed White/Dark, material database, dark correction, normalization, comparison, interpretation |
+| `PC/` | CPython on the PC | operator interface, Sample lifecycle, persistent Sample archive, orchestration |
 
 The boundaries are strict and enforced by the test suite:
 
@@ -575,6 +842,8 @@ The boundaries are strict and enforced by the test suite:
 ## ESP32 Firmware
 
 MicroPython executes `main.py` automatically after boot, but that startup does **not** move the servo, measure anything, or cycle through anything. It prepares the hardware and waits.
+
+No servo is touched at boot at all — not initialized, not pinged, not powered, not moved. The firmware does not yet know which actuator is fitted, and guessing would mean driving a PWM pin or a UART at hardware that may not be there. Once the operator selects a servo, bringing it up is still **read-only** on the ST3215: open UART2, ping, read the mode and the position, stop. No goal position is written, no EPROM is touched and no torque state is changed, so power-cycling the board can never nudge the carousel out of the position the operator synchronized.
 
 ```text
 ESP32 boot
@@ -591,12 +860,24 @@ A sensor that does not answer at boot does not take the module down: the command
 ### Structure
 
 ```text
-firmware/ESP32/
+ESP32/
 ├─ boot.py       MicroPython boot hook (unused)
 ├─ main.py       transport, command dispatch, hardware handlers
-├─ config.py     hardware settings only: pins, gain, servo, carousel timing
+├─ config.py     hardware settings: pins, gain, MG995_*, ST3215_*, CAROUSEL_*
 ├─ as7265x.py    AS7265x driver + the one sensor runtime lifecycle
-├─ mg995.py      timed continuous-rotation servo driver
+├─ drivers/      external hardware only
+│  ├─ as7265x.py            I2C, virtual registers, channel reads
+│  ├─ servo_base.py         the vocabulary the two servos share
+│  ├─ mg995.py              PWM pulse generation, timed movement
+│  ├─ st3215.py             UART packets, registers, encoder feedback
+│  └─ st3215_registers.py   the ST3215 wire protocol as pure data
+├─ control/      hardware subsystem logic
+│  ├─ servo_manager.py      which actuator is fitted, and its lifecycle
+│  └─ carousel.py           slots, geometry, planning, position
+├─ protocol/     the PC command protocol
+│  ├─ transport.py          newline JSON on the USB console
+│  ├─ router.py             dispatch, error envelopes, serving loop
+│  └─ *_commands.py         servo, carousel, sensor, sample handlers
 └─ carousel.py   4-slot geometry and software position tracking
 ```
 
@@ -702,7 +983,20 @@ Ten commands, all of them hardware operations:
 | `clear_slot` | Free a physical slot; the PC's scientific record is untouched |
 | `measure_raw` | Swing to the scanner, acquire RAW under WHITE, UV and IR, swing back |
 | `sensor_test_raw` | Exercise the whole sensor path and return RAW; moves nothing |
-| `servo_stop` | Brake the servo and release the pin |
+| `get_servo_options` | Which actuators are supported, and which is selected |
+| `select_servo` | State which servo is installed; always invalidates the position |
+| `servo_stop` | Stop the servo where it is; drops position tracking |
+| `servo_diagnostics` | Check the active backend; **moves nothing** |
+| `get_servo_calibration` | The active backend's tunables |
+| `set_servo_calibration` | Override them in RAM (MG995 only) |
+| `servo_test_move` | Operator-confirmed movement tests, per backend |
+| `servo_configure` | ST3215 only: write the operating mode to servo EPROM |
+| `servo_torque` | ST3215 only: hold or release the servo |
+
+The carousel commands — `sync_position`, `select_slot`, `move_slots`,
+`fine_adjust` — are deliberately **generic**. There is no `mg995_move_slot` or
+`st3215_move_slot`: the PC says what it wants, and the firmware knows which
+actuator is fitted.
 
 There is deliberately no `measure_sample`, no `list_samples`, no `get_references` and no `get_database_status`. Those are science and persistence, and they live on the PC.
 
@@ -741,10 +1035,10 @@ Every payload is JSON-safe primitives only. Exceptions are never serialized; the
 
 ## BD — Science Layer
 
-`firmware/BD/` runs on the main computer and is never uploaded to the ESP32.
+`BD/` runs on the main computer and is never uploaded to the ESP32.
 
 ```text
-firmware/BD/
+BD/
 ├─ references.json     one fixed White + one fixed Dark   PROTECTED, READ ONLY
 ├─ database.json       22 reference material spectra       PROTECTED, READ ONLY
 ├─ config.py           calibration ID, thresholds, precision
@@ -799,7 +1093,7 @@ WEAK_REFERENCE_MATCH     nothing in the database is a good fit
 NO_DATABASE              no reference materials available
 ```
 
-Both thresholds live in `firmware/BD/config.py` and are recorded inside each sample record, so old results stay interpretable after retuning:
+Both thresholds live in `BD/config.py` and are recorded inside each sample record, so old results stay interpretable after retuning:
 
 ```python
 MIN_SIMILARITY_PERCENT   = 85.0
@@ -824,10 +1118,10 @@ considered ambiguous.
 
 ## PC — Mission Controller
 
-`firmware/PC/` is standard CPython.
+`PC/` is standard CPython.
 
 ```text
-firmware/PC/
+PC/
 ├─ rover_science_client.py   operator interface and mission workflow
 ├─ esp32_link.py             serial transport and the hardware command API
 ├─ sample_store.py           persistent Sample archive
@@ -900,13 +1194,13 @@ Loader: Slot 1    Scanner: Slot 3
 [q] Exit
 ```
 
-Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot, Sync ESP32 Samples to PC.
+Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Tools, Sensor Test, Clear Physical Slot, Sync ESP32 Samples to PC.
 
 **Sensor Test is one command.** The operator never has to decide which internal layer to test: it runs the whole chain — ESP32 sensor recovery, I2C, internal devices, configuration, illumination, a new 18-channel acquisition, then the PC's dark correction, normalization and database comparison — through the production code path, prints every stage as PASS or FAIL, and saves nothing.
 
 **Sync ESP32 Samples to PC.** The ESP32 keeps the last raw acquisition per slot in RAM so a result is not lost if this application crashes, is restarted, or is replaced by a different laptop mid-run. Tools → *Sync ESP32 Samples to PC* copies anything the archive is missing, runs it through the normal BD pipeline, and stores it as a complete record. It is a copy, not a move: an existing Sample ID is skipped rather than overwritten, the device keeps its own copy, and running it twice transfers nothing the second time.
 
-For installation, upload, startup and recovery procedures, see **[firmware/OPERATIONS.md](firmware/OPERATIONS.md)**.
+For installation, upload, startup and recovery procedures, see **[Documentation/OPERATIONS.md](Documentation/OPERATIONS.md)**.
 
 ---
 
@@ -1021,7 +1315,7 @@ ch_940
 
 The database is intended for training and validating comparative classification methods. It does not provide definitive chemical identification from a single spectrum.
 
-`firmware/BD/database.json` holds **known reference materials only**. Measured competition samples are stored separately in `firmware/BD/samples.json`, and nothing in the system writes to the reference database.
+`BD/databases/legacy_18ch/database.json` holds **known reference materials only**. Measured competition samples are stored separately in `BD/samples/samples.json`, and nothing in the system writes to the reference database.
 
 Each measurement is compared against every entry in the database, and all results are stored ranked by descending similarity — not only the top few.
 
@@ -1069,7 +1363,8 @@ The module was developed through the following stages:
 - ESP32 carrier-board integration;
 - AS7265x communication;
 - multispectral channel acquisition;
-- MG995 continuous-rotation carousel driver;
+- ST3215 serial bus servo driver with encoder-verified positioning
+  (replaced the original timed MG995 PWM driver);
 - four-slot carousel state model with software position tracking;
 - USB-serial JSON command protocol (CP2102 console, no UART peripheral);
 - three-layer software split: ESP32 hardware / BD science / PC mission control;
@@ -1087,7 +1382,8 @@ The module was developed through the following stages:
 
 ### Ongoing Work
 
-- servo calibration on the assembled mechanism (neutral pulse, direction, 90° step timing);
+- servo bring-up on the assembled mechanism (mode configuration, forward
+  direction, position tolerance from measured repeatability);
 - final rover mechanical integration;
 - measurement repeatability testing;
 - distance-dependent spectral correction;
@@ -1109,7 +1405,7 @@ Future hardware revisions are planned to include:
 - additional test points;
 - improved connector labelling;
 - revised power protection;
-- activation of the reserved UART2 rover connector as an alternative to USB;
+- a rover-side command channel that does not share UART2 with the servo bus;
 - expanded automated calibration and data logging.
 
 The distance sensor is considered the highest-priority measurement extension because spectral intensity depends strongly on sensor-to-sample geometry.
@@ -1123,24 +1419,16 @@ The load cell is planned as optional experimental metadata rather than a require
 ```text
 as7265x-soil-analysis-module/
 ├─ README.md
+├─ HANDOFF.md
 ├─ Photos/
-│  └─ VER1.0/
-│     ├─ 01_POWER_ver1,0.png
-│     ├─ 02_ESP32_ver1,0.png
-│     ├─ 03_CONNECTION_ver1,0.png
-│     ├─ 2D_PCB_ver1,0.png
-│     ├─ 3D_PCB_ver1,0.png
-│     └─ PCB_photo_ver1,0.jpg
 ├─ Hardware/            Altium project and manufacturing outputs
-│  ├─ Altium/
-│  └─ Manufacturing/
-├─ firmware/
-│  ├─ ESP32/            MicroPython hardware controller (the only uploaded code)
-│  ├─ BD/               science layer + protected White/Dark and material database
-│  ├─ PC/               mission controller, operator UI, Sample archive
-│  └─ OPERATIONS.md     install, run, update, debug and recover
-├─ tests/               regression suite, runs the real firmware on CPython
-└─ Documentation/
+├─ ESP32/               MicroPython hardware controller (the only uploaded code)
+├─ PC/                  mission controller, operator UI, serial transport
+├─ BD/                  persistent scientific data + repositories
+├─ Measurements/        scientific mathematics
+├─ Tests/               regression suite, runs the real firmware on CPython
+├─ Documentation/       OPERATIONS.md, ADRs, protocols
+└─ research/            evidence matrix, research and benchmark reports
 ```
 
 Manufacturing outputs should be stored separately for each PCB revision:
@@ -1167,7 +1455,7 @@ Project documentation includes:
 
 Recommended repository links:
 
-- [Operations runbook](firmware/OPERATIONS.md) — install, upload, run, debug, recover
+- [Operations runbook](Documentation/OPERATIONS.md) — install, upload, run, debug, recover
 - [PCB BOM and component models](Documentation/Mars%20Rover%20AS7265x%20Soil%20Analyzer%20PCB%20-%20BOM%20_%20Component%20Models%20v0.1.pdf)
 - [PCB purchase list](Documentation/Purchase%20List%20-%20Mars%20Rover%20AS7265x%20PCB.docx)
 - [Spectral material database](Documentation/Spectral%20Material%20Database.docx)
@@ -1177,7 +1465,7 @@ Document roles are kept separate on purpose:
 | Document | Answers |
 |---|---|
 | `README.md` | what the project is, how it is built, what the science means |
-| `firmware/OPERATIONS.md` | how to install, run, update, debug and recover it |
+| `Documentation/OPERATIONS.md` | how to install, run, update, debug and recover it |
 | source code | how the implementation works |
 
 ---

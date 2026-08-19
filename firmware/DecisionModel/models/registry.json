@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "active": "FREYA_DECISION_V001",
+  "models": [
+    {
+      "version": "FREYA_DECISION_V001",
+      "kind": "COLD_START_DETERMINISTIC",
+      "status": "ACTIVE",
+      "registered_at": "2026-08-18T00:00:00+00:00",
+      "activated_at": "2026-08-18T00:00:00+00:00",
+      "description": "Cold-start decision model. Deterministic evidence fusion with magnitude-aware margins, one vote per metric family, declared database priors, class distance where statistics exist, and hierarchical family-before-material resolution. No trained classifier: with one verified observation per material there is nothing a supervised model could be validated against.",
+      "training_run_id": null,
+      "feature_pipeline": "evidence-v1",
+      "metrics": {},
+      "provenance": {
+        "thresholds": "PROVISIONAL_UNVALIDATED",
+        "database_priors": "PROVISIONAL_UNVALIDATED",
+        "trained_on": null,
+        "note": "Every number in this model is a declared engineering judgement, not a fitted parameter. Nothing here was tuned against the twelve observations of 2026-08-17 - they are validation cases, and tuning against them would make the validation meaningless."
+      }
+    }
+  ]
+}

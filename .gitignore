@@ -88,10 +88,18 @@ Desktop.ini
 # ============================================================
 
 # Measured competition samples belong to a run, not to the source tree.
-# They live on the PC and are backed up with the procedure in
-# firmware/OPERATIONS.md.
-firmware/BD/samples.json
-firmware/BD/samples_backup_*.json
+# Backed up with the procedure in Documentation/OPERATIONS.md.
+firmware/BD/data/samples.json
+firmware/BD/data/*.json.tmp
+
+# Downloaded source archives for DB3. 21 MB of third-party data does not
+# belong in version control; DB3.json is rebuilt from it with
+# py firmware/research/import_usgs.py --download
+firmware/BD/data/.cache/
+
+# Calibrations are produced per instrument, per run.
+firmware/BD/data/calibration_active.json
+firmware/BD/data/FREYA_FULL_SPECTRAL_CAL_*.json
 
 # ============================================================
 # Local secrets and machine-specific settings

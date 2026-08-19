@@ -22,42 +22,25 @@ Usage:
 import argparse
 import json
 import sys
+import textwrap
 from pathlib import Path
 
-# BD lives beside this directory. Importing it by path means the
-# application runs from anywhere without PYTHONPATH setup.
+# BD and Measurements are siblings of this directory. Putting the project
+# root on the path means the application runs from anywhere without any
+# PYTHONPATH setup, and every import below says which layer it came from.
 PC_DIR = Path(__file__).resolve().parent
-BD_DIR = PC_DIR.parent / "BD"
+PROJECT_ROOT = PC_DIR.parent
 
-if str(BD_DIR) not in sys.path:
-    sys.path.insert(0, str(BD_DIR))
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-import aggregation                                      # noqa: E402
-import config as bd_config                              # noqa: E402
-import sample_analysis                                  # noqa: E402
-from calibration import (                               # noqa: E402
+# --- BD: persistence --------------------------------------------------
+from BD import config as bd_config                      # noqa: E402
+from BD.calibrations import (              # noqa: E402
     CalibrationError,
     CalibrationStore,
-    ILLUMINATIONS,
-    build_calibration,
-    validate_calibration,
 )
-from database import (                                  # noqa: E402
-    DatabaseError,
-    MaterialDatabase,
-    References,
-)
-
-from esp32_link import (                                # noqa: E402
-    CONNECT_TIMEOUT,
-    DEFAULT_BAUDRATE,
-    DEFAULT_TIMEOUT,
-    ESP32Link,
-    LinkError,
-    MEASUREMENT_TIMEOUT,
-    utc_timestamp,
-)
-from sample_store import (                              # noqa: E402
+from BD.samples import (                   # noqa: E402
     METADATA_FIELDS,
     STATE_EMPTY,
     STATE_LOADED,
@@ -66,6 +49,55 @@ from sample_store import (                              # noqa: E402
     SampleStore,
     StorageError,
     validate_sample_id,
+)
+from BD.databases import (        # noqa: E402
+    DatabaseError,
+    MaterialDatabase,
+    References,
+)
+from BD.channels import (                     # noqa: E402
+    AS7265X_18,
+    AS7265X_54_MULTIILLUM,
+    FeatureSpaceError,
+    ILLUMINATIONS,
+    combine_illuminations,
+)
+from BD.registry import DatabaseRegistry      # noqa: E402
+from BD.acquisition_profiles import (          # noqa: E402
+    AcquisitionProfileStore,
+    from_measurement,
+)
+from BD.decision_learning import (             # noqa: E402
+    DecisionLearningStore,
+    LearningError,
+)
+from BD.taxonomy import Taxonomy               # noqa: E402
+
+# --- Measurements: science -------------------------------------------
+from Measurements import aggregation                    # noqa: E402
+from Measurements import analysis as sample_analysis    # noqa: E402
+from Measurements import config as science_config       # noqa: E402
+from Measurements import channel_reliability            # noqa: E402
+from Measurements import evidence as evidence_module    # noqa: E402
+from Measurements import inference                      # noqa: E402
+
+# --- DecisionModel: interpretation ------------------------------------
+from DecisionModel import class_models                  # noqa: E402
+from DecisionModel.engine import DecisionEngine         # noqa: E402
+from Measurements.calibration import (                  # noqa: E402
+    build_calibration,
+    validate_calibration,
+)
+
+# --- PC: transport ----------------------------------------------------
+from esp32_link import (                                # noqa: E402
+    CONNECT_TIMEOUT,
+    DEFAULT_BAUDRATE,
+    DEFAULT_TIMEOUT,
+    ESP32Link,
+    LinkError,
+    MEASUREMENT_TIMEOUT,
+    utc_timestamp,
 )
 
 # Four physical slots, 90 degrees apart; the scanner sits two slots
@@ -263,11 +295,23 @@ class Mission:
 
         self.references = None
         self.database = None
+        self.registry = None
+        self.taxonomy = None
         self.active_calibration = None
         self.science_error = None
         self.calibration_error = None
 
+        # The learning layer is optional at runtime: a rover measurement
+        # must still work if the history is unavailable, so a failure
+        # here is recorded and everything else carries on.
+        self.learning = None
+        self.learning_error = None
+        self.decision_engine = None
+        self.class_snapshot = None
+        self.profiles = AcquisitionProfileStore()
+
         self.load_science()
+        self.load_decision_model()
 
     # ------------------------------------------------------------------
     # BD
@@ -279,7 +323,7 @@ class Mission:
 
         Two calibrations, always kept apart:
 
-          LEGACY  references.json - what database.json was normalized
+          LEGACY  calibration_legacy.json - what DB1 was normalized
                   against, and the only thing it may be compared with.
                   Immutable.
 
@@ -290,6 +334,7 @@ class Mission:
         """
         self.references = None
         self.database = None
+        self.registry = None
         self.active_calibration = None
         self.science_error = None
         self.calibration_error = None
@@ -301,12 +346,33 @@ class Mission:
         except DatabaseError as error:
             self.science_error = "{}: {}".format(error.code, error.message)
 
+        # DB1, DB2 and DB3 as three independent sources. A database that
+        # is empty or unreadable is reported by the registry rather than
+        # raising here: DB2 is legitimately empty, and losing DB3 must
+        # not take the legacy DB1 comparison down with it.
+        self.registry = DatabaseRegistry()
+
+        try:
+            self.taxonomy = Taxonomy(self.registry)
+
+        except Exception as error:
+            self.taxonomy = None
+            self.science_error = self.science_error or "{}: {}".format(
+                type(error).__name__, error
+            )
+
         try:
             self.active_calibration = self.calibrations.active()
 
             if self.active_calibration is None:
+                stored = len(self.calibrations.history())
+
                 self.calibration_error = (
-                    "No full spectral calibration has been made yet."
+                    "{} calibration(s) are stored but none is selected. "
+                    "Sensor Test -> [7] Select Which Calibration To "
+                    "Use.".format(stored)
+                    if stored
+                    else "No full spectral calibration has been made yet."
                 )
 
         except CalibrationError as error:
@@ -315,6 +381,257 @@ class Mission:
             )
 
         return self.science_error is None
+
+    def load_decision_model(self):
+        """
+        Open the learning history and build the decision engine.
+
+        Every failure here is survivable and is recorded rather than
+        raised: an instrument that refuses to measure because its
+        learning database is missing would be a worse instrument.
+        """
+        self.learning = None
+        self.learning_error = None
+        self.decision_engine = None
+        self.class_snapshot = None
+
+        try:
+            self.learning = DecisionLearningStore()
+
+        except Exception as error:
+            self.learning_error = "{}: {}".format(
+                type(error).__name__, error
+            )
+
+        try:
+            if self.learning is not None:
+                snapshot = class_models.build(
+                    self.learning, self.calibration_for
+                )
+                self.class_snapshot = snapshot
+
+            self.decision_engine = DecisionEngine(
+                taxonomy=self.taxonomy,
+                registry=self.registry,
+                learning_store=self.learning,
+                class_snapshot=(
+                    self.class_snapshot["snapshot_id"]
+                    if self.class_snapshot else None
+                ),
+            )
+
+        except Exception as error:
+            self.learning_error = self.learning_error or "{}: {}".format(
+                type(error).__name__, error
+            )
+
+        return self.decision_engine is not None
+
+    def calibration_for(self, calibration_id):
+        """A stored calibration by id, or None. Never raises."""
+        if not calibration_id:
+            return None
+
+        if (
+            self.active_calibration is not None
+            and self.active_calibration.calibration_id == calibration_id
+        ):
+            return self.active_calibration
+
+        try:
+            return self.calibrations.load(calibration_id)
+
+        except CalibrationError:
+            return None
+
+    def current_profile(self, sensor_settings, firmware_version=None):
+        """
+        The acquisition profile these conditions correspond to.
+
+        Created once per distinct set of conditions; the same settings
+        always return the same profile id.
+        """
+        try:
+            return self.profiles.ensure(from_measurement(
+                sensor_settings, firmware_version=firmware_version
+            ))
+
+        except Exception:
+            return None
+
+    def build_evidence(self, acquisition, sensor_settings=None,
+                       distance_mm=None, measurement_id="MEASUREMENT"):
+        """
+        The deterministic evidence package for one acquisition.
+
+        Returns None when there is no active calibration: without a
+        reference there is no reflectance, and the honest answer is that
+        the evidence cannot be built rather than a package full of zeros.
+        """
+        if self.active_calibration is None:
+            return None
+
+        blocks = {}
+
+        for name, block in (acquisition.get("illuminations") or {}).items():
+            aggregated = aggregation.aggregate_block(block)
+            blocks[name] = aggregated["spectrum"]
+
+        if not blocks:
+            return None
+
+        statistics = {
+            name: aggregation.aggregate_block(block)["statistics"]
+            for name, block in (
+                acquisition.get("illuminations") or {}
+            ).items()
+        }
+
+        profile = self.current_profile(sensor_settings)
+
+        return evidence_module.build(
+            measurement_id,
+            blocks,
+            self.active_calibration.dark,
+            self.active_calibration.white,
+            registry=self.registry,
+            sensor_settings=sensor_settings,
+            acquisition_profile=profile,
+            calibration_id=self.active_calibration.calibration_id,
+            legacy_calibration_id=(
+                self.references.calibration_id if self.references else None
+            ),
+            legacy_references=self.references,
+            sample_statistics=statistics,
+            class_statistics=(
+                self.class_snapshot["statistics"]
+                if self.class_snapshot else None
+            ),
+            class_observations=(
+                self.class_snapshot["observations"]
+                if self.class_snapshot else None
+            ),
+            distance_mm=distance_mm,
+        )
+
+    def decide(self, package, mixture=None):
+        """The decision for one evidence package, or None."""
+        if package is None or self.decision_engine is None:
+            return None
+
+        try:
+            return self.decision_engine.decide(package, mixture=mixture)
+
+        except Exception as error:
+            return {
+                "level": "UNKNOWN",
+                "material": None,
+                "family": None,
+                "confidence": "NONE",
+                "reason": "the decision model failed: {}: {}".format(
+                    type(error).__name__, error
+                ),
+                "candidates": [],
+                "secondary_interpretations": [],
+                "explanation": "",
+            }
+
+    def record_observation(self, measurement_id, result, label_type,
+                           material=None, family_id=None, mixture=None,
+                           verification_status="UNKNOWN",
+                           verification_source=None, certainty=None,
+                           session_id=None, sample_group=None,
+                           independent_measurement=True, notes=None):
+        """
+        Store one measurement, its label and the model's prediction.
+
+        The prediction is written under the model's own version, beside
+        the ground truth and never as it: `BD.decision_learning` refuses
+        a label whose source names a model, so this cannot become
+        self-training even by mistake. §46.
+        """
+        if self.learning is None:
+            raise LearningError(
+                "LEARNING_UNAVAILABLE",
+                self.learning_error or "the learning database is not open",
+            )
+
+        package = (result or {}).get("evidence")
+        decision = (result or {}).get("decision")
+        measurement = (result or {}).get("measurement") or {}
+
+        raw = measurement.get("raw") or {}
+
+        if not raw:
+            raise LearningError(
+                "RAW_REQUIRED",
+                "the measurement carries no raw spectra to store",
+            )
+
+        self.learning.add_observation(
+            measurement_id,
+            raw,
+            session_id=session_id,
+            sample_group=sample_group or (
+                material.key if material is not None else None
+            ),
+            independent_measurement=independent_measurement,
+            acquisition_profile_id=(
+                (package or {}).get("acquisition", {}).get(
+                    "acquisition_profile_id"
+                )
+            ),
+            calibration_id=(
+                self.active_calibration.calibration_id
+                if self.active_calibration else None
+            ),
+            legacy_calibration_id=(
+                self.references.calibration_id if self.references else None
+            ),
+            sensor_settings=measurement.get("sensor_settings"),
+            quality=(package or {}).get("quality"),
+            channel_reliability=(package or {}).get("channel_reliability"),
+            evidence_schema_version=(package or {}).get("schema_version"),
+            notes=notes,
+        )
+
+        self.learning.add_ground_truth(
+            measurement_id,
+            label_type,
+            material_key=material.key if material is not None else None,
+            material_id=(
+                material.material_id if material is not None else None
+            ),
+            family_id=family_id,
+            mixture=mixture,
+            verification_status=verification_status,
+            verification_source=verification_source,
+            certainty=certainty,
+        )
+
+        if decision:
+            try:
+                self.learning.add_prediction(
+                    measurement_id,
+                    decision.get(
+                        "decision_model_version", "UNKNOWN_MODEL"
+                    ),
+                    decision.get("level", "UNKNOWN"),
+                    material_key=decision.get("material"),
+                    family_id=decision.get("family"),
+                    candidates=decision.get("candidates"),
+                    confidence=decision.get("confidence"),
+                    decision={
+                        "reason": decision.get("reason"),
+                        "explanation": decision.get("explanation"),
+                        "provenance": decision.get("provenance"),
+                    },
+                )
+
+            except LearningError:
+                pass
+
+        return self.learning.get_observation(measurement_id)
 
     def calibration_health(self):
         """PASS / MISSING / INVALID for each of the two calibrations."""
@@ -328,12 +645,21 @@ class Mission:
         if self.active_calibration is None:
             active = "MISSING"
         else:
-            result = self.active_calibration.validate()
+            # Validation is science, so it comes from Measurements rather
+            # than from the stored record itself (see Documentation/ARCHITECTURE.md).
+            result = validate_calibration(self.active_calibration.document)
             active = "PASS" if result["status"] != "FAIL" else "INVALID"
+
+        try:
+            stored = len(self.calibrations.history())
+
+        except CalibrationError:
+            stored = 0
 
         return {
             "legacy": legacy,
             "active": active,
+            "stored": stored,
             "legacy_id": (
                 self.references.calibration_id if self.references else None
             ),
@@ -407,7 +733,7 @@ class Mission:
                 self.science_error or "White/Dark references are not loaded.",
             )
 
-        return sample_analysis.analyze(
+        result = sample_analysis.analyze(
             acquisition,
             self.references,
             self.database,
@@ -415,6 +741,166 @@ class Mission:
             self.active_calibration,
             distance_mm,
         )
+
+        result["cross_database"] = self.infer_cross_database(result)
+
+        # The new pipeline, beside the old one rather than instead of it.
+        # `analysis` remains the DB1 conclusion under the legacy
+        # calibration; `evidence` is the deterministic package and
+        # `decision` is what the Decision Model made of it.
+        measurement_id = (
+            acquisition.get("measurement_id")
+            or "TEST_{}".format(utc_timestamp())
+        )
+
+        try:
+            result["evidence"] = self.build_evidence(
+                acquisition, sensor_settings, distance_mm, measurement_id
+            )
+
+        except Exception as error:
+            result["evidence"] = None
+            result["evidence_error"] = "{}: {}".format(
+                type(error).__name__, error
+            )
+
+        result["decision"] = self.decide(
+            result.get("evidence"), result.get("mixture")
+        )
+
+        return result
+
+    def feature_sources(self, result):
+        """
+        Which normalization of this measurement each database may see.
+
+        The databases are not normalized alike, and no single vector
+        serves all three:
+
+            DB1  LEGACY  the frozen White/Dark the library was built
+                         against, and the only one it may be compared
+                         with. Using today's calibration would silently
+                         change what every stored number means.
+            DB2  ACTIVE  measured on this instrument under the current
+                         calibration - the same 54 features it stores.
+            DB3  ACTIVE  never measured here at all, so the honest
+                         comparison is against the instrument as it is
+                         now. Falls back to LEGACY when no calibration is
+                         active, and says which it used.
+
+        Returns (feature_sources, top_level_features, feature_space).
+        """
+        measurement = result["measurement"]
+
+        legacy = (
+            measurement.get("legacy_database_normalized") or {}
+        ).get("white") or {}
+
+        legacy_id = (result.get("calibration") or {}).get(
+            "legacy_database_calibration_id"
+        )
+        active_id = (result.get("calibration") or {}).get(
+            "active_calibration_id"
+        )
+
+        legacy_label = "legacy:{}".format(legacy_id)
+
+        # The 54-feature vector exists only when a full calibration
+        # produced all three illuminations. A partial one is not
+        # assembled: see BD/channels.py::combine_illuminations.
+        active_54 = None
+        active_white = None
+
+        if active_id:
+            try:
+                active_54 = combine_illuminations(
+                    measurement.get("active_normalized") or {}
+                )
+                active_white = {
+                    channel: active_54["white:{}".format(channel)]
+                    for channel in sample_analysis.CHANNELS
+                }
+
+            except FeatureSpaceError:
+                active_54 = None
+                active_white = None
+
+        if active_54 is not None:
+            features = active_54
+            feature_space = AS7265X_54_MULTIILLUM
+            current = active_white
+            current_label = "active:{}".format(active_id)
+
+        else:
+            features = legacy
+            feature_space = AS7265X_18
+            current = legacy
+            current_label = legacy_label
+
+        sources = {
+            "DB1": {
+                "features": legacy,
+                "feature_space": AS7265X_18,
+                "normalization": legacy_label,
+            },
+            "DB2": {
+                "features": features,
+                "feature_space": feature_space,
+                "normalization": current_label,
+            },
+            "DB3": {
+                "features": current,
+                "feature_space": AS7265X_18,
+                "normalization": current_label,
+            },
+        }
+
+        return sources, features, feature_space
+
+    def infer_cross_database(self, result):
+        """
+        Score the measurement against DB1, DB2 and DB3 separately.
+
+        Never pooled with the legacy comparison and never a replacement
+        for it: `analysis` stays the DB1 conclusion under the calibration
+        DB1 was built with, and this is the wider view - what each
+        independent library says, whether they agree, and how much that
+        agreement is worth.
+
+        A failure here must never lose a measurement, so it is reported
+        as a block with a reason rather than raised.
+        """
+        if self.registry is None:
+            return None
+
+        try:
+            sources, features, feature_space = self.feature_sources(result)
+
+            if not features:
+                return {
+                    "status": "SKIPPED",
+                    "reason": "the measurement produced no normalized "
+                              "spectrum to compare",
+                }
+
+            report = inference.infer(
+                features,
+                feature_space,
+                self.registry,
+                result.get("quality"),
+                (result.get("quality") or {}).get("usable_channels"),
+                feature_sources=sources,
+            )
+
+            report["status"] = "OK"
+
+            return report
+
+        except Exception as error:
+            return {
+                "status": "FAILED",
+                "reason": "{}: {}".format(type(error).__name__, error),
+            }
 
 
 # ======================================================================
@@ -455,7 +941,7 @@ def print_system_status(mission):
             refs["dark_channels"], refs["channels_required"],
         ))
         print("  id:             {}".format(refs["calibration_id"]))
-        print("  protected:      YES - database.json depends on it")
+        print("  protected:      YES - DB1.json depends on it")
 
         if refs["zero_denominator_channels"]:
             print("  warning: White == Dark on {}".format(
@@ -469,13 +955,19 @@ def print_system_status(mission):
 
     if mission.active_calibration is not None:
         print("  id:             {}".format(health["active_id"]))
+        print("  created:        {}".format(
+            mission.active_calibration.created_at
+        ))
         print("  illuminations:  WHITE + UV + IR")
 
     else:
         print("  {}".format(
             mission.calibration_error or "not created yet"
         ))
-        print("  Run Tools -> Sensor Test -> Full Spectral Calibration.")
+
+    print("  library:        {} calibration(s) in {}".format(
+        health["stored"], mission.calibrations.library_path.name
+    ))
 
     if mission.database is not None:
         print("Material DB:      READY ({} materials)".format(
@@ -491,6 +983,57 @@ def print_system_status(mission):
 
     else:
         print("Material DB:      ERROR - {}".format(mission.science_error))
+
+    print()
+    print("DECISION MODEL")
+
+    if mission.decision_engine is not None:
+        print("Model:            {} ({})".format(
+            mission.decision_engine.version, mission.decision_engine.kind
+        ))
+
+    else:
+        print("Model:            UNAVAILABLE - {}".format(
+            mission.learning_error
+        ))
+
+    if mission.learning is not None:
+        learning = mission.learning.status()
+
+        print("Learning history: {} observation(s), {} verified".format(
+            learning["observations"], learning["by_verification"]["VERIFIED"]
+        ))
+        print("  file:           {}".format(learning["file"]))
+        print("  materials with verified measurements: {}".format(
+            len(learning["verified_materials"])
+        ))
+
+    if mission.class_snapshot is not None:
+        coverage = class_models.coverage(mission.class_snapshot)
+
+        print("Class models:     {} material(s), {} with measurable "
+              "scatter".format(
+                  mission.class_snapshot["materials"],
+                  coverage["with_scatter"],
+              ))
+        print("  snapshot:       {}".format(
+            mission.class_snapshot["snapshot_id"]
+        ))
+
+    if mission.taxonomy is not None:
+        taxonomy = mission.taxonomy.status()
+
+        print("Vocabulary:       {} material(s) in {} families".format(
+            taxonomy["materials"], taxonomy["families"]
+        ))
+
+    if mission.registry is not None:
+        print()
+        print("DATABASES  (scored separately, never pooled)")
+        print()
+
+        for line in mission.registry.summary().splitlines():
+            print("  {}".format(line))
 
     print()
     print("ESP32")
@@ -558,8 +1101,14 @@ def print_system_status(mission):
 
     print()
     print("CAROUSEL")
-    print("Slots:            {} ({:.0f} deg apart)".format(
-        SLOT_COUNT, 360.0 / SLOT_COUNT
+
+    geometry = carousel.get("geometry") or {}
+    encoder = carousel.get("encoder") or {}
+
+    print("Slots:            {} ({:.0f} deg apart, {} counts)".format(
+        carousel.get("slot_count", SLOT_COUNT),
+        geometry.get("slot_spacing_deg", 360.0 / SLOT_COUNT),
+        geometry.get("counts_per_slot"),
     ))
     print("Synchronized:     {}".format(
         "YES" if carousel.get("position_valid") else "NO"
@@ -567,6 +1116,43 @@ def print_system_status(mission):
     print("Selected slot:    {}".format(carousel.get("selected_slot")))
     print("Loader:           {}".format(carousel.get("current_load_slot")))
     print("Scanner:          {}".format(carousel.get("current_scan_slot")))
+    print("Origin:           {} counts".format(
+        encoder.get("origin_counts")
+    ))
+    print("Alignment offset: {} counts ({} deg)".format(
+        encoder.get("alignment_offset_counts"),
+        encoder.get("alignment_offset_deg"),
+    ))
+
+    if encoder.get("drift_counts") is not None:
+        print("Drift vs nominal: {} counts ({} deg)".format(
+            encoder.get("drift_counts"), encoder.get("drift_deg")
+        ))
+
+    if geometry.get("error"):
+        print("GEOMETRY ERROR:   {}".format(geometry["error"]))
+
+    print()
+    print("SERVO")
+
+    # Which actuator is in charge is the single most important thing an
+    # operator can be told about the carousel, so it is never hidden
+    # behind an error.
+    servo = status.get("servo") or {}
+    backend = servo.get("backend") or {}
+
+    print_servo_block(servo)
+
+    if servo.get("selected") and not backend.get("connected"):
+        error = backend.get("error") or {}
+
+        if error:
+            print("  ** NOT ANSWERING: {} - {}".format(
+                error.get("code"), error.get("message")
+            ))
+            print("  The ST3215 subsystem is powered externally; check that")
+            print("  supply, the common ground and the TX/RX pair first.")
+
     print()
 
 
@@ -766,6 +1352,673 @@ def print_matches(matches, limit=None):
         ))
 
 
+DATABASE_LABELS = {
+    "DB1": "measured here, 18 bands",
+    "DB2": "measured here, 54 features",
+    "DB3": "external spectra, projected",
+}
+
+
+def print_cross_database(cross, limit=5):
+    """
+    What each of the three databases says, separately, and what that adds
+    up to.
+
+    Never a single ranked list. DB1 says "this looks like something we
+    measured on this instrument"; DB3 says "this looks like a laboratory
+    spectrum of that mineral, after modelling our sensor". Those are
+    different claims, so they are printed as different answers and their
+    scores are never averaged.
+    """
+    if not cross:
+        return
+
+    if cross.get("status") != "OK":
+        print("Cross-database inference: {}".format(cross.get("status")))
+        print("  {}".format(cross.get("reason")))
+
+        return
+
+    print("{:<5} {:<28} {:<26} {:>8}  {}".format(
+        "DB", "Library", "Best match", "Cosine", "Class reliability"
+    ))
+
+    unavailable = []
+
+    for result in cross.get("database_results") or []:
+        key = result.get("database")
+        status = result.get("status")
+
+        if status != "OK":
+            print("{:<5} {:<28} {}".format(
+                key, DATABASE_LABELS.get(key, ""), status
+            ))
+            unavailable.append((key, status, result.get("reason")))
+
+            continue
+
+        print("{:<5} {:<28} {:<26} {:>8}  {}".format(
+            key,
+            DATABASE_LABELS.get(key, ""),
+            str(result.get("best_material"))[:26],
+            score(result.get("best_similarity")),
+            result.get("class_reliability"),
+        ))
+
+    # A database that could not be used says why, in full, below the
+    # table rather than inside a column it would destroy.
+    for key, status, reason in unavailable:
+        if not reason:
+            continue
+
+        print()
+        print("  {} {}:".format(key, status))
+
+        for line in textwrap.wrap(str(reason), 66):
+            print("    {}".format(line))
+
+    # Which calibration each database saw. It differs by design, and a
+    # reader who does not know that would mistrust the numbers.
+    print()
+
+    for result in cross.get("database_results") or []:
+        if result.get("normalization"):
+            print("  {:<5} normalized with {}{}".format(
+                result.get("database"),
+                result.get("normalization"),
+                "  (narrowed to the 18 WHITE bands)"
+                if result.get("comparison_mode") == "PROJECTED_TO_18" else "",
+            ))
+
+    for result in cross.get("database_results") or []:
+        if result.get("status") != "OK":
+            continue
+
+        matches = result.get("matches") or []
+
+        if not matches:
+            continue
+
+        print()
+        print("  {} - top {}".format(result.get("database"), limit))
+
+        for match in matches[:limit]:
+            print("    {:<3} {:<30} {:>8}   rmse {}".format(
+                match.get("combined_rank", match.get("rank")),
+                str(match.get("material"))[:30],
+                score(match.get("cosine_similarity_percent")),
+                "{:.4f}".format(match["rmse"])
+                if match.get("rmse") is not None else "-",
+            ))
+
+    consensus = cross.get("consensus") or {}
+    confidence = cross.get("confidence") or {}
+
+    print()
+    print("CONSENSUS")
+    print()
+    print("  Level:      {}".format(consensus.get("level")))
+    print("  Material:   {}".format(consensus.get("material") or "-"))
+
+    if consensus.get("nearest_material"):
+        print("  Nearest:    {} (not named as the answer)".format(
+            consensus["nearest_material"]
+        ))
+
+    print("  Family:     {}".format(consensus.get("family") or "-"))
+    print("  Supported by: {}".format(
+        ", ".join(consensus.get("supporting_databases") or []) or "-"
+    ))
+
+    if consensus.get("reason"):
+        print("  Reason:     {}".format(consensus["reason"]))
+
+    for entry in consensus.get("discounted_for_low_reliability") or []:
+        print("  DISCOUNTED: {} said {} - {}".format(
+            entry.get("database"),
+            entry.get("best_material"),
+            entry.get("reason"),
+        ))
+
+    for entry in consensus.get("disagreements") or []:
+        print("  DISAGREES:  {} says {} ({})".format(
+            entry.get("database"),
+            entry.get("best_material"),
+            score(entry.get("best_similarity")),
+        ))
+
+    print()
+    print("  Confidence: {}".format(confidence.get("level")))
+
+    for factor in confidence.get("factors") or []:
+        if factor.get("verdict") == "PASS":
+            continue
+
+        print("    [{}] {}: {}".format(
+            factor.get("verdict"), factor.get("factor"), factor.get("detail")
+        ))
+
+    print("    Confidence is an engineering judgement from the structure")
+    print("    of the evidence, NOT a probability.")
+
+    mixture = cross.get("mixture")
+
+    if mixture:
+        print()
+        print("MIXTURE ANALYSIS  ({})".format(mixture.get("database")))
+        print()
+        print("  Status: {}".format(mixture.get("status")))
+
+        for component in mixture.get("components") or []:
+            print("    {:<30} spectral contribution {:.3f}".format(
+                str(component.get("material"))[:30],
+                component.get("spectral_contribution", 0.0),
+            ))
+
+        if mixture.get("components"):
+            print()
+            print("  Spectral contribution is NOT mass fraction. Converting")
+            print("  one to the other needs prepared mixtures of known")
+            print("  mass, which do not exist for this instrument.")
+
+
+DECISION_HEADLINE = {
+    "KNOWN_MATERIAL": "KNOWN MATERIAL",
+    "MATERIAL_FAMILY": "MATERIAL FAMILY",
+    "AMBIGUOUS_SET": "AMBIGUOUS SET",
+    "UNKNOWN": "UNKNOWN",
+}
+
+
+def print_evidence_summary(package):
+    """The measurement half: what the instrument actually supports."""
+    if not package:
+        return
+
+    quality = package.get("quality") or {}
+    reliability = package.get("channel_reliability") or {}
+
+    hardware = (quality.get("hardware") or {}).get("status")
+    normalization = (quality.get("normalization") or {}).get("status")
+
+    print("MEASUREMENT")
+    print()
+    print("  Hardware QC:    {}".format(hardware))
+    print("  Normalization:  {}".format(normalization))
+    print("  Reliable features: {}/{} raw, {}/{} usable as reflectance".format(
+        reliability.get("raw_valid_total"),
+        reliability.get("features_total"),
+        reliability.get("normalized_valid_total"),
+        reliability.get("features_total"),
+    ))
+
+    for illumination in ILLUMINATIONS:
+        entry = (reliability.get("by_illumination") or {}).get(illumination)
+
+        if not entry:
+            continue
+
+        print("    {:<6} raw {}/18, reflectance {}/18".format(
+            illumination.upper(),
+            entry["raw_valid_channels"],
+            entry["normalized_valid_channels"],
+        ))
+
+    if hardware != "PASS" or normalization != "OK":
+        print()
+
+        for line in textwrap.wrap(
+            channel_reliability.summarize(reliability), 66
+        ):
+            print("  {}".format(line))
+
+
+def print_decision(decision, detail=False):
+    """
+    The conclusion, in the four-level vocabulary and nothing else.
+
+    Deliberately compact by default: the operator needs the level, the
+    answer and the confidence at a glance, and everything behind it on
+    request.
+    """
+    if not decision:
+        return
+
+    level = decision.get("level")
+
+    print("DECISION MODEL   {}".format(
+        decision.get("decision_model_version")
+    ))
+    print()
+    print("  Level:       {}".format(DECISION_HEADLINE.get(level, level)))
+
+    if decision.get("material"):
+        print("  Material:    {}".format(decision["material"]))
+
+    if decision.get("family"):
+        print("  Family:      {}".format(decision["family"]))
+
+    print("  Confidence:  {}".format(decision.get("confidence")))
+
+    candidates = decision.get("candidates") or []
+
+    if candidates:
+        print()
+        print("  Candidates:")
+
+        for index, candidate in enumerate(candidates, start=1):
+            print("    {}. {:<30} {:<7} {}".format(
+                index,
+                str(candidate.get("material"))[:30],
+                candidate.get("evidence_level", "-"),
+                candidate.get("family") or "",
+            ))
+
+    secondary = decision.get("secondary_interpretations") or []
+
+    if secondary:
+        print()
+        print("  Also: {}".format(", ".join(secondary)))
+
+    if decision.get("reason"):
+        print()
+
+        for line in textwrap.wrap("Why: {}".format(decision["reason"]), 66):
+            print("  {}".format(line))
+
+    if not detail:
+        return
+
+    print()
+    print("  EVIDENCE")
+
+    evidence = decision.get("evidence") or {}
+
+    for key, entry in sorted((evidence.get("databases") or {}).items()):
+        print()
+        print("    {} (weight {})".format(key, entry.get("database_weight")))
+
+        for family, summary in sorted((entry.get("families") or {}).items()):
+            print("      {:<15} {:<28} margin {} z {}".format(
+                family,
+                str(summary.get("winner"))[:28],
+                (
+                    "{:.4f}".format(summary["absolute_margin"])
+                    if summary.get("absolute_margin") is not None else "-"
+                ),
+                (
+                    "{:.1f}".format(summary["z_separation"])
+                    if summary.get("z_separation") is not None else "-"
+                ),
+            ))
+
+    for entry in evidence.get("discounted") or []:
+        print()
+        print("    DISCOUNTED {} said {} - {}".format(
+            entry["database"], entry["material"], entry["reason"]
+        ))
+
+    unknown = evidence.get("unknown_detection") or {}
+
+    if unknown.get("reasons"):
+        print()
+        print("    DOUBTS")
+
+        for reason in unknown["reasons"]:
+            print("      [{}] {}".format(reason["severity"], reason["code"]))
+
+    print()
+    print("  EXPLANATION")
+    print()
+
+    for line in textwrap.wrap(decision.get("explanation") or "", 66):
+        print("    {}".format(line))
+
+    print()
+    print("  PROVENANCE")
+    print()
+
+    provenance = decision.get("provenance") or {}
+
+    for key in ("decision_model_version", "evidence_schema_version",
+                "calibration_id", "legacy_calibration_id",
+                "acquisition_profile_id", "class_statistics_snapshot"):
+        print("    {:<28} {}".format(key, provenance.get(key)))
+
+    for key, entry in sorted(
+        (provenance.get("database_versions") or {}).items()
+    ):
+        print("    {:<28} {} ({}, {} materials)".format(
+            key, entry.get("version"), entry.get("status"),
+            entry.get("materials"),
+        ))
+
+
+def offer_decision_detail(result):
+    """'Why?' - the full evidence, on request."""
+    decision = (result or {}).get("decision")
+
+    if not decision:
+        return
+
+    print()
+
+    if choose("[w] Why?  [Enter] continue").strip().lower() != "w":
+        return
+
+    print()
+    print_decision(decision, detail=True)
+    print()
+    pause()
+
+
+# ----------------------------------------------------------------------
+# ground truth capture
+# ----------------------------------------------------------------------
+
+def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
+    """
+    Ask what the sample actually was, and record it if the operator knows.
+
+    NEVER REQUIRED. A rover measurement of unknown soil is the normal
+    case, and refusing to store it without a label would throw away the
+    observations the system most needs. The question is offered, and "I
+    do not know" is a first-class answer that is stored as such. §59.
+
+    The operator's answer is the ONLY source of ground truth. The model's
+    own conclusion is never offered as a default, never pre-selected, and
+    the learning store refuses it outright if anything tries. §46.
+    """
+    if mission.learning is None:
+        return None
+
+    if save_prompt:
+        print()
+
+        if not confirm("Save this measurement to the learning history?"):
+            return None
+
+    print()
+    print("Ground truth available?")
+    print()
+    print("  [1] Yes - exact material known")
+    print("  [2] Material family known")
+    print("  [3] Known prepared mixture")
+    print("  [4] Unknown sample")
+    print("  [5] Save the measurement without a label")
+    print()
+
+    answer = choose("Select")
+
+    if answer not in ("1", "2", "3", "4", "5"):
+        print("Not saved.")
+
+        return None
+
+    label_type = {
+        "1": "EXACT_MATERIAL",
+        "2": "MATERIAL_FAMILY",
+        "3": "PREPARED_MIXTURE",
+        "4": "UNKNOWN_SAMPLE",
+        "5": "NO_LABEL",
+    }[answer]
+
+    material = None
+    family = None
+    mixture = None
+
+    if answer == "1":
+        material = ask_material(mission)
+
+        if material is None:
+            print("Cancelled; nothing was saved.")
+
+            return None
+
+        family = material.family_id
+
+    elif answer == "2":
+        family = ask_family(mission)
+
+        if family is None:
+            print("Cancelled; nothing was saved.")
+
+            return None
+
+    elif answer == "3":
+        mixture = ask_mixture(mission)
+
+        if not mixture:
+            print("Cancelled; nothing was saved.")
+
+            return None
+
+    status, source, certainty = ask_verification(answer)
+
+    try:
+        record = mission.record_observation(
+            measurement_id, result,
+            label_type=label_type,
+            material=material,
+            family_id=family,
+            mixture=mixture,
+            verification_status=status,
+            verification_source=source,
+            certainty=certainty,
+        )
+
+    except Exception as error:
+        print()
+        print("NOT SAVED: {}".format(error))
+
+        return None
+
+    print()
+    print("Saved to the learning history as {}.".format(measurement_id))
+    print("The reference databases were not modified.")
+
+    return record
+
+
+def ask_material(mission):
+    """Resolve a material name through the controlled vocabulary."""
+    taxonomy = mission.taxonomy
+
+    if taxonomy is None:
+        print("The material vocabulary is not loaded.")
+
+        return None
+
+    while True:
+        text = ask("Material (name, alias or blank to cancel)")
+
+        if not text:
+            return None
+
+        identity = taxonomy.get(text)
+
+        if identity is not None:
+            print("  -> {} ({})".format(
+                identity.display_name, identity.family_id or "no family"
+            ))
+
+            if confirm("Is that right?"):
+                return identity
+
+            continue
+
+        suggestions = taxonomy.suggest(text)
+
+        print()
+        print("'{}' is not a known material.".format(text))
+
+        if suggestions:
+            print("Did you mean:")
+
+            for index, name in enumerate(suggestions, start=1):
+                print("  [{}] {}".format(index, name))
+
+            choice = ask("Number, or another name")
+
+            if choice.isdigit() and 1 <= int(choice) <= len(suggestions):
+                return taxonomy.get(suggestions[int(choice) - 1])
+
+        print()
+        print("A ground-truth label is never guessed: an unknown name is")
+        print("refused rather than attached to the nearest match.")
+
+
+def ask_family(mission):
+    families = sorted(mission.taxonomy.families()) if mission.taxonomy else []
+
+    if not families:
+        return None
+
+    print()
+
+    for index, name in enumerate(families, start=1):
+        print("  [{}] {}".format(index, name))
+
+    choice = ask("Family number (blank = cancel)")
+
+    if choice.isdigit() and 1 <= int(choice) <= len(families):
+        return families[int(choice) - 1]
+
+    return None
+
+
+def ask_mixture(mission):
+    """
+    Components of a PREPARED mixture, with their prepared fractions.
+
+    Only for a mixture the operator actually made and knows the
+    composition of. A mixture guessed from the spectrum is not ground
+    truth, and there is deliberately no way to enter one.
+    """
+    components = []
+
+    print()
+    print("Enter each component of the PREPARED mixture. Blank to finish.")
+
+    while True:
+        identity = ask_material(mission)
+
+        if identity is None:
+            break
+
+        fraction = ask_float(
+            "Prepared mass fraction of {} (0-1)".format(
+                identity.display_name
+            ),
+            0.0, 1.0,
+        )
+
+        if fraction is None:
+            break
+
+        components.append({
+            "material_key": identity.key,
+            "material_id": identity.material_id,
+            "prepared_mass_fraction": fraction,
+        })
+
+    return components or None
+
+
+def ask_verification(answer):
+    """How much the label is worth, asked rather than assumed."""
+    if answer in ("4", "5"):
+        return "UNKNOWN", "operator", None
+
+    print()
+    print("How is that known?")
+    print()
+    print("  [1] VERIFIED - a labelled reference material, measured")
+    print("      deliberately")
+    print("  [2] OPERATOR_ASSERTED - believed, but not from a labelled")
+    print("      container")
+    print("  [3] UNVERIFIED - a guess. Recorded, never trained on.")
+    print()
+
+    choice = choose("Select") or "2"
+
+    return {
+        "1": ("VERIFIED", "operator_known_reference_material", 1.0),
+        "2": ("OPERATOR_ASSERTED", "operator_assertion", None),
+        "3": ("UNVERIFIED", "operator_guess", None),
+    }.get(choice, ("OPERATOR_ASSERTED", "operator_assertion", None))
+
+
+def menu_learning_history(mission):
+    """What the system has seen, and how often it has been right."""
+    banner("DECISION LEARNING HISTORY")
+
+    if mission.learning is None:
+        print("The learning database is not available:")
+        print("  {}".format(mission.learning_error))
+        print()
+        pause()
+
+        return
+
+    status = mission.learning.status()
+
+    print("Database: {}".format(status["file"]))
+    print()
+    print("Observations:      {}".format(status["observations"]))
+    print("Labelled:          {}".format(status["labelled"]))
+
+    for level, count in status["by_verification"].items():
+        print("  {:<18} {}".format(level, count))
+
+    print("Predictions:       {}".format(status["predictions"]))
+    print("Model versions:    {}".format(
+        ", ".join(status["model_versions"]) or "-"
+    ))
+
+    print()
+    print("VERIFIED MATERIALS")
+    print()
+
+    if status["verified_materials"]:
+        for material, count in sorted(status["verified_materials"].items()):
+            print("  {:<34} {} independent measurement(s)".format(
+                material[:34], count
+            ))
+
+    else:
+        print("  none yet")
+
+    print()
+    print("CONFUSION HISTORY  (verified truth vs what a model said)")
+    print()
+
+    rows = mission.learning.confusion()
+
+    if rows:
+        for row in rows:
+            outcome = (
+                "correct" if row["predicted"] == row["actual"]
+                else "no answer" if not row["predicted"] else "WRONG"
+            )
+
+            print("  {:<12} {:<26} -> {:<26} {}".format(
+                row["model_version"][:12],
+                str(row["actual"])[:26],
+                str(row["predicted"])[:26],
+                outcome,
+            ))
+
+    else:
+        print("  no model has been scored against verified truth yet")
+
+    print()
+    print("A prediction is never ground truth. Retraining is an explicit")
+    print("command, never a consequence of measuring.")
+    print()
+    pause()
+
+
 def print_result_block(analysis):
     print("Best match:   {}".format(analysis.get("best_match")))
     print("Similarity:   {}".format(score(analysis.get("best_similarity"))))
@@ -844,7 +2097,14 @@ def print_calibration_health(mission):
         print()
         print("  No usable full spectral calibration.")
         print("  UV and IR reflectance will not be computed.")
-        print("  Run [5] Sensor Test -> [3] Full Spectral Calibration.")
+
+        if health["stored"]:
+            print("  {} calibration(s) are stored: [7] Select Which".format(
+                health["stored"]
+            ))
+            print("  Calibration To Use, or [3] to make a new one.")
+        else:
+            print("  Run [5] Sensor Test -> [3] Full Spectral Calibration.")
 
     return health
 
@@ -871,6 +2131,10 @@ def menu_sensor_test(mission):
         print("[5] Validate Active Calibration")
         print("[6] Calibration History")
         print()
+        print("[7] Select Which Calibration To Use")
+        print("    Choose from every calibration ever made. Nothing new")
+        print("    is measured.")
+        print()
         print("[0] Back")
 
         selection = choose()
@@ -896,6 +2160,9 @@ def menu_sensor_test(mission):
 
             elif selection == "6":
                 show_calibration_history(mission)
+
+            elif selection == "7":
+                menu_select_calibration(mission)
 
             elif selection:
                 print("Unknown option.")
@@ -1071,12 +2338,50 @@ def menu_full_sensor_test(mission):
     print_agreement(result.get("metric_agreement"))
 
     print()
-    print("RESULT")
+    print("=" * 60)
+    print()
+    print("THREE-DATABASE COMPARISON")
+    print()
+    print_cross_database(result.get("cross_database"))
+
+    print()
+    print("=" * 60)
+    print()
+
+    if result.get("evidence"):
+        print_evidence_summary(result["evidence"])
+        print()
+        print_decision(result.get("decision"))
+
+    else:
+        print("DECISION MODEL")
+        print()
+        print("  Not run: {}".format(
+            result.get("evidence_error")
+            or "no active calibration, so no evidence package could be "
+               "built"
+        ))
+
+    print()
+    print("=" * 60)
+    print()
+    print("RESULT  (DB1, legacy calibration - the previous pipeline)")
     print()
     print_result_block(result["analysis"])
 
     print()
     print("TEST ONLY - NOTHING SAVED")
+
+    offer_decision_detail(result)
+
+    if mission.learning is not None and result.get("evidence"):
+        capture_ground_truth(
+            mission,
+            "TEST_{}".format(utc_timestamp().replace(":", "").replace(
+                "-", "")[:15]),
+            result,
+        )
+
     print()
     pause()
 
@@ -1160,6 +2465,37 @@ def _acquire_calibration_block(mission, illumination, repeats, label):
     return aggregation.aggregate_block(block)
 
 
+def _acquire_with_retry(mission, illumination, repeats, label):
+    """
+    One calibration block, retried as often as the operator wants.
+
+    A calibration is four acquisitions taken against two physical
+    setups, and it used to be abandoned in full the moment any one of
+    them failed - after which the operator had to reinstall the White
+    target and start again from the Dark. A failed block is almost
+    always a transport fault, so the block itself is what gets repeated.
+
+    Returns the aggregated block, or None if the operator gives up.
+    """
+    while True:
+        try:
+            return _acquire_calibration_block(
+                mission, illumination, repeats, label
+            )
+
+        except (LinkError, TimeoutError) as error:
+            print()
+            print("{}_CALIBRATION_FAILED".format(illumination.upper()))
+            report_failure(error)
+            print()
+            print("Nothing else is lost: this block alone is repeated, and")
+            print("the reference target must NOT be moved.")
+            print()
+
+            if not confirm("Try this block again?"):
+                return None
+
+
 def _print_block_summary(title, aggregated):
     statistics = aggregated["statistics"]
     spectrum = aggregated["spectrum"]
@@ -1195,8 +2531,8 @@ def menu_full_calibration(mission):
     """
     Guided Dark + WHITE/UV/IR calibration.
 
-    Creates a NEW calibration file. It never touches references.json or
-    database.json, and it does not become active until the operator
+    Creates a NEW calibration file. It never touches calibration_legacy.json or
+    DB1.json, and it does not become active until the operator
     confirms after seeing the validation.
     """
     banner("FULL SPECTRAL CALIBRATION")
@@ -1216,8 +2552,19 @@ def menu_full_calibration(mission):
     print("  Protected: YES")
     print()
     print("A new calibration will NOT modify the legacy database")
-    print("calibration, references.json or database.json. The existing")
+    print("calibration, calibration_legacy.json or DB1.json. The existing")
     print("material library stays valid and does not need remeasuring.")
+
+    stored = health["stored"]
+
+    if stored:
+        print()
+        print("{} calibration(s) are already stored. A new one is only".format(
+            stored
+        ))
+        print("needed if the optics, the lamps or the sensor settings have")
+        print("changed - otherwise use [7] Select Which Calibration To Use.")
+
     print()
 
     if not confirm("Continue?"):
@@ -1246,15 +2593,12 @@ def menu_full_calibration(mission):
 
     ask("Press Enter when ready")
 
-    try:
-        dark = _acquire_calibration_block(
-            mission, "dark", repeats, "Dark"
-        )
+    dark = _acquire_with_retry(mission, "dark", repeats, "Dark")
 
-    except (LinkError, TimeoutError) as error:
+    if dark is None:
         print()
-        print("DARK_CALIBRATION_FAILED")
-        report_failure(error)
+        print("Calibration abandoned at the Dark step. Nothing was saved")
+        print("and the active calibration is unchanged.")
         print()
         pause()
 
@@ -1301,19 +2645,24 @@ def menu_full_calibration(mission):
     white_blocks = {}
 
     for name in ILLUMINATIONS:
-        try:
-            white_blocks[name] = _acquire_calibration_block(
-                mission, name, repeats, "{} illumination".format(name.upper())
-            )
+        block = _acquire_with_retry(
+            mission, name, repeats, "{} illumination".format(name.upper())
+        )
 
-        except (LinkError, TimeoutError) as error:
+        if block is None:
             print()
-            print("{}_CALIBRATION_FAILED".format(name.upper()))
-            report_failure(error)
+            print("Calibration abandoned at the {} step. The {} block(s)".format(
+                name.upper(), len(white_blocks)
+            ))
+            print("already acquired are discarded: a calibration is only")
+            print("meaningful if Dark and all three illuminations were")
+            print("measured against the same target in the same session.")
             print()
             pause()
 
             return
+
+        white_blocks[name] = block
 
     for name in ILLUMINATIONS:
         _print_block_summary(
@@ -1373,7 +2722,24 @@ def menu_full_calibration(mission):
 
         return
 
-    mission.calibrations.activate(document["calibration_id"])
+    # The validator is injected: BD stores calibrations but must not
+    # import the science layer, so PC supplies the scientific judgement
+    # that decides whether this one may become active. See ARCHITECTURE.md.
+    try:
+        mission.calibrations.activate(
+            document["calibration_id"], validate_calibration
+        )
+
+    except CalibrationError as error:
+        print()
+        print("!! ACTIVATION REFUSED: {}".format(error.message))
+        print("   The calibration is saved but the previous one is still")
+        print("   in force.")
+        print()
+        pause()
+
+        return
+
     mission.load_science()
 
     print()
@@ -1386,7 +2752,15 @@ def menu_full_calibration(mission):
 
 
 def bd_config_repeats():
-    return getattr(bd_config, "CALIBRATION_REPEATS", 10)
+    """
+    Default repeats per calibration block.
+
+    This used to read CALIBRATION_REPEATS off the BD config with a
+    fallback, but that constant only ever existed in ESP32/config.py, so
+    the lookup always missed and the fallback was the real value. It is
+    now a named host-side default.
+    """
+    return science_config.DEFAULT_CALIBRATION_REPEATS
 
 
 def _print_validation(document, result):
@@ -1504,7 +2878,7 @@ def show_active_calibration(mission):
         print("White channels:  {}/18".format(status["white_channels"]))
         print()
         print("This is the ONLY calibration used to compare a measurement")
-        print("against database.json. It is why the material library does")
+        print("against DB1.json. It is why the material library does")
         print("not need remeasuring after a new calibration.")
 
     print()
@@ -1535,8 +2909,8 @@ def validate_active_calibration(mission):
         print("(ESP32 not reachable - checking the file only.)")
         print()
 
-    result = mission.active_calibration.validate(settings)
     document = mission.active_calibration.document
+    result = validate_calibration(document, settings)
 
     def verdict(condition):
         return "PASS" if condition else "FAIL"
@@ -1585,66 +2959,377 @@ def validate_active_calibration(mission):
     pause()
 
 
+def calibration_state(entry):
+    """ACTIVE / INVALID / INACTIVE for one stored calibration."""
+    if entry.get("active"):
+        return "ACTIVE"
+
+    if entry.get("validation") == "FAIL":
+        return "INVALID"
+
+    return "INACTIVE"
+
+
+def print_calibration_list(entries):
+    """
+    The stored calibrations, with the settings each was made under.
+
+    An ID and a date are not enough to choose between two calibrations -
+    what separates them is gain, integration time and how many repeats
+    they averaged, so those are on the same line.
+    """
+    print("{:<4} {:<40} {:<20} {:<7} {:<7} {:<4} {}".format(
+        "#", "Calibration ID", "Created", "Gain", "Cycles", "Rep", "Status"
+    ))
+
+    for index, entry in enumerate(entries, start=1):
+        created = str(entry.get("created_at") or "-")
+
+        print("{:<4} {:<40} {:<20} {:<7} {:<7} {:<4} {}".format(
+            index,
+            str(entry.get("calibration_id"))[:40],
+            created[:19].replace("T", " "),
+            str(entry.get("gain_x") or "-"),
+            str(entry.get("integration_cycles") or "-"),
+            str(entry.get("repeats") or "-"),
+            calibration_state(entry),
+        ))
+
+
 def show_calibration_history(mission):
     banner("CALIBRATION HISTORY")
 
-    print("{:<4} {:<38} {:<22} {:<8} {}".format(
-        "#", "Calibration ID", "Date", "Type", "Status"
-    ))
-
-    legacy_id = (
-        mission.references.calibration_id if mission.references else "-"
-    )
-
-    print("{:<4} {:<38} {:<22} {:<8} {}".format(
-        1, str(legacy_id)[:38], "-", "LEGACY", "PROTECTED"
-    ))
-
     entries = mission.calibrations.history()
 
-    for index, entry in enumerate(entries, start=2):
-        if entry.get("active"):
-            state = "ACTIVE"
-        elif entry.get("validation") == "FAIL":
-            state = "INVALID"
-        else:
-            state = "INACTIVE"
+    print("Library: {}".format(mission.calibrations.library_path))
+    print("Stored:  {} calibration(s)".format(len(entries)))
+    print()
 
-        print("{:<4} {:<38} {:<22} {:<8} {}".format(
-            index,
-            str(entry.get("calibration_id"))[:38],
-            str(entry.get("created_at") or "-")[:22],
-            entry.get("kind", "FULL"),
-            state,
-        ))
-
-    if not entries:
-        print()
+    if entries:
+        print_calibration_list(entries)
+    else:
         print("No full spectral calibration has been created yet.")
 
     print()
-    print("The legacy calibration is protected and cannot be deleted")
-    print("from this interface. Calibration files are immutable; only")
-    print("the active pointer changes.")
+    print("LEGACY DATABASE CALIBRATION (separate, protected)")
+    print()
+    print("  {}".format(
+        mission.references.calibration_id if mission.references else "-"
+    ))
+    print("  Never listed above and never selectable: it is the White and")
+    print("  Dark DB1 was measured against, and the only calibration DB1")
+    print("  may be compared with.")
+    print()
+    print("Stored calibrations are immutable. [7] Select Which Calibration")
+    print("To Use changes which one is in force; it rewrites none of them.")
     print()
     pause()
+
+
+def menu_select_calibration(mission):
+    """
+    Choose which stored calibration is in force. Measures nothing.
+
+    The reason this screen exists: a calibration survives a restart, so
+    an operator coming back to the instrument should be able to pick
+    yesterday's rather than being pushed into making a new one every
+    session. Making a new calibration is a deliberate act, not a
+    consequence of starting the program.
+    """
+    while True:
+        banner("SELECT WHICH CALIBRATION TO USE")
+
+        entries = mission.calibrations.history()
+
+        if not entries:
+            print("No full spectral calibration has been made yet.")
+            print()
+            print("Run [3] Full Spectral Calibration to create the first")
+            print("one. Until then UV and IR reflectance are not computed")
+            print("and the legacy DB1 comparison runs on its own.")
+            print()
+            pause()
+
+            return
+
+        print("Library: {}".format(mission.calibrations.library_path))
+        print()
+        print_calibration_list(entries)
+        print()
+        print("A calibration marked INVALID failed its scientific checks")
+        print("and cannot be activated. It is kept as engineering data.")
+        print()
+
+        choice = ask_int(
+            "Calibration to use", 1, len(entries), default=None
+        )
+
+        if choice is None:
+            print("Cancelled - the active calibration is unchanged.")
+            print()
+            pause()
+
+            return
+
+        entry = entries[choice - 1]
+
+        if entry.get("active"):
+            print()
+            print("{} is already active.".format(entry["calibration_id"]))
+            print()
+            pause()
+
+            return
+
+        # The validator is injected: BD stores calibrations but must not
+        # import the science layer, so PC supplies the scientific
+        # judgement that decides whether this one may become active.
+        try:
+            mission.calibrations.activate(
+                entry["calibration_id"], validate_calibration
+            )
+
+        except CalibrationError as error:
+            print()
+            print("!! NOT ACTIVATED: {}".format(error.message))
+            print("   The previous calibration is still in force.")
+            print()
+            pause()
+
+            continue
+
+        mission.load_science()
+
+        print()
+        print("Active calibration is now {}.".format(
+            entry["calibration_id"]
+        ))
+        print("Created {}.".format(entry.get("created_at")))
+        print("The legacy database calibration is unchanged.")
+        print()
+        pause()
+
+        return
 
 
 # ======================================================================
 # screens: carousel
 # ======================================================================
 
+def menu_select_servo(mission, allow_cancel=True):
+    """
+    Connect the ST3215 and confirm it answers.
+
+    THE FIRST THING option [0] does. It is a deliberate, explicit step
+    rather than something that happens on boot: until the UART is open
+    and the servo has replied, the firmware refuses to move the carousel
+    at all, because a carousel that turns without feedback is a carousel
+    with no idea where it is.
+
+    Connecting always invalidates the carousel position on the ESP32.
+    Position state cannot survive a reconnect - the servo may have been
+    unplugged, moved by hand, or replaced.
+    """
+    try:
+        options = mission.link.get_servo_options()
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+
+        return None
+
+    supported = options.get("supported") or []
+    current = (options.get("servo") or {}).get("label")
+
+    banner("CAROUSEL SERVO SELECTION")
+
+    print("Which servo is currently installed?")
+    print()
+
+    for index, entry in enumerate(supported, start=1):
+        print("[{}] {}".format(index, entry.get("label")))
+        print("    {}".format(entry.get("description")))
+        print()
+
+    print("Currently selected: {}".format(current or "NOT SELECTED"))
+    print()
+
+    if allow_cancel:
+        print("[c] Cancel")
+
+    selection = choose()
+
+    if selection == "c" and allow_cancel:
+        print("Cancelled; the servo selection is unchanged.")
+
+        return None
+
+    chosen = None
+
+    for index, entry in enumerate(supported, start=1):
+        if selection == str(index):
+            chosen = entry
+
+    if chosen is None:
+        if selection:
+            print("Unknown option.")
+
+        return None
+
+    print()
+    print("Selecting {}...".format(chosen.get("label")))
+    sys.stdout.flush()
+
+    try:
+        data = mission.link.select_servo(chosen["type"])
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+        print()
+        print("Nothing is selected, so carousel movement stays blocked.")
+        print()
+
+        # SERVO_NOT_FOUND names four assumptions at once - ID, baud rate,
+        # which wire is TX, and whether the servo has power - and tests
+        # none of them. The scan tests all four, so it is offered right
+        # here rather than left for the operator to find in a submenu.
+        if (
+            isinstance(error, LinkError)
+            and error.code in ("SERVO_NOT_FOUND", "SERVO_UART_TIMEOUT",
+                               "SERVO_CHECKSUM_ERROR",
+                               "SERVO_PROTOCOL_ERROR")
+            and chosen["type"] == "st3215"
+        ):
+            print("The bus scan can tell you WHICH of those assumptions is")
+            print("wrong: it pings every baud rate the ST3215 supports, in")
+            print("both pin orders, and moves nothing.")
+            print()
+
+            if confirm("Run the servo bus scan now?"):
+                menu_servo_bus_scan(mission)
+
+                return None
+
+        pause()
+
+        return None
+
+    servo = data.get("servo") or {}
+    capabilities = servo.get("capabilities") or {}
+
+    print()
+    print("{} selected.".format(servo.get("label")))
+    print()
+    print("  Position feedback: {}".format(
+        "YES" if capabilities.get("position_feedback") else "NO"
+    ))
+    print("  Verified movement: {}".format(
+        "YES" if capabilities.get("verified_movement") else "NO"
+    ))
+    print("  Timed positioning: {}".format(
+        "YES" if capabilities.get("timed_positioning") else "NO"
+    ))
+    print("  Telemetry:         {}".format(
+        "YES" if capabilities.get("telemetry") else "NO"
+    ))
+    print()
+    print("The carousel position was invalidated by the change - align")
+    print("Slot 1 with the loading hole and confirm it.")
+    print()
+    pause()
+
+    return chosen["type"]
+
+
+def servo_capabilities(mission, status=None):
+    """Capabilities of the active backend, or an empty dict."""
+    try:
+        status = status or mission.hardware_status()
+
+    except (LinkError, TimeoutError):
+        return {}
+
+    return ((status.get("servo") or {}).get("capabilities")) or {}
+
+
+def servo_selected(mission, status=None):
+    try:
+        status = status or mission.hardware_status()
+
+    except (LinkError, TimeoutError):
+        return False
+
+    return bool((status.get("servo") or {}).get("selected"))
+
+
 def menu_initial_calibration(mission):
     """
     Establish the carousel origin.
 
-    The goal is purely physical: get Slot 1 under the soil loading hole,
-    then declare it. There is no encoder, so this is the operator
-    asserting a fact the firmware cannot measure.
-    """
-    while True:
-        banner("INITIAL CAROUSEL CALIBRATION")
+    Two steps, in this order:
 
+        1. state which servo is installed
+        2. align physical Slot 1 with the loading hole and confirm it
+
+    The second step is the operator asserting the one fact no actuator can
+    measure: which physical slot is called Slot 1. There is no limit
+    switch, no Hall sensor and no index mark, so this is required after
+    every power-up.
+
+    The confirmation also captures the ST3215's encoder reading, so the
+    logical model is tied to a real measurement rather than to a count
+    that drifts.
+
+    Neither path writes anything persistent to the servo. Changing the
+    ST3215's stored configuration is a separate SERVICE operation under
+    Tools.
+    """
+    try:
+        status = mission.hardware_status()
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+
+        return False
+
+    if not servo_selected(mission, status):
+        if menu_select_servo(mission) is None:
+            return False
+
+    while True:
+        try:
+            status = mission.hardware_status()
+
+        except (LinkError, TimeoutError) as error:
+            report_failure(error)
+
+            return False
+
+        servo = status.get("servo") or {}
+        capabilities = servo.get("capabilities") or {}
+        backend = servo.get("backend") or {}
+
+        banner("CAROUSEL SETUP")
+
+        print("Servo: {}".format(servo.get("label")))
+
+        if capabilities.get("position_feedback"):
+            print("Communication: {}".format(
+                "ONLINE" if backend.get("connected") else "NOT ANSWERING"
+            ))
+            print("Servo ID:      {}".format(backend.get("id")))
+            print("Encoder:       {} counts ({} deg)".format(
+                backend.get("position_counts"), backend.get("position_deg")
+            ))
+            print("Mode:          {}".format(backend.get("mode_name")))
+            print("Voltage:       {} V".format(backend.get("voltage_v")))
+            print("Temperature:   {} C".format(backend.get("temperature_c")))
+
+        else:
+            print("Positioning:   timed, open loop (no encoder)")
+            print("Signal pin:    GPIO{}".format(backend.get("pin")))
+
+        print()
         print("Goal:")
         print("Align physical Slot 1 exactly under the soil loading hole.")
         print()
@@ -1652,8 +3337,19 @@ def menu_initial_calibration(mission):
         print("[2] Move one whole slot counter-clockwise")
         print("[3] Fine alignment by degrees (+ = clockwise)")
         print("[4] STOP servo")
+
+        if capabilities.get("torque_control"):
+            print("[5] RELEASE torque, to turn the carousel by hand")
+            print("[6] HOLD torque again")
+
         print()
-        print("[5] SET CURRENT POSITION AS SLOT 1")
+        print("[7] SET CURRENT POSITION AS SLOT 1 / LOAD")
+        print()
+        print("[s] Change servo")
+
+        if capabilities.get("position_feedback"):
+            print("[d] Diagnostics")
+
         print()
         print("[c] Cancel")
 
@@ -1661,12 +3357,10 @@ def menu_initial_calibration(mission):
 
         try:
             if selection == "1":
-                mission.link.move_slots("cw", 1)
-                print("Moved one slot clockwise.")
+                report_slot_move(mission.link.move_slots("cw", 1))
 
             elif selection == "2":
-                mission.link.move_slots("ccw", 1)
-                print("Moved one slot counter-clockwise.")
+                report_slot_move(mission.link.move_slots("ccw", 1))
 
             elif selection == "3":
                 menu_fine_adjust(mission)
@@ -1675,21 +3369,49 @@ def menu_initial_calibration(mission):
                 mission.link.servo_stop()
                 print("Servo stopped.")
 
-            elif selection == "5":
+            elif selection == "5" and capabilities.get("torque_control"):
+                if confirm("Release torque? The carousel will turn freely"):
+                    mission.link.servo_torque(False)
+                    print("Torque released. Turn the carousel by hand, then")
+                    print("hold torque again before setting the origin.")
+
+            elif selection == "6" and capabilities.get("torque_control"):
+                mission.link.servo_torque(True)
+                print("Torque enabled; the carousel is held again.")
+
+            elif selection == "7":
                 data = mission.link.sync_load_slot(1)
                 carousel = data.get("carousel") or {}
+                reference = carousel.get("reference") or {}
+                origin = reference.get("origin") or {}
 
                 print()
-                print("Calibration complete.")
+                print("Carousel setup complete.")
                 print("Slot {} = LOADING position".format(
                     carousel.get("current_load_slot")
                 ))
                 print("Slot {} = SCANNER position".format(
                     carousel.get("current_scan_slot")
                 ))
+
+                if origin.get("feedback"):
+                    print("Encoder origin: {} counts".format(
+                        origin.get("origin_counts")
+                    ))
+
+                else:
+                    print("Origin: your assertion - this servo has no "
+                          "position sensor.")
+
                 print()
 
                 return True
+
+            elif selection == "s":
+                menu_select_servo(mission)
+
+            elif selection == "d" and capabilities.get("position_feedback"):
+                menu_servo_diagnostics(mission)
 
             elif selection == "c":
                 print("Cancelled; carousel position unchanged.")
@@ -1703,11 +3425,48 @@ def menu_initial_calibration(mission):
             report_failure(error)
 
 
+def report_slot_move(data):
+    """What a whole-slot movement did, in whatever terms the backend has."""
+    move = (data or {}).get("move") or {}
+    servo = move.get("servo") or {}
+
+    if not move.get("moved"):
+        print("Nothing moved.")
+
+        return
+
+    print("Moved {} slot(s) {} ({:.0f} deg).".format(
+        move.get("steps"), move.get("direction"), move.get("degrees") or 0
+    ))
+
+    if servo.get("verified"):
+        print("  encoder:   {} -> {} counts".format(
+            servo.get("start_position"), servo.get("actual_position")
+        ))
+        print("  error:     {} counts ({} deg), tolerance {}".format(
+            servo.get("position_error"),
+            servo.get("position_error_deg"),
+            servo.get("tolerance_counts"),
+        ))
+        print("  elapsed:   {} ms".format(servo.get("elapsed_ms")))
+
+    else:
+        print("  commanded: {} ms per slot (timed, not verified)".format(
+            servo.get("step_ms")
+        ))
+
+
 def menu_fine_adjust(mission):
     """Small mechanical correction. Does not change slot numbering."""
     banner("FINE CAROUSEL ALIGNMENT")
 
+    capabilities = servo_capabilities(mission)
+
     print("Positive = clockwise, negative = counter-clockwise.")
+    print()
+    print("The correction is REMEMBERED: the next slot movement keeps it")
+    print("instead of returning the carousel to the old theoretical")
+    print("centre.")
     print()
 
     degrees = ask_float("Degrees", -15.0, 15.0)
@@ -1726,27 +3485,67 @@ def menu_fine_adjust(mission):
         return
 
     adjustment = data.get("adjustment") or {}
+    reference = (data.get("carousel") or {}).get("reference") or {}
 
     print()
-    print("Requested: {:.2f} deg {}".format(
-        abs(degrees), adjustment.get("direction")
-    ))
-    print("Runtime:   {} ms".format(adjustment.get("duration_ms")))
+    print("Requested: {:+.2f} deg".format(degrees))
 
     if adjustment.get("moved") is False:
-        print("The request was too small to produce any servo runtime; "
-              "nothing moved.")
+        print(adjustment.get("message") or "Nothing moved.")
 
-    elif adjustment.get("reliable") is False:
-        print("Warning: the runtime is shorter than one PWM frame, so the "
-              "servo may not have responded.")
+        return
+
+    if capabilities.get("position_feedback"):
+        # Encoder terms. A PWM runtime would be meaningless here.
+        print("Commanded: {} counts ({} deg)".format(
+            adjustment.get("requested_counts"),
+            adjustment.get("commanded_degrees"),
+        ))
+        print("Encoder:   {} -> {} counts".format(
+            adjustment.get("start_position"),
+            adjustment.get("actual_position"),
+        ))
+        print("Error:     {} counts ({} deg), tolerance {} counts".format(
+            adjustment.get("position_error"),
+            adjustment.get("position_error_deg"),
+            adjustment.get("tolerance_counts"),
+        ))
+
+    else:
+        # Timed terms. There is no encoder to report.
+        print("Direction: {}".format(adjustment.get("direction")))
+        print("Runtime:   {} ms at {} ms/deg".format(
+            adjustment.get("duration_ms"), adjustment.get("ms_per_degree")
+        ))
+
+        if adjustment.get("reliable") is False:
+            print("Warning:   the runtime is shorter than one PWM frame, so")
+            print("           the servo may not have responded.")
+
+    print("Alignment offset now {} deg.".format(
+        reference.get("alignment_offset_deg")
+    ))
+
+    if reference.get("drift_deg") is not None:
+        print("Drift vs nominal: {} deg".format(reference.get("drift_deg")))
 
 
 def menu_resync(mission):
     """Re-declare the origin after a reboot or a lost position."""
     banner("RE-SYNC CAROUSEL")
 
+    if not servo_selected(mission):
+        print("No servo is selected, so there is nothing to synchronize.")
+        print("Run [0] Carousel Setup first.")
+        print()
+        pause()
+
+        return
+
     print("Align physical Slot 1 with the soil loading hole, then confirm.")
+    print()
+    print("Nothing moves. On a servo with an encoder this also captures the")
+    print("encoder reading as the carousel origin.")
     print()
 
     if not confirm("Is Slot 1 now under the loading hole?"):
@@ -1754,8 +3553,16 @@ def menu_resync(mission):
 
         return
 
-    data = mission.link.sync_load_slot(1)
+    try:
+        data = mission.link.sync_load_slot(1)
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+
+        return
+
     carousel = data.get("carousel") or {}
+    origin = ((carousel.get("reference") or {}).get("origin")) or {}
 
     print()
     print("Synchronized. Loader = Slot {}, scanner = Slot {}.".format(
@@ -1763,18 +3570,75 @@ def menu_resync(mission):
         carousel.get("current_scan_slot"),
     ))
 
+    if origin.get("feedback"):
+        print("Encoder origin: {} counts.".format(origin.get("origin_counts")))
+
+
+# ----------------------------------------------------------------------
+# servo tools
+# ----------------------------------------------------------------------
 
 def menu_servo_test(mission):
-    """Movement and calibration checks. Deliberately small."""
+    """Servo and carousel tools, adapted to whichever backend is active."""
     while True:
-        banner("SERVO / CAROUSEL TEST")
+        try:
+            status = mission.hardware_status()
+
+        except (LinkError, TimeoutError) as error:
+            report_failure(error)
+
+            return
+
+        servo = status.get("servo") or {}
+        capabilities = servo.get("capabilities") or {}
+
+        banner("SERVO / CAROUSEL TOOLS")
+
+        print("Servo: {}".format(servo.get("label")))
+        print()
+
+        if not servo.get("selected"):
+            print("No servo is selected. Carousel movement is blocked.")
+            print()
+            print("[s] Select the installed servo")
+            print("[b] ST3215 bus scan - find out why one does not answer")
+            print("[0] Back")
+
+            selection = choose()
+
+            if selection == "s":
+                menu_select_servo(mission)
+
+            elif selection == "b":
+                try:
+                    menu_servo_bus_scan(mission)
+
+                except (LinkError, TimeoutError) as error:
+                    report_failure(error)
+
+            elif selection == "0":
+                return
+
+            continue
 
         print("[1] One slot clockwise")
         print("[2] One slot counter-clockwise")
         print("[3] Fine adjustment by degrees")
         print("[4] STOP servo")
         print()
-        print("[5] Calibration")
+        print("[5] Diagnostics (moves nothing)")
+        print("[6] Movement tests (turns the carousel)")
+        print("[7] Calibration / settings")
+        print()
+        print("[s] Change servo")
+        print("[b] Bus scan (moves nothing)")
+
+        if capabilities.get("persistent_config"):
+            print("[e] SERVICE: write servo configuration to its EPROM")
+
+        if capabilities.get("torque_control"):
+            print("[t] Torque hold / release")
+
         print()
         print("[0] Back")
 
@@ -1782,12 +3646,10 @@ def menu_servo_test(mission):
 
         try:
             if selection == "1":
-                mission.link.move_slots("cw", 1)
-                print("Moved one slot clockwise.")
+                report_slot_move(mission.link.move_slots("cw", 1))
 
             elif selection == "2":
-                mission.link.move_slots("ccw", 1)
-                print("Moved one slot counter-clockwise.")
+                report_slot_move(mission.link.move_slots("ccw", 1))
 
             elif selection == "3":
                 menu_fine_adjust(mission)
@@ -1795,9 +3657,29 @@ def menu_servo_test(mission):
             elif selection == "4":
                 mission.link.servo_stop()
                 print("Servo stopped.")
+                print("The tracked position was dropped - re-sync before")
+                print("the next measurement.")
 
             elif selection == "5":
+                menu_servo_diagnostics(mission)
+
+            elif selection == "6":
+                menu_servo_movement_test(mission)
+
+            elif selection == "7":
                 menu_servo_calibration(mission)
+
+            elif selection == "s":
+                menu_select_servo(mission)
+
+            elif selection == "b":
+                menu_servo_bus_scan(mission)
+
+            elif selection == "e" and capabilities.get("persistent_config"):
+                menu_servo_configure(mission)
+
+            elif selection == "t" and capabilities.get("torque_control"):
+                menu_servo_torque(mission)
 
             elif selection == "0":
                 return
@@ -1809,450 +3691,662 @@ def menu_servo_test(mission):
             report_failure(error)
 
 
-# ----------------------------------------------------------------------
-# servo calibration
-# ----------------------------------------------------------------------
+def print_servo_block(servo):
+    """The servo half of a status report, in the active backend's terms."""
+    capabilities = servo.get("capabilities") or {}
+    backend = servo.get("backend") or {}
 
-# Editable timings, in the order they should be calibrated.
-TIMING_FIELDS = (
-    ("slot_cw_ms", "90 deg CW"),
-    ("slot_ccw_ms", "90 deg CCW"),
-    ("load_to_scan_ms", "180 deg LOAD->SCAN"),
-    ("scan_to_load_ms", "180 deg SCAN->LOAD"),
-    ("settle_ms", "Settle"),
-    ("approach_ms", "Slow approach"),
-    ("approach_us_offset", "Approach offset (us)"),
-    ("start_kick_ms", "Start kick"),
-    ("start_kick_us_offset", "Start kick offset (us)"),
-    ("brake_ms", "Reverse brake"),
-)
+    print("  Servo:         {}".format(servo.get("label")))
+
+    if not servo.get("selected"):
+        print("  {}".format(servo.get("message")))
+
+        return
+
+    print("  Feedback:      {}".format(
+        "encoder, movement verified"
+        if capabilities.get("verified_movement")
+        else "none - timed, open loop"
+    ))
+
+    if capabilities.get("position_feedback"):
+        print("  Link:          id {} on UART{}, {} baud".format(
+            backend.get("id"), backend.get("uart_id"), backend.get("baud")
+        ))
+        print("  Wiring:        TX GPIO{} -> driver TX, RX GPIO{} -> driver "
+              "RX, GND".format(backend.get("tx_pin"), backend.get("rx_pin")))
+        print("  Power:         external supply at the driver board")
+        print("  Mode:          {} ({})".format(
+            backend.get("mode_name"), backend.get("mode")
+        ))
+
+        if backend.get("mode_correct") is False:
+            print("  ** WRONG MODE - run SERVICE: write servo "
+                  "configuration **")
+
+        print("  Position:      {} counts ({} deg)".format(
+            backend.get("position_counts"), backend.get("position_deg")
+        ))
+        print("  Moving:        {}".format(backend.get("moving")))
+        print("  Torque:        {}".format(backend.get("torque_enabled")))
+        print("  Voltage:       {} V".format(backend.get("voltage_v")))
+        print("  Temperature:   {} C".format(backend.get("temperature_c")))
+        print("  Load:          {} (0.1%)".format(backend.get("load_permille")))
+        print("  Current:       {} mA".format(backend.get("current_ma")))
+
+        flags = backend.get("status_flags")
+
+        if flags:
+            print("  ** SERVO ALARM: {} **".format(", ".join(flags)))
+
+        bus = backend.get("bus") or {}
+
+        if bus.get("retry") or bus.get("timeout") or bus.get("checksum"):
+            print("  Bus:           {} tx, {} rx, {} retries, {} timeouts, "
+                  "{} checksum".format(
+                      bus.get("tx"), bus.get("rx"), bus.get("retry"),
+                      bus.get("timeout"), bus.get("checksum"),
+                  ))
+
+    else:
+        print("  Signal pin:    GPIO{} at {} Hz".format(
+            backend.get("pin"), backend.get("pwm_freq")
+        ))
+        print("  Power:         PCB servo branch, not switched by firmware")
+        print("  Neutral:       {} us".format(backend.get("stop_us")))
+        print("  Direction:     CW {} us / CCW {} us".format(
+            backend.get("cw_us"), backend.get("ccw_us")
+        ))
+        print("  Slot timing:   CW {} ms / CCW {} ms".format(
+            backend.get("next_slot_cw_ms"), backend.get("next_slot_ccw_ms")
+        ))
+        print("  Half turn:     {} ms / {} ms".format(
+            backend.get("load_to_scan_cw_ms"),
+            backend.get("scan_to_load_ccw_ms"),
+        ))
+
+        if backend.get("calibration_modified"):
+            print("  ** RUNTIME CALIBRATION OVERRIDE ACTIVE **")
 
 
-def print_calibration(values, modified, speeds=None):
-    speeds = speeds or {}
+SCAN_ADVICE = {
+    "SERVO_FOUND": (
+        "A servo answered. If the settings above differ from the ones in",
+        "ESP32/config.py, change config.py to match and upload it again -",
+        "the servo is telling you what it actually uses.",
+    ),
+    "WRONG_ID": (
+        "The bus works. Only the ID is wrong, and that is a one-line",
+        "change in ESP32/config.py (ST3215_SERVO_ID).",
+    ),
+    "ECHO_ONLY": (
+        "The ESP32 side is proven good: it transmits and hears itself.",
+        "What has NOT been proven is that the servo has power. A driver",
+        "board with its LED lit only means the board is powered; measure",
+        "at the servo's own connector, with the servo plugged in, while",
+        "the scan runs. Then sweep the full ID range - a servo whose ID",
+        "was changed answers to nothing else.",
+    ),
+    "CORRUPT_TRAFFIC": (
+        "Frames arrive but decode wrong. That is nearly always the common",
+        "ground: the ESP32 GND and the servo supply GND must be joined,",
+        "even though the servo takes its power from elsewhere.",
+    ),
+    "NOISE_ONLY": (
+        "Something transmits, nothing decodes. Check the ground first,",
+        "then whether anything else is driving the same pins.",
+    ),
+    "SILENT_BUS": (
+        "The bus is completely silent, in both pin orders, at all eight",
+        "baud rates. Nothing is transmitting, so this is power or",
+        "connection - not configuration, and not the firmware.",
+        "",
+        "Measure 6-12.6 V at the SERVO connector while the scan runs, not",
+        "at the supply terminals: a supply reading 9.3 V with the servo",
+        "unplugged proves only that the supply works. Then confirm the",
+        "servo lead is seated in the driver board's bus port, and that",
+        "the driver board's own logic supply is present.",
+    ),
+}
 
-    def with_speed(key):
-        speed = speeds.get(key)
 
-        return "  ({:.2f} deg/s)".format(speed) if speed else ""
+def print_bus_scan(report):
+    """The scan, as a table of what was heard at every combination."""
+    scanned = report.get("scanned") or {}
 
-    print("Current calibration:")
+    print("Scanned:")
+    print("  UART{}   TX GPIO{}   RX GPIO{}".format(
+        scanned.get("uart_id"),
+        scanned.get("configured_tx_pin"),
+        scanned.get("configured_rx_pin"),
+    ))
+    print("  {} baud rate(s), {} servo ID(s), {} probe(s)".format(
+        len(scanned.get("bauds") or []),
+        scanned.get("id_count"),
+        scanned.get("probes"),
+    ))
+    print("  Configured: ID {} at {} baud".format(
+        scanned.get("configured_id"), scanned.get("configured_baud")
+    ))
     print()
-    print("  Neutral:            {} us".format(values["neutral_us"]))
-    print("  CW pulse:           {} us  (neutral {:+d})".format(
-        values["cw_us"], values["cw_us"] - values["neutral_us"]
-    ))
-    print("  CCW pulse:          {} us  (neutral {:+d})".format(
-        values["ccw_us"], values["ccw_us"] - values["neutral_us"]
-    ))
-    print()
-    print("  90 deg CW:          {} ms{}".format(
-        values["slot_cw_ms"], with_speed("slot_cw")
-    ))
-    print("  90 deg CCW:         {} ms{}".format(
-        values["slot_ccw_ms"], with_speed("slot_ccw")
-    ))
-    print()
-    print("  180 deg LOAD->SCAN: {} ms{}".format(
-        values["load_to_scan_ms"], with_speed("load_to_scan")
-    ))
-    print("  180 deg SCAN->LOAD: {} ms{}".format(
-        values["scan_to_load_ms"], with_speed("scan_to_load")
-    ))
-    print()
-    print("  Settle:             {} ms".format(values["settle_ms"]))
-    print("  Slow approach:      {}".format(
-        "{} ms at {} us closer to neutral".format(
-            values["approach_ms"], values["approach_us_offset"]
-        ) if values["approach_ms"] else "disabled"
-    ))
-    print("  Start kick:         {}".format(
-        "{} ms at {} us stronger".format(
-            values["start_kick_ms"], values["start_kick_us_offset"]
-        ) if values["start_kick_ms"] else "disabled"
-    ))
-    print("  Reverse brake:      {}".format(
-        "{} ms".format(values["brake_ms"])
-        if values["brake_ms"] else "disabled"
+
+    print("{:<20} {:>9} {:>7} {:>6} {:>6}  {}".format(
+        "Pin order", "Baud", "Bytes", "Echo", "Bad", "Answered"
     ))
 
-    if modified:
+    for probe in report.get("probes") or []:
+        answered = probe.get("ids_answered") or []
+        others = probe.get("other_ids") or []
+
+        if answered:
+            verdict = "ID {}".format(
+                ", ".join(str(value) for value in answered)
+            )
+        elif others:
+            verdict = "other ID {}".format(
+                ", ".join(str(value) for value in others)
+            )
+        else:
+            verdict = "-"
+
+        print("{:<20} {:>9} {:>7} {:>6} {:>6}  {}".format(
+            str(probe.get("pin_order"))[:20],
+            probe.get("baud"),
+            probe.get("bytes"),
+            "YES" if probe.get("echo") else "-",
+            probe.get("checksum_errors"),
+            verdict,
+        ))
+
+    print()
+    print("  Bytes = bytes received, Echo = our own transmission came")
+    print("  back, Bad = frames that failed their checksum.")
+
+    print()
+    print("RESULT: {}".format(report.get("result")))
+    print()
+
+    for line in textwrap.wrap(str(report.get("diagnosis") or ""), 66):
+        print("  {}".format(line))
+
+    for difference in report.get("differences") or []:
         print()
-        print("  ** RUNTIME OVERRIDE ACTIVE - lost on reset until you")
-        print("     copy these into firmware/ESP32/config.py **")
 
+        for line in textwrap.wrap("- {}".format(difference), 66):
+            print("  {}".format(line))
 
-def print_config_block(values):
-    """The exact lines to paste into config.py."""
-    print()
-    print("Paste into firmware/ESP32/config.py:")
-    print()
-    print("    SERVO_STOP_US       = {}".format(values["neutral_us"]))
-    print("    SERVO_CW_US         = {}".format(values["cw_us"]))
-    print("    SERVO_CCW_US        = {}".format(values["ccw_us"]))
-    print("    SERVO_SETTLE_MS     = {}".format(values["settle_ms"]))
-    print("    SERVO_APPROACH_MS   = {}".format(values["approach_ms"]))
-    print("    SERVO_APPROACH_US_OFFSET = {}".format(
-        values["approach_us_offset"]
-    ))
-    print("    SERVO_START_KICK_MS = {}".format(values["start_kick_ms"]))
-    print("    SERVO_START_KICK_US_OFFSET = {}".format(
-        values["start_kick_us_offset"]
-    ))
-    print("    SERVO_BRAKE_MS      = {}".format(values["brake_ms"]))
-    print("    NEXT_SLOT_CW_MS     = {}".format(values["slot_cw_ms"]))
-    print("    NEXT_SLOT_CCW_MS    = {}".format(values["slot_ccw_ms"]))
-    print("    LOAD_TO_SCAN_CW_MS  = {}".format(values["load_to_scan_ms"]))
-    print("    SCAN_TO_LOAD_CCW_MS = {}".format(values["scan_to_load_ms"]))
-    print()
+    advice = SCAN_ADVICE.get(report.get("result"))
 
-
-def report_test_move(data):
-    print()
-    print("  Pulse:     {} us".format(data.get("pulse_us")))
-    print("  Neutral:   {} us".format(data.get("neutral_us")))
-    print("  Duration:  {} ms x {} = {} ms".format(
-        data.get("duration_ms"), data.get("repeat"),
-        data.get("total_duration_ms"),
-    ))
-    print("  Nominal:   {:.0f} deg".format(data.get("nominal_degrees", 0)))
-
-    if data.get("speed_deg_per_s"):
-        print("  Speed:     {:.2f} deg/s".format(data["speed_deg_per_s"]))
-
-    print()
-    print("Movement complete.")
-
-    if data.get("position_invalidated"):
+    if advice:
         print()
-        print("Carousel position tracking was invalidated by this test -")
-        print("re-sync before normal operation.")
+        print("WHAT TO DO")
+        print()
+
+        for line in advice:
+            print("  {}".format(line))
+
+    if report.get("released_servo"):
+        print()
+        print("The ST3215 backend was released so the scan could reopen")
+        print("UART2. Select the servo again once it answers.")
 
 
-def offer_timing_correction(mission, data, key, label):
+def menu_servo_bus_scan(mission):
     """
-    Turn a measured angular error into a corrected duration.
+    Find out WHY the servo does not answer, without guessing.
 
-    At an approximately constant speed the angle is proportional to the
-    runtime, so a measured error converges the calibration in a couple
-    of iterations instead of being nudged by guesswork:
-
-        actual = target + error
-        t_new  = t_old * target / actual
+    Deliberately reachable with nothing selected: this is the tool for
+    the moment select_servo has just failed, and requiring a working
+    selection first would be circular.
     """
-    target = data.get("target_degrees")
-    duration = data.get("duration_ms")
-    repeat = data.get("repeat", 1) or 1
-
-    if not target or not duration:
-        return
-
-    # With repeats the operator measures the accumulated error, so the
-    # target is the whole travel.
-    total_target = target * repeat
-
-    print()
-    print("Observed angular error at the end of the movement.")
-    print("  + = overshoot (went too far)")
-    print("  - = undershoot (fell short)")
-    print("  blank = skip")
-    print()
-
-    answer = ask("Error [deg]").strip()
-
-    if not answer:
-        return
-
-    try:
-        error = float(answer.replace(",", "."))
-
-    except ValueError:
-        print("Not a number; skipping the correction.")
-
-        return
-
-    actual = total_target + error
-
-    if actual <= 0:
-        print("An actual movement of {:.2f} deg cannot be used to "
-              "re-time the move.".format(actual))
-
-        return
-
-    corrected = int(round(duration * total_target / actual))
-
-    print()
-    print("  Target:        {:.2f} deg".format(total_target))
-    print("  Actual:        {:.2f} deg".format(actual))
-    print("  Speed:         {:.2f} deg/s".format(
-        actual * 1000.0 / (duration * repeat)
-    ))
-    print()
-    print("  old duration:  {} ms".format(duration))
-    print("  new duration:  {} ms".format(corrected))
-
-    if corrected == duration:
-        print()
-        print("Already optimal at this resolution.")
-
-        return
-
-    print()
-
-    if not ask("Apply new duration? [y/N]").strip().lower() in ("y", "yes"):
-        print("Not applied.")
-
-        return
-
-    try:
-        mission.link.set_servo_calibration({key: corrected})
-        print("{} is now {} ms.".format(label, corrected))
-        print("Run the test again to confirm the error has shrunk.")
-
-    except LinkError as error:
-        print("Refused: {}".format(error.message))
-
-
-def adjust_pulse(mission, key, label):
-    """Nudge one pulse width, one small step at a time."""
     while True:
-        values = mission.link.get_servo_calibration()["current"]
-        current = values[key]
+        banner("SERVO BUS SCAN")
 
+        print("Pings the servo bus and reports what answers. MOVES")
+        print("NOTHING - a ping asks a servo to identify itself.")
         print()
-        print("{}: {} us".format(label, current))
-
-        if key != "neutral_us":
-            print("Neutral is {} us, so the offset is {:+d} us.".format(
-                values["neutral_us"], current - values["neutral_us"]
-            ))
-
+        print("[1] Quick scan")
+        print("    The configured ID, at all 8 baud rates, in both pin")
+        print("    orders. About 1 second.")
         print()
-        print("Enter a step such as +1, -2, +5, an absolute value such as")
-        print("1498, or blank to go back.")
+        print("[2] Full ID sweep")
+        print("    Every ID from 0 to 253 at one baud rate, in both pin")
+        print("    orders. Use when the quick scan hears an echo but no")
+        print("    servo. About 20 seconds.")
+        print()
+        print("[0] Back")
 
-        answer = ask("Adjust").strip()
+        selection = choose()
 
-        if not answer:
+        if selection == "0":
             return
 
-        try:
-            if answer[0] in "+-":
-                target = current + int(answer)
-            else:
-                target = int(answer)
+        if selection == "1":
+            ids, bauds = None, None
 
-        except ValueError:
-            print("Enter a number, for example +2, -5 or 1498.")
+        elif selection == "2":
+            print()
+            print("Baud rate to sweep [1] 1000000  [2] 500000  [3] 115200")
+
+            answer = choose("Baud")
+            bauds = {
+                "1": [1000000], "2": [500000], "3": [115200],
+            }.get(answer, [1000000])
+
+            ids = "all"
+
+        else:
+            if selection:
+                print("Unknown option.")
 
             continue
 
-        try:
-            mission.link.set_servo_calibration({key: target})
-            print("{} is now {} us.".format(label, target))
-
-        except LinkError as error:
-            print("Refused: {}".format(error.message))
-
-
-def edit_timings(mission):
-    """Type new values for the timing constants."""
-    values = mission.link.get_servo_calibration()["current"]
-
-    print()
-    print("Blank keeps the current value.")
-    print()
-
-    updates = {}
-
-    for key, label in TIMING_FIELDS:
-        answer = ask("  {} [{}]".format(label, values[key])).strip()
-
-        if not answer:
-            continue
+        print()
+        print("Scanning...")
+        sys.stdout.flush()
 
         try:
-            updates[key] = int(answer)
-
-        except ValueError:
-            print("    not a number, keeping {}".format(values[key]))
-
-    if not updates:
-        print()
-        print("Nothing changed.")
-
-        return
-
-    try:
-        result = mission.link.set_servo_calibration(updates)
-
-        print()
-        print("Updated: {}".format(", ".join(result.get("changed") or [])))
-
-    except LinkError as error:
-        print()
-        print("Refused: {}".format(error.message))
-
-
-def menu_servo_calibration(mission):
-    """
-    Tune the movement calibration against the real mechanism.
-
-    Values are changed in RAM on the ESP32 so the operator can converge
-    without an upload-and-reset cycle per attempt. They are NOT
-    persistent: option [c] prints the block to paste into config.py.
-
-    Calibrate in order - neutral first, then the pulses, then the
-    timings. Nothing downstream means anything until neutral is right.
-    """
-    while True:
-        banner("SERVO / CAROUSEL CALIBRATION")
-
-        try:
-            calibration = mission.link.get_servo_calibration()
+            report = mission.link.servo_bus_scan(ids=ids, bauds=bauds)
 
         except (LinkError, TimeoutError) as error:
             report_failure(error)
             print()
             pause()
 
+            continue
+
+        print()
+        print_bus_scan(report)
+        print()
+        pause()
+
+
+def menu_servo_diagnostics(mission):
+    """Read-only backend check, stage by stage."""
+    banner("SERVO DIAGNOSTICS")
+
+    print("Checking the active servo. Nothing will move.")
+    print()
+    sys.stdout.flush()
+
+    try:
+        report = mission.link.servo_diagnostics()
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+        print()
+        pause()
+
+        return
+
+    for entry in report.get("steps") or []:
+        print_check(entry.get("step"), entry.get("ok"))
+
+        value = entry.get("value")
+
+        if entry.get("ok") and isinstance(value, str):
+            print("      {}".format(value))
+
+        if not entry.get("ok"):
+            error = entry.get("error") or {}
+
+            if error:
+                print("      {}: {}".format(
+                    error.get("code"), error.get("message")
+                ))
+
+            elif isinstance(value, str):
+                print("      {}".format(value))
+
+    print()
+
+    if report.get("ok"):
+        print("{} OK.".format(report.get("label")))
+
+    else:
+        error = report.get("error") or {}
+
+        print("{} FAILED: {}".format(
+            report.get("label"), error.get("code")
+        ))
+        print("  {}".format(error.get("message")))
+
+        if report.get("uart_id") is not None:
+            print()
+            print("Check, in this order:")
+            print("  1. external servo power supply at the driver board")
+            print("  2. ESP32 GND to driver board GND (common reference)")
+            print("  3. GPIO17 -> driver TX, GPIO16 -> driver RX")
+            print("  4. servo ID and baud rate")
+
+    if report.get("baud_matches") is False:
+        print()
+        print("The servo reports {} baud but the firmware opens {}.".format(
+            report.get("baud_reported"), report.get("baud")
+        ))
+
+    print()
+    pause()
+
+
+def menu_servo_configure(mission):
+    """SERVICE: write the operating mode into the servo's own memory."""
+    banner("SERVICE: SERVO CONFIGURATION")
+
+    print("This writes the servo's EPROM: the operating mode and both")
+    print("angle limits. It is needed ONCE per servo, and it survives a")
+    print("power cycle.")
+    print()
+    print("It is NOT part of carousel setup. Ordinary calibration")
+    print("establishes a runtime origin and touches no persistent servo")
+    print("state; this command is the only thing that does.")
+    print()
+    print("Step servo mode is what the carousel needs: every movement is a")
+    print("relative number of encoder counts, so the carousel can turn")
+    print("indefinitely and never takes the long way round the 4095/0")
+    print("encoder boundary.")
+    print()
+    print("EPROM has a finite write life - do not run this routinely.")
+    print()
+
+    if not confirm("Write the servo EPROM now?"):
+        print("Cancelled; the servo was not changed.")
+
+        return
+
+    try:
+        result = mission.link.servo_configure(confirm=True)
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+
+        return
+
+    print()
+    print("Mode is now {} ({}).".format(
+        result.get("mode_name"), result.get("mode")
+    ))
+    print("Angle limits: {} .. {}".format(
+        result.get("min_angle_limit"), result.get("max_angle_limit")
+    ))
+    print()
+    pause()
+
+
+def menu_servo_torque(mission):
+    """Hold or release the servo, explicitly."""
+    banner("SERVO TORQUE")
+
+    print("Holding torque keeps the carousel exactly where the last")
+    print("movement left it, which is what a measurement depends on.")
+    print()
+    print("[1] HOLD  (enable torque)")
+    print("[2] RELEASE (turn the carousel by hand; drops the tracked")
+    print("    position)")
+    print("[0] Back")
+
+    selection = choose()
+
+    try:
+        if selection == "1":
+            mission.link.servo_torque(True)
+            print("Torque enabled.")
+
+        elif selection == "2":
+            if confirm("Release torque? The carousel will turn freely"):
+                mission.link.servo_torque(False)
+                print("Torque released. Re-sync the carousel afterwards.")
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+
+
+# ST3215 settings, shown read-only. See menu_servo_calibration.
+def print_st3215_settings(calibration):
+    values = calibration["current"]
+    units = calibration.get("units") or {}
+
+    print("ST3215 settings (read only):")
+    print()
+    print("  Speed:              {} steps/s".format(
+        values["speed_steps_per_s"]
+    ))
+    print("  Acceleration:       {}".format(values["acceleration"]))
+    print("  Position tolerance: {} counts".format(
+        values["position_tolerance_counts"]
+    ))
+    print("  Settle:             {} ms".format(values["settle_ms"]))
+    print("  Poll interval:      {} ms".format(values["poll_interval_ms"]))
+    print("  Move timeout:       {} ms".format(values["move_timeout_ms"]))
+    print()
+
+    for key in ("speed_steps_per_s", "acceleration",
+                "position_tolerance_counts"):
+        if units.get(key):
+            print("  {:<26} {}".format(key + ":", units[key]))
+
+    print()
+    print(calibration.get("note") or "")
+
+
+def menu_servo_calibration(mission):
+    """
+    Servo settings. Read only.
+
+    There is nothing to calibrate. The ST3215 commands every movement in
+    encoder counts and verifies it by reading the encoder back, so its
+    limits are engineering values that belong in config.py under version
+    control rather than numbers trimmed at runtime.
+
+    This screen used to be editable, because the MG995 it also drove was
+    open-loop and its timings had to be measured on the real mechanism.
+    That backend is gone, and with it every pulse width, settle time and
+    correction factor this screen existed to tune.
+    """
+    banner("SERVO SETTINGS")
+
+    try:
+        calibration = mission.link.get_servo_calibration()
+
+    except (LinkError, TimeoutError) as error:
+        report_failure(error)
+        print()
+        pause()
+
+        return
+
+    if calibration.get("editable"):
+        # The firmware says its settings are runtime-editable. No servo
+        # this client drives has that any more, so rather than silently
+        # showing a read-only screen, say what happened.
+        print("The firmware reports editable calibration, which no servo")
+        print("this client supports should have. Check that the firmware")
+        print("and this client are the same version.")
+        print()
+
+    print_st3215_settings(calibration)
+    print()
+    pause()
+
+
+
+def report_move_test(result):
+    """Per-leg results, in whatever terms the backend can report."""
+    print()
+
+    if result.get("verified_movement"):
+        print("  Legs:          {} x {} = {}".format(
+            result.get("repeat"), result.get("legs"), result.get("leg_count")
+        ))
+        print("  Net travel:    {} counts ({} deg)".format(
+            result.get("net_counts"), result.get("net_degrees")
+        ))
+        print("  Encoder:       {} -> {}".format(
+            result.get("start_position"), result.get("end_position")
+        ))
+        print("  Worst error:   {} counts (tolerance {})".format(
+            result.get("worst_position_error"), result.get("tolerance_counts")
+        ))
+
+        if result.get("closed_loop_error_counts") is not None:
+            print("  Closing error: {} counts ({} deg)".format(
+                result.get("closed_loop_error_counts"),
+                result.get("closed_loop_error_deg"),
+            ))
+
+        print()
+
+        for index, movement in enumerate(result.get("movements") or []):
+            print("  leg {}: {:+5} counts, {} -> {}, error {:+} counts, "
+                  "{} ms".format(
+                      index + 1,
+                      movement.get("requested_counts"),
+                      movement.get("start_position"),
+                      movement.get("actual_position"),
+                      movement.get("position_error"),
+                      movement.get("elapsed_ms"),
+                  ))
+
+    else:
+        print("  Duration:      {} ms x {} = {} ms".format(
+            result.get("duration_ms"), result.get("repeat"),
+            result.get("total_duration_ms"),
+        ))
+        print("  Nominal:       {:.0f} deg".format(
+            result.get("nominal_degrees", 0)
+        ))
+        print("  Pulse:         {} us".format(result.get("pulse_us")))
+        print()
+        print("  This servo has no encoder, so the result has to be judged")
+        print("  by eye against a physical reference.")
+
+    print()
+    print("Movement complete.")
+
+    if result.get("position_invalidated"):
+        print()
+        print("Carousel position tracking was invalidated - re-sync before")
+        print("normal operation.")
+
+
+def menu_servo_movement_test(mission):
+    """
+    Operator-confirmed movement tests, offered per backend.
+
+    Run the diagnostics first: there is no point turning a mechanism whose
+    servo is not answering.
+    """
+    while True:
+        try:
+            status = mission.hardware_status()
+
+        except (LinkError, TimeoutError) as error:
+            report_failure(error)
+
             return
 
-        values = calibration["current"]
+        servo = status.get("servo") or {}
+        capabilities = servo.get("capabilities") or {}
+        kinds = [
+            (entry["kind"], entry["label"])
+            for entry in (servo.get("test_move_kinds") or [])
+        ]
 
-        print_calibration(
-            values,
-            calibration.get("modified"),
-            calibration.get("speed_deg_per_s"),
-        )
+        banner("SERVO MOVEMENT TEST")
+
+        print("Servo: {}".format(servo.get("label")))
+        print()
+        print("THE CAROUSEL WILL TURN. Check the mechanism is clear.")
+        print()
+
+        if capabilities.get("verified_movement"):
+            print("Every movement is commanded in encoder counts and")
+            print("verified from the encoder afterwards, so what you get")
+            print("back is what the servo measured.")
+
+        else:
+            print("This servo has no encoder, so every result has to be")
+            print("judged by eye. Position tracking is invalidated by any")
+            print("movement here.")
 
         print()
-        print("[1] Test STOP / neutral (hold and watch for creep)")
-        print("[2] Test 90 deg CW")
-        print("[3] Test 90 deg CCW")
-        print("[4] Test 180 deg LOAD->SCAN")
-        print("[5] Test 180 deg SCAN->LOAD")
-        print("[o] Test 180 deg OUT AND BACK (the measurement path)")
+
+        for index, (kind, label) in enumerate(kinds, start=1):
+            print("[{}] {}".format(index, label))
+
         print()
-        print("[6] Fine-adjust neutral pulse")
-        print("[7] Fine-adjust CW pulse")
-        print("[8] Fine-adjust CCW pulse")
-        print("[9] Edit timing values")
-        print()
-        print("[c] Show config.py block")
-        print("[r] Reset to config.py defaults")
         print("[0] Back")
 
         selection = choose()
 
-        try:
-            if selection == "0":
-                return
+        if selection == "0":
+            return
 
-            if selection == "1":
-                seconds = ask_int("Hold neutral for how many seconds", 1, 30,
-                                  default=5)
+        chosen = None
 
-                if seconds is None:
-                    continue
+        for index, entry in enumerate(kinds, start=1):
+            if selection == str(index):
+                chosen = entry
 
-                print()
-                print("Holding neutral ({} us) for {} s. Watch the "
-                      "carousel:".format(values["neutral_us"], seconds))
-                print("any creep at all means the neutral pulse is wrong.")
-                sys.stdout.flush()
-
-                mission.link.servo_test_move(
-                    "neutral", hold_ms=seconds * 1000
-                )
-
-                print()
-                print("Done. If it crept clockwise, lower the neutral "
-                      "pulse; if counter-clockwise, raise it.")
-
-            elif selection in ("2", "3", "4", "5"):
-                kinds = {
-                    "2": ("slot_cw", "90 deg CW", "slot_cw_ms"),
-                    "3": ("slot_ccw", "90 deg CCW", "slot_ccw_ms"),
-                    "4": ("load_to_scan", "180 deg LOAD->SCAN",
-                          "load_to_scan_ms"),
-                    "5": ("scan_to_load", "180 deg SCAN->LOAD",
-                          "scan_to_load_ms"),
-                }
-
-                kind, label, key = kinds[selection]
-
-                repeat = ask_int(
-                    "Repeat how many times (4 x 90 deg = one full turn)",
-                    1, 8, default=1,
-                )
-
-                if repeat is None:
-                    continue
-
-                print()
-                print("{} TEST".format(label))
-                sys.stdout.flush()
-
-                result = mission.link.servo_test_move(kind, repeat=repeat)
-
-                report_test_move(result)
-                offer_timing_correction(mission, result, key, label)
-
-            elif selection == "o":
-                repeat = ask_int(
-                    "How many out-and-back cycles", 1, 8, default=3
-                )
-
-                if repeat is None:
-                    continue
-
-                print()
-                print("180 deg OUT AND BACK x {}".format(repeat))
-                print("Each cycle should end exactly where it started.")
-                sys.stdout.flush()
-
-                result = mission.link.servo_test_move(
-                    "out_and_back", repeat=repeat
-                )
-
-                print()
-                print("  Out:       {} ms".format(result.get("out_ms")))
-                print("  Back:      {} ms".format(result.get("back_ms")))
-                print("  Cycles:    {}".format(result.get("repeat")))
-                print()
-                print("Measure the error at HOME. If the carousel has drifted")
-                print("clockwise, shorten 180 deg LOAD->SCAN or lengthen")
-                print("180 deg SCAN->LOAD; if counter-clockwise, the reverse.")
-                print()
-                print("This is the movement Measure Sample depends on, so")
-                print("optimise for the smallest error after the PAIR.")
-
-            elif selection == "6":
-                adjust_pulse(mission, "neutral_us", "Neutral")
-
-            elif selection == "7":
-                adjust_pulse(mission, "cw_us", "CW pulse")
-
-            elif selection == "8":
-                adjust_pulse(mission, "ccw_us", "CCW pulse")
-
-            elif selection == "9":
-                edit_timings(mission)
-
-            elif selection == "c":
-                print_config_block(values)
-                pause()
-
-            elif selection == "r":
-                mission.link.set_servo_calibration(reset=True)
-                print("Reset to the values in config.py.")
-
-            elif selection:
+        if chosen is None:
+            if selection:
                 print("Unknown option.")
+
+            continue
+
+        kind, label = chosen
+        degrees = None
+        hold_ms = None
+
+        if kind == "degrees":
+            degrees = ask_float("Degrees (+ = clockwise)", -180.0, 180.0)
+
+            if degrees is None:
+                continue
+
+        if kind == "neutral":
+            seconds = ask_int("Hold for how many seconds", 1, 30, default=5)
+
+            if seconds is None:
+                continue
+
+            hold_ms = seconds * 1000
+
+        repeat = ask_int("Repeat how many times", 1, 8, default=1)
+
+        if repeat is None:
+            continue
+
+        print()
+        print("{} x {}".format(label, repeat))
+
+        if not confirm("Move the carousel now?"):
+            print("Cancelled; nothing moved.")
+
+            continue
+
+        sys.stdout.flush()
+
+        try:
+            result = mission.link.servo_test_move(
+                kind, repeat=repeat, degrees=degrees, hold_ms=hold_ms,
+                confirm=True,
+            )
 
         except (LinkError, TimeoutError) as error:
             report_failure(error)
+
+            continue
+
+        report_move_test(result)
+
+        if kind in ("slot_out_and_back", "out_and_back"):
+            print()
+            print("A symmetrical test should close on itself. This is the")
+            print("repeatability figure that matters for Measure Sample.")
+
+        print()
+        pause()
 
 
 # ======================================================================
@@ -2453,6 +4547,13 @@ def apply_measurement(record, result):
         "quality": result.get("quality"),
         "reference_matches": result["reference_matches"],
         "metric_agreement": result.get("metric_agreement"),
+
+        # DB1, DB2 and DB3 scored separately, plus the consensus across
+        # them. Kept beside `analysis` rather than replacing it: that
+        # one is the DB1 conclusion under the calibration DB1 was built
+        # with, and the two answer different questions.
+        "cross_database": result.get("cross_database"),
+
         "analysis": result["analysis"],
         "analysis_status": result["analysis_status"],
         "analysis_error": result["analysis_error"],
@@ -2687,15 +4788,37 @@ def menu_measure(mission, status, view):
         print_agreement(result.get("metric_agreement"))
 
         print()
-        print("RESULT")
+        print("RESULT  (DB1, legacy calibration)")
         print()
         print_result_block(result["analysis"])
+
+        print()
+        print("THREE-DATABASE COMPARISON")
+        print()
+        print_cross_database(result.get("cross_database"), limit=3)
+
+        if result.get("evidence"):
+            print()
+            print("=" * 60)
+            print()
+            print_evidence_summary(result["evidence"])
+            print()
+            print_decision(result.get("decision"))
 
     else:
         print()
         print("Analysis status: FAILED - {}".format(result["analysis_error"]))
         print("The acquired spectra are stored and can be re-analysed "
               "offline.")
+
+    offer_decision_detail(result)
+
+    # The measurement is already saved as a Sample. This asks whether it
+    # should ALSO become a learning observation, which is a different
+    # question with a different answer: a rover measurement of unknown
+    # soil is worth keeping and has no label. §59.
+    if mission.learning is not None and result.get("evidence"):
+        capture_ground_truth(mission, sample_id, result)
 
     print()
     print("Full 54-channel data is in the saved record; open the Sample")
@@ -2959,7 +5082,7 @@ def print_full_sample(record):
 
     # The White and Dark this sample was actually processed against,
     # snapshotted into the record so the numbers above can be checked
-    # by hand without opening references.json.
+    # by hand without opening calibration_legacy.json.
     dark = calibration.get("dark_reference")
     white = calibration.get("white_reference")
 
@@ -3502,7 +5625,8 @@ TOOLS_MENU = (
      lambda mission, status, view: (print_system_status(mission), pause())),
     ("3", "Re-sync Carousel", "Restore physical position tracking.",
      lambda mission, status, view: menu_resync(mission)),
-    ("4", "Servo / Carousel Test", "Test movement and calibration.",
+    ("4", "Servo / Carousel Tools",
+     "ST3215 diagnostics, movement tests and manual movement.",
      lambda mission, status, view: menu_servo_test(mission)),
     ("5", "Sensor Test / Calibration",
      "Test the sensor and analysis pipeline; create a full calibration.",
@@ -3512,6 +5636,10 @@ TOOLS_MENU = (
     ("7", "Sync ESP32 Samples to PC",
      "Copy acquisitions held on the ESP32 into the PC archive.",
      lambda mission, status, view: sync_esp32_samples(mission)),
+    ("8", "Decision Learning History",
+     "What the system has measured, what it concluded, and what the "
+     "samples actually were.",
+     lambda mission, status, view: menu_learning_history(mission)),
 )
 
 
@@ -3590,10 +5718,21 @@ CAROUSEL
   Measure Sample swings the slot out to the scanner and back again, so a
   successful measurement ends with the sample exactly where it started.
 
+  The carousel is driven by an ST3215 serial bus servo with a 4096-count
+  absolute encoder, so every movement is commanded in counts and then
+  checked against the encoder before the software believes it. One slot
+  is 1024 counts; the loader/scanner sweep is 2048. A movement that
+  cannot be verified is reported as a failure and the tracked position is
+  dropped - the software never assumes a movement worked.
+
+  Initial Carousel Calibration is still needed after every power-up. The
+  encoder knows exactly where the servo is, but nothing can tell it which
+  physical slot you call Slot 1.
+
 CALIBRATION
 
   The module uses one fixed Dark and one fixed White reference stored
-  in firmware/BD/references.json. They were accepted before the
+  in firmware/BD/data/calibration_legacy.json. They were accepted before the
   competition and are used for every sample. You are never asked to
   measure White or Dark.
 
@@ -3679,6 +5818,19 @@ def print_main_screen(mission, status, view):
     ))
     print("State:    {}".format(entry.get("state", "-")))
     print("Position: {}".format(carousel.get("carousel_phase", "?")))
+
+    # Which actuator is driving the carousel is always on screen, together
+    # with whether it can verify its own movements. Those two facts change
+    # what a measurement is worth.
+    servo = status.get("servo") or {}
+    capabilities = servo.get("capabilities") or {}
+
+    print("Servo:    {}{}".format(
+        servo.get("label", "NOT SELECTED"),
+        " (encoder verified)" if capabilities.get("verified_movement")
+        else " (timed, open loop)" if servo.get("selected") else "",
+    ))
+
     print()
     print("Loader: Slot {}    Scanner: Slot {}".format(
         carousel.get("current_load_slot"),
@@ -3704,9 +5856,9 @@ def print_main_screen(mission, status, view):
 
     if mission.active_calibration is None:
         print()
-        print("FULL CALIBRATION REQUIRED - UV/IR reflectance is not")
-        print("available. Tools -> Sensor Test -> Full Spectral")
-        print("Calibration. The material library is unaffected.")
+        print("NO ACTIVE CALIBRATION - UV/IR reflectance is not available.")
+        print("Tools -> Sensor Test -> [7] to select a stored calibration,")
+        print("or [3] to make one. The material library is unaffected.")
 
     labels = action_labels(entry, carousel)
 
@@ -3722,15 +5874,17 @@ def print_main_screen(mission, status, view):
     print("[q] Exit")
 
 
-def print_startup_screen():
+def print_startup_screen(servo_label=None):
     banner("FREYA SCIENCE MODULE")
 
-    print("Carousel: NOT CALIBRATED")
+    print("Carousel servo: {}".format(servo_label or "NOT SELECTED"))
+    print("Carousel:       NOT CALIBRATED")
     print()
-    print("Before working with samples, physical Slot 1 must be aligned")
-    print("with the soil loading hole.")
+    print("Before working with samples:")
+    print("  1. connect the ST3215 carousel servo")
+    print("  2. align physical Slot 1 with the soil loading hole")
     print()
-    print("[0] Initial Carousel Calibration")
+    print("[0] Carousel Setup")
     print("[t] Tools / Records")
     print("[h] Help")
     print("[q] Exit")
@@ -3787,7 +5941,7 @@ def interactive(link):
         carousel = status.get("carousel") or {}
 
         if not carousel.get("position_valid"):
-            print_startup_screen()
+            print_startup_screen((status.get("servo") or {}).get("label"))
 
             selection = choose()
 

@@ -1,0 +1,827 @@
+{
+  "schema_version": 1,
+  "planner_version": "SITE_PLANNER_V001",
+  "generated_at": "2026-08-18T00:00:00+00:00",
+  "site_count": 4,
+  "required_site_count": 4,
+  "sites": [
+    {
+      "site_id": "SITE-01",
+      "source_point_id": "L12",
+      "source_point_type": "LANDMARK",
+      "coordinate_status": "SOURCE_GROUNDED",
+      "coordinate_frame": "MARS_YARD_2026_LOCAL",
+      "x_m": -4.311,
+      "y_m": 4.442,
+      "h_m": -0.111,
+      "geological_feature_id": "U1",
+      "geological_context": "Southern sand sheet",
+      "role": "TARGET_A",
+      "scientific_purpose": "unit U1 is a target of hypothesis H1",
+      "hypothesis_id": "H1",
+      "prediction_ids": [
+        "P1",
+        "P3"
+      ],
+      "expected_observation": null,
+      "support_condition": null,
+      "reject_condition": null,
+      "measurement_plan": {
+        "repeats": 3,
+        "repeat_kind": "INDEPENDENT_REPOSITIONED",
+        "note": "Repeats must be independent - lift and re-place the sample between them. Re-reading one undisturbed placement measures the sensor, not the material, and would understate the within-site spread that every between-site comparison is judged against."
+      },
+      "photograph_required": true,
+      "selection_reason": "unit U1 is a target of hypothesis H1; lies in mapped unit U1 (Southern sand sheet); the hypothesis names unit U1 directly; a prediction asks for a measurement in unit U1; a surveyed landmark rather than a bare position; 6.2 m from the S1 start position",
+      "selected_by": "PLANNER",
+      "override_note": null,
+      "score_detail": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U1 (Southern sand sheet)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U1 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U1"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.2936667070543928,
+          "reason": "6.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "site_id": "SITE-02",
+      "source_point_id": "L15",
+      "source_point_type": "LANDMARK",
+      "coordinate_status": "SOURCE_GROUNDED",
+      "coordinate_frame": "MARS_YARD_2026_LOCAL",
+      "x_m": 6.483,
+      "y_m": 1.102,
+      "h_m": 0.239,
+      "geological_feature_id": "U4",
+      "geological_context": "Light-toned southern deposit",
+      "role": "TARGET_B",
+      "scientific_purpose": "unit U4 is a target of hypothesis H1",
+      "hypothesis_id": "H1",
+      "prediction_ids": [
+        "P1",
+        "P3"
+      ],
+      "expected_observation": null,
+      "support_condition": null,
+      "reject_condition": null,
+      "measurement_plan": {
+        "repeats": 3,
+        "repeat_kind": "INDEPENDENT_REPOSITIONED",
+        "note": "Repeats must be independent - lift and re-place the sample between them. Re-reading one undisturbed placement measures the sensor, not the material, and would understate the within-site spread that every between-site comparison is judged against."
+      },
+      "photograph_required": true,
+      "selection_reason": "unit U4 is a target of hypothesis H1; lies in mapped unit U4 (Light-toned southern deposit); the hypothesis names unit U4 directly; a prediction asks for a measurement in unit U4; a surveyed landmark rather than a bare position; 6.6 m from the S1 start position",
+      "selected_by": "PLANNER",
+      "override_note": null,
+      "score_detail": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.2808002103610092,
+          "reason": "6.6 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "site_id": "SITE-03",
+      "source_point_id": "L10",
+      "source_point_type": "LANDMARK",
+      "coordinate_status": "SOURCE_GROUNDED",
+      "coordinate_frame": "MARS_YARD_2026_LOCAL",
+      "x_m": -1.61,
+      "y_m": 12.602,
+      "h_m": 0.29,
+      "geological_feature_id": "U2",
+      "geological_context": "Central gravel plain",
+      "role": "CONTROL",
+      "scientific_purpose": "unit U2 is the control: it is measured with the same instrument and calibration so that a difference between the target units can be told apart from session variation",
+      "hypothesis_id": "H1",
+      "prediction_ids": [
+        "P2"
+      ],
+      "expected_observation": null,
+      "support_condition": null,
+      "reject_condition": null,
+      "measurement_plan": {
+        "repeats": 3,
+        "repeat_kind": "INDEPENDENT_REPOSITIONED",
+        "note": "Repeats must be independent - lift and re-place the sample between them. Re-reading one undisturbed placement measures the sensor, not the material, and would understate the within-site spread that every between-site comparison is judged against."
+      },
+      "photograph_required": true,
+      "selection_reason": "unit U2 is the control: it is measured with the same instrument and calibration so that a difference between the target units can be told apart from session variation; lies in mapped unit U2 (Central gravel plain); a prediction asks for a measurement in unit U2; a surveyed landmark rather than a bare position; 12.7 m from the S1 start position",
+      "selected_by": "PLANNER",
+      "override_note": null,
+      "score_detail": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.0765190493592947,
+          "reason": "12.7 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "site_id": "SITE-04",
+      "source_point_id": "W1",
+      "source_point_type": "NAVIGATION_WAYPOINT",
+      "coordinate_status": "SOURCE_GROUNDED",
+      "coordinate_frame": "MARS_YARD_2026_LOCAL",
+      "x_m": 1.951,
+      "y_m": 9.759,
+      "h_m": -0.053,
+      "geological_feature_id": "U4",
+      "geological_context": "Light-toned southern deposit",
+      "role": "TRANSITION",
+      "scientific_purpose": "closest available candidate to the U1/U4 contact, measured from the surveyed anchor centroids of both units",
+      "hypothesis_id": "H1",
+      "prediction_ids": [
+        "P1",
+        "P3"
+      ],
+      "expected_observation": null,
+      "support_condition": null,
+      "reject_condition": null,
+      "measurement_plan": {
+        "repeats": 3,
+        "repeat_kind": "INDEPENDENT_REPOSITIONED",
+        "note": "Repeats must be independent - lift and re-place the sample between them. Re-reading one undisturbed placement measures the sensor, not the material, and would understate the within-site spread that every between-site comparison is judged against."
+      },
+      "photograph_required": true,
+      "selection_reason": "closest available candidate to the U1/U4 contact, measured from the surveyed anchor centroids of both units; lies in mapped unit U4 (Light-toned southern deposit); the hypothesis names unit U4 directly; a prediction asks for a measurement in unit U4; 10.0 m from the S1 start position",
+      "selected_by": "PLANNER",
+      "override_note": null,
+      "score_detail": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.1682630191786805,
+          "reason": "10.0 m from the S1 start position"
+        }
+      ]
+    }
+  ],
+  "overrides": [],
+  "candidates_considered": [
+    {
+      "point_id": "L12",
+      "point_type": "LANDMARK",
+      "x_m": -4.311,
+      "y_m": 4.442,
+      "h_m": -0.111,
+      "geological_feature": "U1",
+      "score": 11.294,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U1 (Southern sand sheet)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U1 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U1"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.2936667070543928,
+          "reason": "6.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L15",
+      "point_type": "LANDMARK",
+      "x_m": 6.483,
+      "y_m": 1.102,
+      "h_m": 0.239,
+      "geological_feature": "U4",
+      "score": 11.281,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.2808002103610092,
+          "reason": "6.6 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L1",
+      "point_type": "LANDMARK",
+      "x_m": 3.183,
+      "y_m": 8.012,
+      "h_m": 0.361,
+      "geological_feature": "U4",
+      "score": 11.213,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.2126294822977757,
+          "reason": "8.6 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L2",
+      "point_type": "LANDMARK",
+      "x_m": 7.269,
+      "y_m": 9.482,
+      "h_m": 0.281,
+      "geological_feature": "U4",
+      "score": 11.102,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.1017445194629736,
+          "reason": "11.9 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L14",
+      "point_type": "LANDMARK",
+      "x_m": -11.438,
+      "y_m": 5.23,
+      "h_m": -0.078,
+      "geological_feature": "U1",
+      "score": 11.081,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U1 (Southern sand sheet)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U1 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U1"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.080766911823241,
+          "reason": "12.6 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W7",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": -2.108,
+      "y_m": 7.682,
+      "h_m": -0.163,
+      "geological_feature": "U1",
+      "score": 10.234,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U1 (Southern sand sheet)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U1 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U1"
+        },
+        {
+          "points": 1.23446743660669,
+          "reason": "8.0 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W8",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": 5.939,
+      "y_m": 6.79,
+      "h_m": -0.065,
+      "geological_feature": "U4",
+      "score": 10.199,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.1993048405961797,
+          "reason": "9.0 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W1",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": 1.951,
+      "y_m": 9.759,
+      "h_m": -0.053,
+      "geological_feature": "U4",
+      "score": 10.168,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U4 (Light-toned southern deposit)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U4 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U4"
+        },
+        {
+          "points": 1.1682630191786805,
+          "reason": "10.0 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W6",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": -7.675,
+      "y_m": 8.197,
+      "h_m": -0.179,
+      "geological_feature": "U1",
+      "score": 10.126,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U1 (Southern sand sheet)"
+        },
+        {
+          "points": 4.0,
+          "reason": "the hypothesis names unit U1 directly"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U1"
+        },
+        {
+          "points": 1.1256911049829448,
+          "reason": "11.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L10",
+      "point_type": "LANDMARK",
+      "x_m": -1.61,
+      "y_m": 12.602,
+      "h_m": 0.29,
+      "geological_feature": "U2",
+      "score": 7.077,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.0765190493592947,
+          "reason": "12.7 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L6",
+      "point_type": "LANDMARK",
+      "x_m": 0.882,
+      "y_m": 16.87,
+      "h_m": 0.259,
+      "geological_feature": "U2",
+      "score": 6.937,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.9368986434239589,
+          "reason": "16.9 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L8",
+      "point_type": "LANDMARK",
+      "x_m": -5.491,
+      "y_m": 16.334,
+      "h_m": 0.061,
+      "geological_feature": "U2",
+      "score": 6.926,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.9255914761929257,
+          "reason": "17.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L7",
+      "point_type": "LANDMARK",
+      "x_m": -3.944,
+      "y_m": 21.415,
+      "h_m": 0.104,
+      "geological_feature": "U2",
+      "score": 6.774,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.7741615109253146,
+          "reason": "21.8 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W9",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": 5.088,
+      "y_m": 13.092,
+      "h_m": 0.011,
+      "geological_feature": "U2",
+      "score": 6.032,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 1.0318022639952218,
+          "reason": "14.0 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W4",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": -1.701,
+      "y_m": 18.665,
+      "h_m": -0.156,
+      "geological_feature": "U2",
+      "score": 5.875,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 0.8752550511519832,
+          "reason": "18.7 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W5",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": -5.339,
+      "y_m": 19.034,
+      "h_m": -0.259,
+      "geological_feature": "U2",
+      "score": 5.841,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 0.8410462189534418,
+          "reason": "19.8 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W2",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": 4.17,
+      "y_m": 19.499,
+      "h_m": 0.105,
+      "geological_feature": "U2",
+      "score": 5.835,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U2 (Central gravel plain)"
+        },
+        {
+          "points": 3.0,
+          "reason": "a prediction asks for a measurement in unit U2"
+        },
+        {
+          "points": 0.8353364251158503,
+          "reason": "19.9 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L11",
+      "point_type": "LANDMARK",
+      "x_m": -7.715,
+      "y_m": 9.721,
+      "h_m": 0.006,
+      "geological_feature": "U5",
+      "score": 4.086,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U5 (Western boulder margin)"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 1.0863186062250858,
+          "reason": "12.4 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L9",
+      "point_type": "LANDMARK",
+      "x_m": -7.695,
+      "y_m": 13.528,
+      "h_m": -0.051,
+      "geological_feature": "U5",
+      "score": 3.981,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U5 (Western boulder margin)"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.9812195829533354,
+          "reason": "15.6 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L3",
+      "point_type": "LANDMARK",
+      "x_m": 7.878,
+      "y_m": 17.583,
+      "h_m": 0.398,
+      "geological_feature": "U3",
+      "score": 3.858,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U3 (North-eastern elevated gravel ridge)"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.8577601927628591,
+          "reason": "19.3 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L4",
+      "point_type": "LANDMARK",
+      "x_m": 9.225,
+      "y_m": 22.389,
+      "h_m": 0.437,
+      "geological_feature": "U3",
+      "score": 3.693,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U3 (North-eastern elevated gravel ridge)"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.6928321488067058,
+          "reason": "24.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L5",
+      "point_type": "LANDMARK",
+      "x_m": 3.518,
+      "y_m": 23.99,
+      "h_m": 0.272,
+      "geological_feature": "U3",
+      "score": 3.692,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U3 (North-eastern elevated gravel ridge)"
+        },
+        {
+          "points": 1.0,
+          "reason": "a surveyed landmark rather than a bare position"
+        },
+        {
+          "points": 0.6917808163073035,
+          "reason": "24.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "W3",
+      "point_type": "NAVIGATION_WAYPOINT",
+      "x_m": 7.013,
+      "y_m": 23.149,
+      "h_m": 0.205,
+      "geological_feature": "U3",
+      "score": 2.694,
+      "reasons": [
+        {
+          "points": 2.0,
+          "reason": "lies in mapped unit U3 (North-eastern elevated gravel ridge)"
+        },
+        {
+          "points": 0.6937340044653033,
+          "reason": "24.2 m from the S1 start position"
+        }
+      ]
+    },
+    {
+      "point_id": "L13",
+      "point_type": "LANDMARK",
+      "x_m": -5.72,
+      "y_m": 28.118,
+      "h_m": -0.163,
+      "geological_feature": null,
+      "score": 0.0,
+      "reasons": [
+        {
+          "points": 0.0,
+          "reason": "falls in no mapped geological unit, so nothing about it can be linked to the hypothesis"
+        }
+      ]
+    }
+  ]
+}

@@ -11,7 +11,7 @@
 # reaches the device.
 
 FIRMWARE_NAME = "freya-science-module"
-FIRMWARE_VERSION = "4.0.0"
+FIRMWARE_VERSION = "5.0.0"
 
 # Bumped when the shape of an acquisition response changes. 2 is the
 # WHITE/UV/IR one-shot protocol with repeats; 1 was the single
@@ -110,98 +110,11 @@ POLLING_DELAY_MS = 5
 ILLUMINATION_SETTLE_MS = 300
 
 # ==========================================
-# SERVO (MG995, modified for continuous rotation)
-# ==========================================
-SERVO_PIN = 25
-SERVO_PWM_FREQ = 50
-
-# ------------------------------------------------------------------
-# !! EVERY PULSE AND TIMING BELOW MUST BE CALIBRATED ON THE REAL
-#    MECHANISM. THE SHIPPED VALUES ARE STARTING POINTS, NOT MEASURED. !!
-#
-# A continuous-rotation servo has no angle command. It has a neutral
-# pulse where it stands still, pulses either side of neutral that make
-# it turn at a speed depending on the distance from neutral, and TIME.
-# There is no encoder, so no calculation can guarantee an exact angle -
-# only careful calibration can make the open loop REPEATABLE.
-#
-# PRECISION IS PRIORITISED OVER SPEED. The pulses below sit deliberately
-# close to neutral: a slow servo is far easier to time accurately, and a
-# slow approach overshoots less. Do not "speed the carousel up" - that
-# trade was made on purpose.
-#
-# Use the PC client: Tools -> Servo / Carousel Test -> Calibration. It
-# tunes these values at runtime and prints the block to paste back here.
-# ------------------------------------------------------------------
-
-# TRUE NEUTRAL. Calibrate this FIRST and on its own: hold it for several
-# seconds and trim in 1-2 us steps until the carousel creeps in neither
-# direction. Everything else is meaningless until this is right, and it
-# is often NOT exactly 1500.
-SERVO_STOP_US = 1500
-
-# Direction pulses, as absolute pulse widths. "CW"/"CCW" are labels; if
-# the observed direction is inverted, swap these two values or flip
-# CAROUSEL_FORWARD_DIRECTION.
-#
-# These are the smallest offsets from neutral that still turn the servo
-# reliably, plus a small margin. Calibrate each direction INDEPENDENTLY:
-# a continuous servo is not symmetric, and CW may well need a different
-# offset from CCW.
-#
-#     shipped: neutral +/- 55 us  (previously +/- 100 us)
-#
-# Smaller offset -> slower -> more repeatable. Reduce further only while
-# the servo still starts reliably every time and never stalls.
-SERVO_CW_US = 1555
-SERVO_CCW_US = 1445
-
-# Optional slow final approach, to take out overshoot: the last
-# SERVO_APPROACH_MS of a move run at a pulse this many microseconds
-# closer to neutral.
-#
-# DISABLED BY DEFAULT (0 ms). A well-calibrated single slow pulse is
-# preferable to an elaborate untested motion profile. Enable it only if
-# hardware testing shows the carousel consistently overshoots.
-SERVO_APPROACH_MS = 0
-SERVO_APPROACH_US_OFFSET = 25
-
-# Optional start kick. A pulse chosen close to the deadband for
-# precision may not always break static friction; a brief stronger pulse
-# at the start of every move fixes that without affecting cruise speed.
-#
-# DISABLED BY DEFAULT (0 ms). Enable only if the carousel sometimes
-# fails to start. The kick duration is part of the total move time, so
-# re-calibrate the 90/180 timings after switching it on.
-SERVO_START_KICK_MS = 0
-SERVO_START_KICK_US_OFFSET = 60
-
-# Optional reverse braking pulse: a very short burst in the opposite
-# direction at the end of a move, to kill inertia instead of coasting
-# into the neutral pulse.
-#
-# DISABLED BY DEFAULT (0 ms). Active braking is NOT automatically
-# better than simply stopping - keep it only if repeated measurements
-# show a lower angular error than stopping at neutral.
-SERVO_BRAKE_MS = 0
-
-# Multi-slot moves run as N discrete single steps, so the servo's
-# start-up ramp is paid once per step and the calibration stays linear
-# in the step count. This is the pause between those steps.
-SERVO_INTER_STEP_PAUSE_MS = 250
-
-# Milliseconds the neutral pulse is held after a move so the mechanism
-# stops ringing before anything else happens. Speed is not important
-# here; a generous settle is cheap and improves repeatability.
-SERVO_SETTLE_MS = 1200
-
-# Release the PWM after a move: the pin stops driving, so a slightly
-# mistrimmed neutral cannot make the carousel creep.
-SERVO_RELEASE_AFTER_MOVE = True
-
-# ==========================================
 # CAROUSEL GEOMETRY (physical facts, never calibrated away)
 # ==========================================
+# What the mechanism IS, independent of what drives it. Both servo
+# backends read these; neither may contradict them, and nothing here is
+# ever "tuned".
 CAROUSEL_SLOT_COUNT = 4
 
 # 360 / 4 = 90 degrees between neighbouring slot centres.
@@ -209,54 +122,22 @@ CAROUSEL_SLOT_GEOMETRY_DEG = 360.0 / CAROUSEL_SLOT_COUNT
 
 # Scanner and loading hole sit exactly opposite: 180 deg = 2 slots.
 # Slot 1 at the loader therefore means Slot 3 at the scanner.
+#
+# This MUST stay at half the slot count - that is what makes the
+# loader/scanner mapping its own inverse, and the carousel checks it.
 CAROUSEL_SCAN_LOAD_OFFSET = 2
 CAROUSEL_HALF_TURN_DEG = 180.0
 
-# ==========================================
-# MOVEMENT CALIBRATION (empirical, per movement type)
-# ==========================================
-# GEOMETRY is what the carousel IS. These timings are what the SERVO
-# must be COMMANDED to do. One must never be derived from the other.
-
-# One logical slot transition is 90 deg in both directions; only the
-# runtime differs, because the servo is not symmetric.
+# Historical name for the slot spacing, kept because reports use it.
 SLOT_STEP_DEG = CAROUSEL_SLOT_GEOMETRY_DEG
-
-# !! NOT MEASURED - RECALIBRATE BEFORE THE FIRST REAL RUN !!
-#
-# Runtime for ONE 90 degree slot transition, per direction, calibrated
-# INDEPENDENTLY. Never derive one from the other, and never derive
-# either from the fine-alignment constant.
-#
-# These were scaled when the direction pulses were slowed from +/-100 us
-# to +/-55 us: roughly half the speed, so roughly twice the runtime
-# (1200 -> 2200 ms). Servo speed is NOT linear in pulse offset near the
-# deadband, so treat this only as a place to start measuring.
-NEXT_SLOT_CW_MS = 2200
-NEXT_SLOT_CCW_MS = 2200
-
-# The 180 deg loader <-> scanner sweep is INDEPENDENTLY calibrated.
-# Never compute it from adjacent-slot moves - a continuous servo pays its
-# acceleration ramp once per move, so two short runs and one long sweep
-# do not cover the same angle.
-#
-# Same scaling as above: 2400 -> 4300 ms at the slower pulse. NOT
-# MEASURED. This is the movement Measure Sample depends on, so it is the
-# most important pair to get right.
-LOAD_TO_SCAN_CW_MS = 4300
-SCAN_TO_LOAD_CCW_MS = 4300
-
-# Fine alignment, per direction, for the same asymmetry reason.
-#
-# Scaled with the slower direction pulses (13.3 -> 24.4 ms/deg), and
-# equally NOT MEASURED. Calibrate by requesting +/-5 deg and measuring
-# the travel that actually results.
-CW_MS_PER_DEGREE = 24.4
-CCW_MS_PER_DEGREE = 24.4
 
 # Which servo direction advances the slot number at a fixed position,
 # i.e. which way to turn for Slot 1 -> Slot 2 -> Slot 3. Software cannot
-# know this; verify it once with a single whole-slot move.
+# know how the carousel is mounted: verify it once with a single
+# whole-slot move, and flip this if the slot numbers run backwards.
+#
+# This is a property of the MECHANISM, not of the actuator, so it is
+# shared by both backends.
 CAROUSEL_FORWARD_DIRECTION = "cw"
 
 # Fine adjustment exists for small mechanical corrections only.
@@ -268,12 +149,164 @@ MAX_FINE_ADJUST_DEG = 15.0
 AUTO_RESTORE_LOAD_ON_SELECT = True
 
 # Extra settling (seconds) after the carousel reaches the scanner and
-# before the AS7265x is read, on top of SERVO_SETTLE_MS.
+# before the AS7265x is read, on top of the backend's own settling.
 SCAN_SETTLE_TIME = 0.5
 
 # Extra settling (seconds) after the sample has been swung back to the
 # loading position at the end of a measurement.
 HOME_SETTLE_TIME = 0.3
+
+# ==========================================
+# CAROUSEL ACTUATOR
+# ==========================================
+# The carousel is driven by ONE actuator: a Waveshare ST3215 serial bus
+# servo. Its settings are in the ST3215 section below.
+#
+# The firmware still starts with no servo connected, and that is
+# deliberate rather than leftover: the UART must be opened and the servo
+# must answer before anything is allowed to move. A carousel that turns
+# because a driver object happened to construct successfully is a
+# carousel that turns with no idea where it is. The operator connects it
+# through option [0] Carousel Setup, and after every reboot it is
+# disconnected again.
+#
+# An earlier revision also supported an MG995 continuous-rotation PWM
+# servo, driven open-loop on timed pulses. It has been removed. Every
+# movement is now commanded in encoder counts and verified by reading
+# the encoder back, so none of the timing calibration that backend
+# needed applies any more.
+
+# ==========================================
+# ST3215 (Waveshare serial bus servo, UART2)
+# ==========================================
+# The ST3215 is reached over UART2 through a Waveshare Serial Bus Servo
+# Driver Board. The link from this PCB is three wires and nothing else:
+#
+#     ESP32 GPIO17 / TX2 ---> driver board TX
+#     ESP32 GPIO16 / RX2 ---> driver board RX
+#     ESP32 GND          ---> driver board GND
+#
+# The servo is powered from an EXTERNAL supply at the driver board. No
+# servo current flows through this PCB, and this firmware has no
+# authority over servo power: there is deliberately no ST3215 power pin,
+# enable or switch anywhere in this file.
+#
+# The ST3215 has a 4096-count absolute magnetic encoder and runs its own
+# closed position loop, so NOTHING in this section is a timing
+# calibration. Every movement is commanded in encoder counts and then
+# verified by reading the encoder back.
+
+ST3215_UART_ID = 2
+ST3215_TX_PIN = 17
+ST3215_RX_PIN = 16
+
+# 1 Mbps is the ST3215 factory baud rate (memory table address 0x06, code
+# 0). Change it only if the servo itself has been reconfigured.
+ST3215_BAUD = 1000000
+
+# Factory default servo ID. There is one servo on this bus, so the
+# factory value is kept; diagnostics reads it back and complains if the
+# servo disagrees.
+ST3215_SERVO_ID = 1
+
+# Longest wait for one status packet. A reply at 1 Mbps takes well under
+# a millisecond, so anything approaching this means the link or the
+# external servo supply is down, not that the servo is busy.
+ST3215_TIMEOUT_MS = 50
+
+# Bounded retries, for transport faults only. A servo that answers with
+# an alarm is never retried - that would hide it - and a relative goal
+# position is never retried either, because a resend would move the
+# carousel twice.
+ST3215_RETRIES = 2
+ST3215_RETRY_DELAY_MS = 5
+
+# 360 deg / 4096 steps, from the official specification. Everything
+# angular in the ST3215 backend is derived from this and never hardcoded.
+ST3215_COUNTS_PER_REV = 4096
+
+# One slot transition and the loader <-> scanner sweep, in encoder
+# counts: 4096 / 4 = 1024 and 4096 / 2 = 2048. Derived, never typed out.
+ST3215_COUNTS_PER_SLOT = ST3215_COUNTS_PER_REV // CAROUSEL_SLOT_COUNT
+ST3215_HALF_TURN_COUNTS = ST3215_COUNTS_PER_REV // 2
+
+# Operating mode, memory table address 0x21:
+#
+#   0  position servo   absolute target; one revolution only, unless
+#                       both angle limits are cleared for multi-turn
+#   1  constant speed   no position control at all
+#   2  PWM open loop    no position control at all
+#   3  step servo       the goal register IS a relative step count
+#
+# STEP SERVO MODE (3) is what the carousel uses. A carousel turns forever
+# in one direction: an absolute single-turn target would have to cross
+# the 4095/0 seam and would send the mechanism the long way round, and a
+# multi-turn absolute count would eventually run out of range. A relative
+# step of one slot has neither problem.
+#
+# Written to the servo's EPROM by the SERVICE configuration command,
+# never implicitly at boot and never as part of routine carousel
+# calibration. The firmware REFUSES to move a servo that reports a
+# different mode.
+ST3215_MODE = 3
+
+# Goal speed in encoder steps per second (memory table address 0x2E,
+# maximum 3400). 50 steps/s = 0.732 RPM.
+#
+# PRECISION AND SAMPLE SAFETY BEFORE SPEED. 600 steps/s is about 8.8 RPM,
+# so one 90 deg slot transition takes roughly 1.7 s and the 180 deg
+# measurement sweep roughly 3.4 s. Loose soil in an open slot does not
+# want to be flung, and a slow approach overshoots less.
+ST3215_SPEED = 600
+
+# Start/stop acceleration (memory table address 0x29) in units of
+# 100 steps/s^2, maximum 254. 20 means 2000 steps/s^2, which reaches
+# ST3215_SPEED in about 0.3 s - gentle enough not to shake a sample out
+# of its slot.
+ST3215_ACCELERATION = 20
+
+# The servo's torque switch is in an unknown state after a power cycle. A
+# movement command may enable torque before moving, which is the one
+# moment when doing so cannot surprise anyone. Torque is NEVER dropped
+# automatically: the carousel has to stay put while the AS7265x reads.
+ST3215_AUTO_ENABLE_TORQUE = True
+
+# Pause inside the stop command, between dropping and restoring torque.
+ST3215_STOP_PAUSE_MS = 20
+
+# ------------------------------------------------------------------
+# !! ST3215_POSITION_TOLERANCE MUST BE CHECKED ON THE REAL MECHANISM.
+#    The shipped value is deliberately conservative, NOT measured. !!
+# ------------------------------------------------------------------
+# 15 counts is about 1.3 deg. The servo's own electronic dead zone is
+# 0.176 deg (2 counts) and its default insensitive zones are 1 count
+# each, so a healthy mechanism should settle far inside this. Tighten it
+# once the real repeatability is known - but a tolerance that is too
+# tight turns ordinary backlash into a failed measurement.
+ST3215_POSITION_TOLERANCE = 15
+
+# Poll interval while waiting for a movement to finish.
+ST3215_POLL_INTERVAL_MS = 20
+
+# Consecutive polls that must report the moving flag clear before the
+# movement is treated as finished. One zero could still be the instant
+# between the goal being written and the motor starting.
+ST3215_STOP_CONFIRM_POLLS = 2
+
+# Milliseconds to wait after the servo reports that it has stopped,
+# before the encoder reading that decides success. This lets the
+# mechanism stop ringing; being generous is cheap and improves
+# repeatability.
+ST3215_SETTLE_MS = 250
+
+# Movement time budget, computed per movement from the distance and
+# ST3215_SPEED, because one fixed number is either too short for the
+# 180 deg sweep or too slow to report a stalled servo:
+#
+#     budget = BASE_MS + nominal travel time * MARGIN, capped at _MS
+ST3215_MOVE_TIMEOUT_BASE_MS = 1200
+ST3215_MOVE_TIMEOUT_MARGIN = 2.5
+ST3215_MOVE_TIMEOUT_MS = 12000
 
 # ==========================================
 # ACQUIRED-SPECTRUM RETENTION (RAM ONLY)
@@ -293,8 +326,10 @@ RETAIN_LAST_SPECTRUM = True
 # MicroPython console carried over the board's CP2102 bridge, on the
 # same cable that powers the ESP32.
 #
-# No machine.UART is created. The PCB UART2 / JST-XH connector on
-# GPIO16/GPIO17 is unused and reserved, so it has no settings here.
+# This is NOT the servo link. UART2 on GPIO16/GPIO17 is a separate
+# hardware peripheral that talks to the ST3215 servo driver board and
+# has its own settings above. The two channels never share a byte: a
+# servo transaction cannot disturb the host console, and vice versa.
 
 MAX_COMMAND_BYTES = 4096
 
@@ -307,6 +342,32 @@ STDOUT_CHUNK_BYTES = 256
 # Pause when stdin reports end of input, so an unusable console cannot
 # spin the CPU at full speed.
 IDLE_DELAY_MS = 50
+
+# Every response frame is preceded by a newline.
+#
+# A response is one line of JSON, so the PC parses whatever arrived
+# between two newlines. If ANYTHING lands on the console immediately
+# before a frame - a partial line from a previous write, a byte mangled
+# by a switching transient on the USB bridge - it merges into the frame's
+# line and the whole response becomes unparseable, even though every byte
+# of the JSON itself arrived intact. That failure was observed on
+# hardware: a calibration block came back with about sixty corrupted
+# bytes in front of an otherwise perfect frame, and the PC waited out its
+# full 180 s timeout for a response it had already received.
+#
+# One leading newline closes whatever came before, so the damage stays in
+# its own line and the JSON gets a clean one. The PC skips blank lines.
+RESPONSE_GUARD_NEWLINE = True
+
+# Settle after the last lamp is switched off, before the response is
+# written.
+#
+# Switching an illumination LED is the largest current step this board
+# makes, and the response to an acquisition is written microseconds
+# afterwards. Waiting a few milliseconds keeps the console transmission
+# out of the switching transient. Cheap insurance: it costs 5 ms per
+# acquisition block against losing a whole calibration step.
+ACQUISITION_RESPONSE_SETTLE_MS = 5
 
 # ==========================================
 # DEBUG
