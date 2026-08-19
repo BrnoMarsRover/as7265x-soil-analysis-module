@@ -68,7 +68,7 @@ if str(FIRMWARE_ROOT) not in sys.path:
     sys.path.insert(0, str(FIRMWARE_ROOT))
 
 from BD import config                       # noqa: E402
-from Measurements import metrics            # noqa: E402
+from Science import metrics            # noqa: E402
 
 # A class needs at least this many members before retrieval accuracy
 # means anything. Below it the answer is "not enough data", never a

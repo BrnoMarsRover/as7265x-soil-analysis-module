@@ -1,14 +1,14 @@
 """
 The 18 AS7265x channels — the domain vocabulary of the whole system.
 
-This lives in BD/schemas rather than in Measurements for one structural
+This lives in BD/schemas rather than in Science for one structural
 reason: BD must be able to validate the SHAPE of a stored record (are all
-18 channels present and numeric?) without importing Measurements, because
-BD -> Measurements is the forbidden dependency edge. Every other layer may
+18 channels present and numeric?) without importing Science, because
+BD -> Science is the forbidden dependency edge. Every other layer may
 import BD, so putting the vocabulary here means it is defined exactly
 once.
 
-`Measurements/channels.py` re-exports these names so scientific code can
+`Science/channels.py` re-exports these names so scientific code can
 say `from BD.channels import CHANNELS` and read naturally. It is
 a re-export, not a second definition.
 
@@ -227,7 +227,7 @@ def channel_wavelengths():
 #
 # These are SHAPE checks, not science: "does this dictionary carry 18
 # usable numbers". Deciding whether those numbers are scientifically
-# trustworthy is Measurements/quality.py, which is a different question.
+# trustworthy is Science/quality.py, which is a different question.
 # ----------------------------------------------------------------------
 
 def validate_spectrum(data):

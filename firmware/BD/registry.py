@@ -6,7 +6,7 @@ never pooled. They answer different questions:
 
     DB1  MEASURED             this instrument, 18 bands, historical
     DB2  MEASURED             this instrument, 54 features, WHITE/UV/IR
-    DB3  REFERENCE_PROJECTED  external laboratory spectra, projected
+    DB3  DERIVED_REFERENCE   external laboratory spectra, projected
 
 A cosine of 0.97 against DB1 means "this looks like something we
 measured here". The same number against DB3 means "this looks like a
@@ -14,7 +14,7 @@ laboratory spectrum of that mineral, after passing it through a model of
 our sensor". Those are different claims, so the registry keeps the
 databases apart and the analysis scores each one separately.
 
-Layer rule: BD must never import Measurements. This module loads and
+Layer rule: BD must never import Science. This module loads and
 validates; it computes no similarity.
 """
 
@@ -37,8 +37,34 @@ STATUS_INVALID = "INVALID"          # present but failed validation
 STATUS_READY = "READY"              # loaded and usable
 
 # What kind of evidence a database provides. Never mix these.
+#
+# These are two of the five provenance classes the whole system uses,
+# and the names are the system's names rather than each database's:
+#
+#     MEASURED            this instrument read it
+#     CALCULATED          derived from something this instrument read
+#     REFERENCE           published, external, as published
+#     DERIVED_REFERENCE   published, external, PROJECTED onto our bands
+#     MODEL_INFERENCE     the Decision Model concluded it
+#
+# DB3 is DERIVED_REFERENCE and not REFERENCE: a continuous laboratory
+# spectrum resampled through a model of this sensor is no longer the
+# published measurement, and is certainly not one of ours. A cosine of
+# 0.97 against it means "this looks like a laboratory spectrum, after
+# modelling our sensor", which is a materially weaker claim than the
+# same number against DB1 - and the difference has to survive into the
+# stored record for anyone to know that.
 MEASURED = "MEASURED"
-REFERENCE_PROJECTED = "REFERENCE_PROJECTED"
+DERIVED_REFERENCE = "DERIVED_REFERENCE"
+
+# What a stored record's `measurement_type` may say, and the class it
+# means. DB3 was written before the provenance classes were given their
+# current names and its records say REFERENCE_PROJECTED; that is the
+# same thing, and it is not worth editing 84 scientific records to make
+# a string match a constant. New records use the class name.
+RECORD_EVIDENCE_SPELLINGS = {
+    "REFERENCE_PROJECTED": DERIVED_REFERENCE,
+}
 
 
 DEFINITIONS = {
@@ -65,7 +91,7 @@ DEFINITIONS = {
     "DB3": {
         "database_id": "DB3",
         "version": "reference-v1",
-        "evidence": REFERENCE_PROJECTED,
+        "evidence": DERIVED_REFERENCE,
         "feature_space": AS7265X_18,
         "file": config.DB3_FILE,
         "protected": False,
@@ -90,7 +116,7 @@ def validate_materials(document, feature_space, evidence):
 
     Returns a list of problems; empty means the document is usable. This
     is SHAPE validation — whether the numbers are scientifically sound is
-    Measurements' job, and whether they are trustworthy is provenance's.
+    Science' job, and whether they are trustworthy is provenance's.
     """
     problems = []
 
@@ -122,17 +148,25 @@ def validate_materials(document, feature_space, evidence):
 
         # Every record must say what kind of evidence it is, so a
         # projected spectrum can never be mistaken for a measured one.
+        #
+        # RECORD_EVIDENCE_SPELLINGS maps what the stored data says onto
+        # the class it means. The alternative was to rewrite the
+        # provenance field inside 84 reference records to match a code
+        # constant, which is editing scientific data to suit software -
+        # exactly backwards. The data says what it said when it was
+        # written, and the reader knows what that means.
         kind = entry.get("measurement_type")
+        kind = RECORD_EVIDENCE_SPELLINGS.get(kind, kind)
 
         if kind is not None and kind != evidence:
             problems.append(
                 "{}: measurement_type {} does not match the database's {}"
-                .format(name, kind, evidence)
+                .format(name, entry.get("measurement_type"), evidence)
             )
 
-        # REFERENCE_PROJECTED records must carry provenance. A reference
+        # DERIVED_REFERENCE records must carry provenance. A reference
         # spectrum with no source is indistinguishable from an invention.
-        if evidence == REFERENCE_PROJECTED:
+        if evidence == DERIVED_REFERENCE:
             provenance = entry.get("provenance")
 
             if not isinstance(provenance, dict) or not provenance.get(

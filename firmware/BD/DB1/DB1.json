@@ -1,0 +1,4963 @@
+{
+  "database_id": "DB1",
+  "database_version": "measured18-v1",
+  "schema_version": 2,
+  "measurement_type": "MEASURED",
+  "feature_space": "AS7265X_18",
+  "instrument": "AS7265x on the Freya science module",
+  "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+  "generated_at": "2026-08-19T15:49:12.335051+00:00",
+  "description": "The historical measurement session: 23 materials measured on this instrument under a single illumination, with one shared Dark and White.",
+  "source": {
+    "file": "DB1_source.txt",
+    "sha256": "57fc8069668f0820b976588958b41efe57ef493796e69613a4649299e0147cc6",
+    "supplied_by": "project author",
+    "supplied_on": "2026-08-15",
+    "rebuild": "py firmware/research/build_db1.py"
+  },
+  "reflectance_equation": "R = (Sample - Dark) / (White - Dark)",
+  "clipping": "NONE - values above 1.0 and at 0.0 are preserved",
+  "shared_references": {
+    "dark": {
+      "A": 0.0,
+      "B": 0.0,
+      "C": 0.0,
+      "D": 3.4855,
+      "E": 0.0,
+      "F": 0.0,
+      "G": 0.0,
+      "H": 0.0,
+      "I": 0.0,
+      "J": 0.0,
+      "K": 0.0,
+      "L": 0.0,
+      "R": 0.0,
+      "S": 0.0,
+      "T": 0.0,
+      "U": 0.0,
+      "V": 0.0
+    },
+    "white": {
+      "A": 29.9166,
+      "B": 135.6742,
+      "C": 458.6046,
+      "D": 256.1812,
+      "E": 380.3354,
+      "F": 494.2911,
+      "G": 428.3792,
+      "H": 645.9812,
+      "I": 514.937,
+      "J": 121.7631,
+      "K": 14.9317,
+      "L": 21.1497,
+      "R": 1873.6044,
+      "S": 558.7975,
+      "T": 121.0452,
+      "U": 70.2892,
+      "V": 105.9207,
+      "W": 61.7612
+    },
+    "dark_inferred_channels": [
+      "W"
+    ],
+    "note": "W940 is absent from the standalone Dark table. Its value comes from the material tables, where all 23 agree on 0.0000. Recorded as inferred, not measured."
+  },
+  "audit": {
+    "errors": [],
+    "warnings": [],
+    "anomalies": [
+      {
+        "severity": "ANOMALY",
+        "code": "DARK_REFERENCE_INCOMPLETE",
+        "message": "the standalone Dark table is missing W; every material table nevertheless carries it. The value is INFERRED from repeated material-table evidence, not read from the Dark block.",
+        "detail": {
+          "missing": [
+            "W"
+          ],
+          "resolution": "inferred_from_material_tables"
+        }
+      },
+      {
+        "severity": "ANOMALY",
+        "code": "DARK_VALUE_INFERRED",
+        "message": "W Dark is absent from the standalone table; all 23 material tables agree on [0.0]",
+        "detail": {
+          "channel": "W",
+          "distinct_values": [
+            0.0
+          ],
+          "agreement": "unanimous"
+        }
+      },
+      {
+        "severity": "ANOMALY",
+        "code": "REFLECTANCE_ABOVE_ONE",
+        "message": "3 material(s) exceed reflectance 1.0. NOT clipped - a sample brighter than the white reference is real information about geometry or scattering.",
+        "detail": {
+          "materials": {
+            "Citric Acid": [
+              "B",
+              "C",
+              "E",
+              "F"
+            ],
+            "Magnesium Carbonate": [
+              "A",
+              "B",
+              "C",
+              "D",
+              "E",
+              "F",
+              "R",
+              "S",
+              "T",
+              "U",
+              "V",
+              "W"
+            ],
+            "Talc": [
+              "B",
+              "C",
+              "D",
+              "E",
+              "F"
+            ]
+          }
+        }
+      },
+      {
+        "severity": "ANOMALY",
+        "code": "ZERO_RAW_SAMPLE",
+        "message": "channels whose raw Sample is exactly 0.0000 - at or below the detector floor, preserved rather than treated as missing",
+        "detail": {
+          "materials": {
+            "Iron(II,III) Oxide Black": [
+              "K",
+              "L"
+            ]
+          }
+        }
+      }
+    ],
+    "info": [
+      {
+        "severity": "INFO",
+        "code": "MATERIAL_COUNT",
+        "message": "23 materials parsed",
+        "detail": {
+          "count": 23,
+          "materials": [
+            "Activated Carbon",
+            "Aluminum Sulfate",
+            "Ascorbic Acid",
+            "Bentonite",
+            "Borax (Sodium Tetraborate)",
+            "Calcium Carbonate (Chalk)",
+            "Citric Acid",
+            "Copper(II) Sulfate",
+            "Epsom Salt (Magnesium Sulfate)",
+            "Green Clay (Illite)",
+            "Iron(II) Sulfate",
+            "Iron(II,III) Oxide Black",
+            "Iron(III) Oxide Red",
+            "Kaolin (White Clay)",
+            "Magnesium Carbonate",
+            "Magnesium Oxide",
+            "Pink Clay",
+            "Potassium Nitrate",
+            "Red Clay",
+            "Sodium Bicarbonate",
+            "Sulfur Powder",
+            "Talc",
+            "Tartaric Acid"
+          ]
+        }
+      },
+      {
+        "severity": "INFO",
+        "code": "DARK_CONSISTENT",
+        "message": "every material table agrees with the standalone Dark reference",
+        "detail": {}
+      },
+      {
+        "severity": "INFO",
+        "code": "WHITE_CONSISTENT",
+        "message": "every material table agrees with the standalone White reference",
+        "detail": {}
+      },
+      {
+        "severity": "INFO",
+        "code": "REFLECTANCE_REPRODUCED",
+        "message": "every supplied reflectance is reproduced by (Sample-Dark)/(White-Dark); worst residual 4.99e-05",
+        "detail": {}
+      }
+    ]
+  },
+  "material_count": 23,
+  "materials": {
+    "Activated Carbon": {
+      "material_id": "activated_carbon",
+      "display_name": "Activated Carbon",
+      "canonical_name": "Activated carbon",
+      "chemical_formula": "C",
+      "material_class": "carbonaceous",
+      "aliases": [
+        "Activated charcoal"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 0.8086,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.027,
+          "reflectance_recomputed": 0.027028,
+          "reflectance_residual": 2.847e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 3.9043,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.0288,
+          "reflectance_recomputed": 0.028777,
+          "reflectance_residual": 2.297e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 14.2424,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.0311,
+          "reflectance_recomputed": 0.031056,
+          "reflectance_residual": 4.405e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 7.8423,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.0172,
+          "reflectance_recomputed": 0.017241,
+          "reflectance_residual": 4.129e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 12.2196,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.0321,
+          "reflectance_recomputed": 0.032128,
+          "reflectance_residual": 2.848e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 15.8983,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.0322,
+          "reflectance_recomputed": 0.032164,
+          "reflectance_residual": 3.616e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 11.5642,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.027,
+          "reflectance_recomputed": 0.026995,
+          "reflectance_residual": 4.76e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 15.5488,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.0241,
+          "reflectance_recomputed": 0.02407,
+          "reflectance_residual": 2.995e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 12.5697,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.0244,
+          "reflectance_recomputed": 0.02441,
+          "reflectance_residual": 1.017e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 3.5012,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.0288,
+          "reflectance_recomputed": 0.028754,
+          "reflectance_residual": 4.58e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 0.5743,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.0385,
+          "reflectance_recomputed": 0.038462,
+          "reflectance_residual": 3.82e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 0.9196,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.0435,
+          "reflectance_recomputed": 0.043481,
+          "reflectance_residual": 1.948e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 62.9156,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.0336,
+          "reflectance_recomputed": 0.03358,
+          "reflectance_residual": 2.002e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 16.5651,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.0296,
+          "reflectance_recomputed": 0.029644,
+          "reflectance_residual": 4.419e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 4.0081,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.0331,
+          "reflectance_recomputed": 0.033112,
+          "reflectance_residual": 1.242e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 2.6692,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.038,
+          "reflectance_recomputed": 0.037975,
+          "reflectance_residual": 2.546e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 3.2097,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.0303,
+          "reflectance_recomputed": 0.030303,
+          "reflectance_residual": 2.86e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 2.2058,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.0357,
+          "reflectance_recomputed": 0.035715,
+          "reflectance_residual": 1.498e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Aluminum Sulfate": {
+      "material_id": "aluminum_sulfate",
+      "display_name": "Aluminum Sulfate",
+      "canonical_name": "Aluminium sulfate",
+      "chemical_formula": "Al2(SO4)3",
+      "material_class": "sulfate",
+      "aliases": [
+        "Alum (aluminium sulfate)",
+        "Aluminium sulphate"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 21.831,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.7297,
+          "reflectance_recomputed": 0.729729,
+          "reflectance_residual": 2.865e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 109.3202,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.8058,
+          "reflectance_recomputed": 0.805755,
+          "reflectance_residual": 4.474e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 361.7564,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.7888,
+          "reflectance_recomputed": 0.78882,
+          "reflectance_residual": 1.982e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 197.7997,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.769,
+          "reflectance_recomputed": 0.768965,
+          "reflectance_residual": 3.48e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 308.5452,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.8112,
+          "reflectance_recomputed": 0.811245,
+          "reflectance_residual": 4.502e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 405.4054,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.8202,
+          "reflectance_recomputed": 0.820175,
+          "reflectance_residual": 2.46e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 280.0554,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.6538,
+          "reflectance_recomputed": 0.653756,
+          "reflectance_residual": 4.417e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 420.7595,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.6513,
+          "reflectance_recomputed": 0.651349,
+          "reflectance_residual": 4.945e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 325.1352,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.6314,
+          "reflectance_recomputed": 0.631408,
+          "reflectance_residual": 7.73e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 83.6392,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.6869,
+          "reflectance_recomputed": 0.686901,
+          "reflectance_residual": 1.04e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 10.3374,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.6923,
+          "reflectance_recomputed": 0.692312,
+          "reflectance_residual": 1.233e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 14.7129,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.6957,
+          "reflectance_recomputed": 0.695655,
+          "reflectance_residual": 4.474e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1476.9164,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.7883,
+          "reflectance_recomputed": 0.788275,
+          "reflectance_residual": 2.452e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 417.4416,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.747,
+          "reflectance_recomputed": 0.747036,
+          "reflectance_residual": 3.555e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 94.5916,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.7815,
+          "reflectance_recomputed": 0.781457,
+          "reflectance_residual": 4.316e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 53.3842,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.7595,
+          "reflectance_recomputed": 0.759494,
+          "reflectance_residual": 6.37e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 81.0454,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.7652,
+          "reflectance_recomputed": 0.765152,
+          "reflectance_residual": 4.833e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 45.218,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.7321,
+          "reflectance_recomputed": 0.732143,
+          "reflectance_residual": 4.251e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Ascorbic Acid": {
+      "material_id": "ascorbic_acid",
+      "display_name": "Ascorbic Acid",
+      "canonical_name": "Ascorbic acid",
+      "chemical_formula": "C6H8O6",
+      "material_class": "organic_acid",
+      "aliases": [
+        "Vitamin C"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 23.4482,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.7838,
+          "reflectance_recomputed": 0.783786,
+          "reflectance_residual": 1.441e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 120.057,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.8849,
+          "reflectance_recomputed": 0.884892,
+          "reflectance_residual": 8.1e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 403.534,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.8799,
+          "reflectance_recomputed": 0.879917,
+          "reflectance_residual": 1.704e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 218.7125,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.8517,
+          "reflectance_recomputed": 0.851724,
+          "reflectance_residual": 2.403e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 343.6766,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.9036,
+          "reflectance_recomputed": 0.903615,
+          "reflectance_residual": 1.455e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 450.9322,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.9123,
+          "reflectance_recomputed": 0.912281,
+          "reflectance_residual": 1.936e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 342.4016,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.7993,
+          "reflectance_recomputed": 0.799296,
+          "reflectance_residual": 4.42e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 498.0323,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.771,
+          "reflectance_recomputed": 0.77097,
+          "reflectance_residual": 2.973e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 370.8049,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7201,
+          "reflectance_recomputed": 0.720098,
+          "reflectance_residual": 2.4e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 96.4768,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.7923,
+          "reflectance_recomputed": 0.792332,
+          "reflectance_residual": 3.2e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.0602,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8077,
+          "reflectance_recomputed": 0.807691,
+          "reflectance_residual": 8.98e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 16.552,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.7826,
+          "reflectance_recomputed": 0.782612,
+          "reflectance_residual": 1.157e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1644.3358,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.8776,
+          "reflectance_recomputed": 0.877632,
+          "reflectance_residual": 3.233e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 461.6153,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8261,
+          "reflectance_recomputed": 0.826087,
+          "reflectance_residual": 1.309e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 104.2111,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.8609,
+          "reflectance_recomputed": 0.860927,
+          "reflectance_residual": 2.716e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 59.6124,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8481,
+          "reflectance_recomputed": 0.848102,
+          "reflectance_residual": 1.84e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 91.4769,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.8636,
+          "reflectance_recomputed": 0.863636,
+          "reflectance_residual": 3.572e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 50.7324,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8214,
+          "reflectance_recomputed": 0.821428,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Bentonite": {
+      "material_id": "bentonite",
+      "display_name": "Bentonite",
+      "canonical_name": "Bentonite (montmorillonite-rich)",
+      "chemical_formula": "(Na,Ca)0.33(Al,Mg)2Si4O10(OH)2*nH2O",
+      "material_class": "phyllosilicate_clay",
+      "aliases": [
+        "Bentonit",
+        "Montmorillonite clay",
+        "Smectite clay"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 8.8941,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.2973,
+          "reflectance_recomputed": 0.297296,
+          "reflectance_residual": 3.52e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 30.2583,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.223,
+          "reflectance_recomputed": 0.223022,
+          "reflectance_residual": 2.177e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 92.1007,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.2008,
+          "reflectance_recomputed": 0.200828,
+          "reflectance_residual": 2.812e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 55.7673,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.2069,
+          "reflectance_recomputed": 0.206896,
+          "reflectance_residual": 3.72e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 94.702,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.249,
+          "reflectance_recomputed": 0.248996,
+          "reflectance_residual": 3.98e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 140.1937,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.2836,
+          "reflectance_recomputed": 0.283626,
+          "reflectance_residual": 2.578e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 114.1339,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.2664,
+          "reflectance_recomputed": 0.266432,
+          "reflectance_residual": 3.194e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 177.1619,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.2743,
+          "reflectance_recomputed": 0.274252,
+          "reflectance_residual": 4.759e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 144.5511,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.2807,
+          "reflectance_recomputed": 0.280716,
+          "reflectance_residual": 1.609e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 37.7349,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.3099,
+          "reflectance_recomputed": 0.309904,
+          "reflectance_residual": 4.23e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 4.0201,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.2692,
+          "reflectance_recomputed": 0.269233,
+          "reflectance_residual": 3.257e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 6.4369,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.3043,
+          "reflectance_recomputed": 0.304349,
+          "reflectance_residual": 4.947e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 612.0939,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.3267,
+          "reflectance_recomputed": 0.326693,
+          "reflectance_residual": 6.76e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 187.7383,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.336,
+          "reflectance_recomputed": 0.335968,
+          "reflectance_residual": 3.16e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 44.0893,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.3642,
+          "reflectance_recomputed": 0.364238,
+          "reflectance_residual": 3.832e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 24.9126,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.3544,
+          "reflectance_recomputed": 0.35443,
+          "reflectance_residual": 2.998e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 34.5045,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.3258,
+          "reflectance_recomputed": 0.325758,
+          "reflectance_residual": 4.215e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 19.8518,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.3214,
+          "reflectance_recomputed": 0.321428,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Borax (Sodium Tetraborate)": {
+      "material_id": "borax_sodium_tetraborate",
+      "display_name": "Borax (Sodium Tetraborate)",
+      "canonical_name": "Borax",
+      "chemical_formula": "Na2B4O7*10H2O",
+      "material_class": "borate",
+      "aliases": [
+        "Sodium tetraborate",
+        "Tincal"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 25.0653,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8378,
+          "reflectance_recomputed": 0.837839,
+          "reflectance_residual": 3.919e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 126.8896,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.9353,
+          "reflectance_recomputed": 0.935252,
+          "reflectance_residual": 4.776e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 422.5239,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.9213,
+          "reflectance_recomputed": 0.921325,
+          "reflectance_residual": 2.504e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 229.1689,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.8931,
+          "reflectance_recomputed": 0.893103,
+          "reflectance_residual": 3.44e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 351.3138,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.9237,
+          "reflectance_recomputed": 0.923695,
+          "reflectance_residual": 5.28e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 458.8814,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.9284,
+          "reflectance_recomputed": 0.928363,
+          "reflectance_residual": 3.734e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 345.9212,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.8075,
+          "reflectance_recomputed": 0.807512,
+          "reflectance_residual": 1.166e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 522.5334,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.8089,
+          "reflectance_recomputed": 0.808899,
+          "reflectance_residual": 1.23e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 403.067,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7828,
+          "reflectance_recomputed": 0.78275,
+          "reflectance_residual": 4.988e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 97.6439,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.8019,
+          "reflectance_recomputed": 0.801917,
+          "reflectance_residual": 1.7e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.6345,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8462,
+          "reflectance_recomputed": 0.846153,
+          "reflectance_residual": 4.718e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 18.3911,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.8696,
+          "reflectance_recomputed": 0.869568,
+          "reflectance_residual": 3.211e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1659.2649,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.8856,
+          "reflectance_recomputed": 0.8856,
+          "reflectance_residual": 4.5e-07,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 469.3457,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8399,
+          "reflectance_recomputed": 0.839921,
+          "reflectance_residual": 2.09e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 105.8143,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.8742,
+          "reflectance_recomputed": 0.874172,
+          "reflectance_residual": 2.82e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 60.5021,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8608,
+          "reflectance_recomputed": 0.86076,
+          "reflectance_residual": 4.045e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 91.4769,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.8636,
+          "reflectance_recomputed": 0.863636,
+          "reflectance_residual": 3.572e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 50.7324,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8214,
+          "reflectance_recomputed": 0.821428,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Calcium Carbonate (Chalk)": {
+      "material_id": "calcium_carbonate_chalk",
+      "display_name": "Calcium Carbonate (Chalk)",
+      "canonical_name": "Calcite",
+      "chemical_formula": "CaCO3",
+      "material_class": "carbonate",
+      "aliases": [
+        "Chalk",
+        "Calcium carbonate",
+        "Whiting"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 25.0653,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8378,
+          "reflectance_recomputed": 0.837839,
+          "reflectance_residual": 3.919e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 124.9374,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.9209,
+          "reflectance_recomputed": 0.920863,
+          "reflectance_residual": 3.664e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 413.9785,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.9027,
+          "reflectance_recomputed": 0.902692,
+          "reflectance_residual": 8.44e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 223.0693,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.869,
+          "reflectance_recomputed": 0.868965,
+          "reflectance_residual": 3.468e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 340.6217,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.8956,
+          "reflectance_recomputed": 0.895582,
+          "reflectance_residual": 1.757e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 450.2096,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.9108,
+          "reflectance_recomputed": 0.910819,
+          "reflectance_residual": 1.875e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 315.7536,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.7371,
+          "reflectance_recomputed": 0.737089,
+          "reflectance_residual": 1.099e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 475.4158,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.736,
+          "reflectance_recomputed": 0.735959,
+          "reflectance_residual": 4.081e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 371.2239,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7209,
+          "reflectance_recomputed": 0.720911,
+          "reflectance_residual": 1.13e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 92.5866,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.7604,
+          "reflectance_recomputed": 0.760383,
+          "reflectance_residual": 1.693e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 11.4859,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.7692,
+          "reflectance_recomputed": 0.769229,
+          "reflectance_residual": 2.922e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 16.552,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.7826,
+          "reflectance_recomputed": 0.782612,
+          "reflectance_residual": 1.157e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1633.6721,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.8719,
+          "reflectance_recomputed": 0.871941,
+          "reflectance_residual": 4.079e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 488.1195,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8735,
+          "reflectance_recomputed": 0.873518,
+          "reflectance_residual": 1.769e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 108.2192,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.894,
+          "reflectance_recomputed": 0.89404,
+          "reflectance_residual": 3.958e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 63.1713,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8987,
+          "reflectance_recomputed": 0.898734,
+          "reflectance_residual": 3.409e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 91.4769,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.8636,
+          "reflectance_recomputed": 0.863636,
+          "reflectance_residual": 3.572e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 51.8353,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8393,
+          "reflectance_recomputed": 0.839286,
+          "reflectance_residual": 1.417e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Citric Acid": {
+      "material_id": "citric_acid",
+      "display_name": "Citric Acid",
+      "canonical_name": "Citric acid",
+      "chemical_formula": "C6H8O7",
+      "material_class": "organic_acid",
+      "aliases": [],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 26.6824,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8919,
+          "reflectance_recomputed": 0.891893,
+          "reflectance_residual": 7.2e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 137.6264,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 1.0144,
+          "reflectance_recomputed": 1.014389,
+          "reflectance_residual": 1.112e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 461.453,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 1.0062,
+          "reflectance_recomputed": 1.006211,
+          "reflectance_residual": 1.101e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 249.2102,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.9724,
+          "reflectance_recomputed": 0.972413,
+          "reflectance_residual": 1.346e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 381.8628,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 1.004,
+          "reflectance_recomputed": 1.004016,
+          "reflectance_residual": 1.593e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 496.459,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 1.0044,
+          "reflectance_recomputed": 1.004386,
+          "reflectance_residual": 1.412e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 354.4687,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.8275,
+          "reflectance_recomputed": 0.827465,
+          "reflectance_residual": 3.522e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 531.4856,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.8228,
+          "reflectance_recomputed": 0.822757,
+          "reflectance_residual": 4.293e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 408.0949,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7925,
+          "reflectance_recomputed": 0.792514,
+          "reflectance_residual": 1.423e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 100.367,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.8243,
+          "reflectance_recomputed": 0.824281,
+          "reflectance_residual": 1.908e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.6345,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8462,
+          "reflectance_recomputed": 0.846153,
+          "reflectance_residual": 4.718e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 18.3911,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.8696,
+          "reflectance_recomputed": 0.869568,
+          "reflectance_residual": 3.211e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1760.5696,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.9397,
+          "reflectance_recomputed": 0.93967,
+          "reflectance_residual": 3.013e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 489.2239,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8755,
+          "reflectance_recomputed": 0.875494,
+          "reflectance_residual": 5.93e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 112.2273,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.9272,
+          "reflectance_recomputed": 0.927152,
+          "reflectance_residual": 4.799e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 64.061,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.9114,
+          "reflectance_recomputed": 0.911392,
+          "reflectance_residual": 8.21e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 96.2915,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.9091,
+          "reflectance_recomputed": 0.90909,
+          "reflectance_residual": 9.52e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 52.9381,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8571,
+          "reflectance_recomputed": 0.857142,
+          "reflectance_residual": 4.17e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": [
+        "REFLECTANCE_ABOVE_ONE"
+      ]
+    },
+    "Copper(II) Sulfate": {
+      "material_id": "copperii_sulfate",
+      "display_name": "Copper(II) Sulfate",
+      "canonical_name": "Chalcanthite",
+      "chemical_formula": "CuSO4*5H2O",
+      "material_class": "sulfate",
+      "aliases": [
+        "Cupric sulfate",
+        "Blue vitriol",
+        "Copper sulphate"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 8.0856,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.2703,
+          "reflectance_recomputed": 0.270271,
+          "reflectance_residual": 2.865e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 89.7988,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.6619,
+          "reflectance_recomputed": 0.661871,
+          "reflectance_residual": 2.914e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 361.7564,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.7888,
+          "reflectance_recomputed": 0.78882,
+          "reflectance_residual": 1.982e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 176.887,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.6862,
+          "reflectance_recomputed": 0.686207,
+          "reflectance_residual": 6.77e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 244.3922,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.6426,
+          "reflectance_recomputed": 0.64257,
+          "reflectance_residual": 2.978e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 258.7079,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.5234,
+          "reflectance_recomputed": 0.523392,
+          "reflectance_residual": 8.22e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 130.726,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.3052,
+          "reflectance_recomputed": 0.305164,
+          "reflectance_residual": 3.579e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 140.4102,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.2174,
+          "reflectance_recomputed": 0.21736,
+          "reflectance_residual": 4.042e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 49.4407,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.096,
+          "reflectance_recomputed": 0.096013,
+          "reflectance_residual": 1.31e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 10.5035,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.0863,
+          "reflectance_recomputed": 0.086262,
+          "reflectance_residual": 3.823e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 3.4458,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.2308,
+          "reflectance_recomputed": 0.230771,
+          "reflectance_residual": 2.922e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 4.5978,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.2174,
+          "reflectance_recomputed": 0.217393,
+          "reflectance_residual": 6.85e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 386.0244,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.206,
+          "reflectance_recomputed": 0.206033,
+          "reflectance_residual": 3.303e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 47.4867,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.085,
+          "reflectance_recomputed": 0.08498,
+          "reflectance_residual": 1.984e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 11.2227,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.0927,
+          "reflectance_recomputed": 0.092715,
+          "reflectance_residual": 1.495e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 8.8974,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.1266,
+          "reflectance_recomputed": 0.126583,
+          "reflectance_residual": 1.725e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 21.6656,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.2045,
+          "reflectance_recomputed": 0.204545,
+          "reflectance_residual": 4.548e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 9.9259,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.1607,
+          "reflectance_recomputed": 0.160714,
+          "reflectance_residual": 1.417e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Epsom Salt (Magnesium Sulfate)": {
+      "material_id": "epsom_salt_magnesium_sulfate",
+      "display_name": "Epsom Salt (Magnesium Sulfate)",
+      "canonical_name": "Epsomite",
+      "chemical_formula": "MgSO4*7H2O",
+      "material_class": "sulfate",
+      "aliases": [
+        "Epsom salt",
+        "Magnesium sulfate heptahydrate"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 21.831,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.7297,
+          "reflectance_recomputed": 0.729729,
+          "reflectance_residual": 2.865e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 115.1767,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.8489,
+          "reflectance_recomputed": 0.848921,
+          "reflectance_residual": 2.117e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 390.2412,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.8509,
+          "reflectance_recomputed": 0.850932,
+          "reflectance_residual": 3.172e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 206.5134,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.8034,
+          "reflectance_recomputed": 0.803448,
+          "reflectance_residual": 4.818e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 318.4736,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.8373,
+          "reflectance_recomputed": 0.837349,
+          "reflectance_residual": 4.935e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 415.5225,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.8406,
+          "reflectance_recomputed": 0.840643,
+          "reflectance_residual": 4.33e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 306.7034,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.716,
+          "reflectance_recomputed": 0.715962,
+          "reflectance_residual": 3.76e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 453.2706,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.7017,
+          "reflectance_recomputed": 0.701678,
+          "reflectance_residual": 2.23e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 341.0567,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.6623,
+          "reflectance_recomputed": 0.662327,
+          "reflectance_residual": 2.704e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 85.5843,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.7029,
+          "reflectance_recomputed": 0.702876,
+          "reflectance_residual": 2.45e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 10.9116,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.7308,
+          "reflectance_recomputed": 0.730767,
+          "reflectance_residual": 3.257e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 15.6324,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.7391,
+          "reflectance_recomputed": 0.739131,
+          "reflectance_residual": 3.105e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1477.9827,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.7888,
+          "reflectance_recomputed": 0.788845,
+          "reflectance_residual": 4.459e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 419.6503,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.751,
+          "reflectance_recomputed": 0.750988,
+          "reflectance_residual": 1.185e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 93.79,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.7748,
+          "reflectance_recomputed": 0.774835,
+          "reflectance_residual": 3.452e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 53.3842,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.7595,
+          "reflectance_recomputed": 0.759494,
+          "reflectance_residual": 6.37e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 82.6502,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.7803,
+          "reflectance_recomputed": 0.780303,
+          "reflectance_residual": 2.62e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 45.218,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.7321,
+          "reflectance_recomputed": 0.732143,
+          "reflectance_residual": 4.251e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Green Clay (Illite)": {
+      "material_id": "green_clay_illite",
+      "display_name": "Green Clay (Illite)",
+      "canonical_name": "Illite",
+      "chemical_formula": "K0.65Al2(Al0.65Si3.35O10)(OH)2",
+      "material_class": "phyllosilicate_clay",
+      "aliases": [
+        "Green clay",
+        "Illitic clay"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 12.1284,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.4054,
+          "reflectance_recomputed": 0.405407,
+          "reflectance_residual": 7.03e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 47.8276,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.3525,
+          "reflectance_recomputed": 0.352518,
+          "reflectance_residual": 1.802e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 151.9187,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.3313,
+          "reflectance_recomputed": 0.331263,
+          "reflectance_residual": 3.708e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 90.6219,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.3448,
+          "reflectance_recomputed": 0.344827,
+          "reflectance_residual": 2.74e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 147.3991,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.3876,
+          "reflectance_recomputed": 0.38755,
+          "reflectance_residual": 4.97e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 210.2905,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.4254,
+          "reflectance_recomputed": 0.425439,
+          "reflectance_residual": 3.857e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 168.4355,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.3932,
+          "reflectance_recomputed": 0.393193,
+          "reflectance_residual": 7.47e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 255.8482,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.3961,
+          "reflectance_recomputed": 0.396061,
+          "reflectance_residual": 3.863e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 204.0475,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.3963,
+          "reflectance_recomputed": 0.396257,
+          "reflectance_residual": 4.279e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 50.9615,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.4185,
+          "reflectance_recomputed": 0.41853,
+          "reflectance_residual": 2.992e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 5.743,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.3846,
+          "reflectance_recomputed": 0.384618,
+          "reflectance_residual": 1.796e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 8.276,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.3913,
+          "reflectance_recomputed": 0.391306,
+          "reflectance_residual": 5.79e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 827.4997,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.4417,
+          "reflectance_recomputed": 0.441662,
+          "reflectance_residual": 3.809e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 246.2684,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.4407,
+          "reflectance_recomputed": 0.440711,
+          "reflectance_residual": 1.135e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 56.9153,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.4702,
+          "reflectance_recomputed": 0.470199,
+          "reflectance_residual": 1.26e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 32.0305,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.4557,
+          "reflectance_recomputed": 0.455696,
+          "reflectance_residual": 4.1e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 46.5409,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.4394,
+          "reflectance_recomputed": 0.439394,
+          "reflectance_residual": 6.19e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 26.4691,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.4286,
+          "reflectance_recomputed": 0.428572,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Iron(II) Sulfate": {
+      "material_id": "ironii_sulfate",
+      "display_name": "Iron(II) Sulfate",
+      "canonical_name": "Melanterite / ferrous sulfate",
+      "chemical_formula": "FeSO4*7H2O",
+      "material_class": "sulfate",
+      "aliases": [
+        "Ferrous sulfate",
+        "Green vitriol",
+        "Copperas"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 10.5112,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.3514,
+          "reflectance_recomputed": 0.35135,
+          "reflectance_residual": 4.991e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 34.1626,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.2518,
+          "reflectance_recomputed": 0.251799,
+          "reflectance_residual": 1.21e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 109.1916,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.2381,
+          "reflectance_recomputed": 0.238095,
+          "reflectance_residual": 4.7e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 82.7796,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.3138,
+          "reflectance_recomputed": 0.313793,
+          "reflectance_residual": 7.17e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 132.1245,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.3474,
+          "reflectance_recomputed": 0.347389,
+          "reflectance_residual": 1.056e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 179.2166,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.3626,
+          "reflectance_recomputed": 0.362573,
+          "reflectance_residual": 2.701e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 160.3908,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.3744,
+          "reflectance_recomputed": 0.374413,
+          "reflectance_residual": 1.314e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 252.5499,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.391,
+          "reflectance_recomputed": 0.390955,
+          "reflectance_residual": 4.45e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 176.8132,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.3434,
+          "reflectance_recomputed": 0.343369,
+          "reflectance_residual": 3.139e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 30.3435,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.2492,
+          "reflectance_recomputed": 0.249201,
+          "reflectance_residual": 1.11e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 5.1687,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.3462,
+          "reflectance_recomputed": 0.346156,
+          "reflectance_residual": 4.384e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 7.3564,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.3478,
+          "reflectance_recomputed": 0.347825,
+          "reflectance_residual": 2.526e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 669.6776,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.3574,
+          "reflectance_recomputed": 0.357427,
+          "reflectance_residual": 2.743e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 136.9385,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.2451,
+          "reflectance_recomputed": 0.245059,
+          "reflectance_residual": 4.074e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 30.4617,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.2517,
+          "reflectance_recomputed": 0.251656,
+          "reflectance_residual": 4.442e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 17.7947,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.2532,
+          "reflectance_recomputed": 0.253164,
+          "reflectance_residual": 3.593e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 33.702,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.3182,
+          "reflectance_recomputed": 0.318181,
+          "reflectance_residual": 1.857e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 17.646,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.2857,
+          "reflectance_recomputed": 0.285713,
+          "reflectance_residual": 1.336e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Iron(II,III) Oxide Black": {
+      "material_id": "ironiiiii_oxide_black",
+      "display_name": "Iron(II,III) Oxide Black",
+      "canonical_name": "Magnetite (synthetic)",
+      "chemical_formula": "Fe3O4",
+      "material_class": "iron_oxide",
+      "aliases": [
+        "Black iron oxide",
+        "Ferrous ferric oxide"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 0.8086,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.027,
+          "reflectance_recomputed": 0.027028,
+          "reflectance_residual": 2.847e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 2.9282,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.0216,
+          "reflectance_recomputed": 0.021583,
+          "reflectance_residual": 1.741e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 10.4444,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.0228,
+          "reflectance_recomputed": 0.022774,
+          "reflectance_residual": 2.57e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 6.0996,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.0103,
+          "reflectance_recomputed": 0.010345,
+          "reflectance_residual": 4.485e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 8.401,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.0221,
+          "reflectance_recomputed": 0.022088,
+          "reflectance_residual": 1.16e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 10.1171,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.0205,
+          "reflectance_recomputed": 0.020468,
+          "reflectance_residual": 3.21e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 7.0391,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.0164,
+          "reflectance_recomputed": 0.016432,
+          "reflectance_residual": 3.194e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 9.8947,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.0153,
+          "reflectance_recomputed": 0.015317,
+          "reflectance_residual": 1.732e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 7.9608,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.0155,
+          "reflectance_recomputed": 0.01546,
+          "reflectance_residual": 4.024e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 2.3341,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.0192,
+          "reflectance_recomputed": 0.019169,
+          "reflectance_residual": 3.081e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 0.0,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.0,
+          "reflectance_recomputed": 0.0,
+          "reflectance_residual": 0.0,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 0.0,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.0,
+          "reflectance_recomputed": 0.0,
+          "reflectance_residual": 0.0,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 37.3228,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.0199,
+          "reflectance_recomputed": 0.01992,
+          "reflectance_residual": 2.032e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 12.1478,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.0217,
+          "reflectance_recomputed": 0.021739,
+          "reflectance_residual": 3.918e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 2.4049,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.0199,
+          "reflectance_recomputed": 0.019868,
+          "reflectance_residual": 3.222e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 1.7795,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.0253,
+          "reflectance_recomputed": 0.025317,
+          "reflectance_residual": 1.683e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 2.4073,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.0227,
+          "reflectance_recomputed": 0.022727,
+          "reflectance_residual": 2.738e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 1.1029,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.0179,
+          "reflectance_recomputed": 0.017857,
+          "reflectance_residual": 4.251e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": [
+        "ZERO_RAW_SAMPLE"
+      ]
+    },
+    "Iron(III) Oxide Red": {
+      "material_id": "ironiii_oxide_red",
+      "display_name": "Iron(III) Oxide Red",
+      "canonical_name": "Hematite (synthetic)",
+      "chemical_formula": "Fe2O3",
+      "material_class": "iron_oxide",
+      "aliases": [
+        "Ferric oxide",
+        "Red iron oxide"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 4.8513,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.1622,
+          "reflectance_recomputed": 0.162161,
+          "reflectance_residual": 3.919e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 10.7368,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.0791,
+          "reflectance_recomputed": 0.079137,
+          "reflectance_residual": 3.664e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 19.9393,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.0435,
+          "reflectance_recomputed": 0.043478,
+          "reflectance_residual": 2.181e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 11.3277,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.031,
+          "reflectance_recomputed": 0.031034,
+          "reflectance_residual": 3.416e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 16.802,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.0442,
+          "reflectance_recomputed": 0.044177,
+          "reflectance_residual": 2.32e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 21.6794,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.0439,
+          "reflectance_recomputed": 0.04386,
+          "reflectance_residual": 4.042e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 21.6201,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.0505,
+          "reflectance_recomputed": 0.05047,
+          "reflectance_residual": 3.046e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 68.3204,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.1058,
+          "reflectance_recomputed": 0.105762,
+          "reflectance_residual": 3.779e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 104.3282,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.2026,
+          "reflectance_recomputed": 0.202604,
+          "reflectance_residual": 3.81e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 30.3435,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.2492,
+          "reflectance_recomputed": 0.249201,
+          "reflectance_residual": 1.11e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 2.2972,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.1538,
+          "reflectance_recomputed": 0.153847,
+          "reflectance_residual": 4.718e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 3.6782,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.1739,
+          "reflectance_recomputed": 0.173913,
+          "reflectance_residual": 1.263e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 427.6126,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.2282,
+          "reflectance_recomputed": 0.22823,
+          "reflectance_residual": 2.993e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 161.2341,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.2885,
+          "reflectance_recomputed": 0.288538,
+          "reflectance_residual": 3.762e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 40.8828,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.3377,
+          "reflectance_recomputed": 0.337748,
+          "reflectance_residual": 4.821e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 20.4639,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.2911,
+          "reflectance_recomputed": 0.291139,
+          "reflectance_residual": 3.861e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 22.468,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.2121,
+          "reflectance_recomputed": 0.212121,
+          "reflectance_residual": 2.095e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 14.3374,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.2321,
+          "reflectance_recomputed": 0.232143,
+          "reflectance_residual": 4.251e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Kaolin (White Clay)": {
+      "material_id": "kaolin_white_clay",
+      "display_name": "Kaolin (White Clay)",
+      "canonical_name": "Kaolinite",
+      "chemical_formula": "Al2Si2O5(OH)4",
+      "material_class": "phyllosilicate_clay",
+      "aliases": [
+        "Kaolin",
+        "China clay",
+        "White clay"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 21.0225,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.7027,
+          "reflectance_recomputed": 0.702704,
+          "reflectance_residual": 3.52e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 93.7031,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.6906,
+          "reflectance_recomputed": 0.690648,
+          "reflectance_residual": 4.789e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 304.7869,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.6646,
+          "reflectance_recomputed": 0.664596,
+          "reflectance_residual": 3.74e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 177.7583,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.6897,
+          "reflectance_recomputed": 0.689655,
+          "reflectance_residual": 4.521e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 279.5236,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.7349,
+          "reflectance_recomputed": 0.73494,
+          "reflectance_residual": 3.974e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 374.3315,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.7573,
+          "reflectance_recomputed": 0.75731,
+          "reflectance_residual": 9.81e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 288.1001,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.6725,
+          "reflectance_recomputed": 0.672535,
+          "reflectance_residual": 3.522e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 433.0101,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.6703,
+          "reflectance_recomputed": 0.670314,
+          "reflectance_residual": 1.378e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 337.2858,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.655,
+          "reflectance_recomputed": 0.655004,
+          "reflectance_residual": 4.01e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 84.4172,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.6933,
+          "reflectance_recomputed": 0.69329,
+          "reflectance_residual": 9.5e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 10.3374,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.6923,
+          "reflectance_recomputed": 0.692312,
+          "reflectance_residual": 1.233e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 14.7129,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.6957,
+          "reflectance_recomputed": 0.695655,
+          "reflectance_residual": 4.474e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1453.4563,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.7758,
+          "reflectance_recomputed": 0.775754,
+          "reflectance_residual": 4.59e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 419.6503,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.751,
+          "reflectance_recomputed": 0.750988,
+          "reflectance_residual": 1.185e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 93.79,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.7748,
+          "reflectance_recomputed": 0.774835,
+          "reflectance_residual": 3.452e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 53.3842,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.7595,
+          "reflectance_recomputed": 0.759494,
+          "reflectance_residual": 6.37e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 81.8478,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.7727,
+          "reflectance_recomputed": 0.772727,
+          "reflectance_residual": 2.714e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 46.3209,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.75,
+          "reflectance_recomputed": 0.75,
+          "reflectance_residual": 0.0,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Magnesium Carbonate": {
+      "material_id": "magnesium_carbonate",
+      "display_name": "Magnesium Carbonate",
+      "canonical_name": "Magnesite / hydromagnesite",
+      "chemical_formula": "MgCO3",
+      "material_class": "carbonate",
+      "aliases": [
+        "Magnesia alba"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 31.5337,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 1.0541,
+          "reflectance_recomputed": 1.054054,
+          "reflectance_residual": 4.64e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 162.0282,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 1.1942,
+          "reflectance_recomputed": 1.194245,
+          "reflectance_residual": 4.474e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 539.3114,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 1.176,
+          "reflectance_recomputed": 1.175983,
+          "reflectance_residual": 1.659e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 291.9071,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 1.1414,
+          "reflectance_recomputed": 1.141379,
+          "reflectance_residual": 2.086e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 453.6531,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 1.1928,
+          "reflectance_recomputed": 1.192771,
+          "reflectance_residual": 2.883e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 593.2938,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 1.2003,
+          "reflectance_recomputed": 1.200292,
+          "reflectance_residual": 7.7e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 398.7144,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.9308,
+          "reflectance_recomputed": 0.930751,
+          "reflectance_residual": 4.893e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 580.4879,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.8986,
+          "reflectance_recomputed": 0.898614,
+          "reflectance_residual": 1.423e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 452.0887,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.8779,
+          "reflectance_recomputed": 0.87795,
+          "reflectance_residual": 4.954e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 115.9278,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.9521,
+          "reflectance_recomputed": 0.952077,
+          "reflectance_residual": 2.339e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 14.3574,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.9615,
+          "reflectance_recomputed": 0.961538,
+          "reflectance_residual": 3.82e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 21.1497,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 1.0,
+          "reflectance_recomputed": 1.0,
+          "reflectance_residual": 0.0,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 2124.2002,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 1.1338,
+          "reflectance_recomputed": 1.133751,
+          "reflectance_residual": 4.935e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 611.8059,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 1.0949,
+          "reflectance_recomputed": 1.094862,
+          "reflectance_residual": 3.844e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 136.276,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 1.1258,
+          "reflectance_recomputed": 1.125827,
+          "reflectance_residual": 2.738e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 78.2968,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 1.1139,
+          "reflectance_recomputed": 1.113924,
+          "reflectance_residual": 2.362e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 118.7595,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 1.1212,
+          "reflectance_recomputed": 1.121211,
+          "reflectance_residual": 1.143e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 67.2756,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 1.0893,
+          "reflectance_recomputed": 1.089286,
+          "reflectance_residual": 1.417e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": [
+        "REFLECTANCE_ABOVE_ONE"
+      ]
+    },
+    "Magnesium Oxide": {
+      "material_id": "magnesium_oxide",
+      "display_name": "Magnesium Oxide",
+      "canonical_name": "Periclase (synthetic)",
+      "chemical_formula": "MgO",
+      "material_class": "oxide",
+      "aliases": [
+        "Magnesia"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 18.5968,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.6216,
+          "reflectance_recomputed": 0.621621,
+          "reflectance_residual": 2.144e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 82.9662,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.6115,
+          "reflectance_recomputed": 0.611511,
+          "reflectance_residual": 1.052e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 266.8072,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.5818,
+          "reflectance_recomputed": 0.58178,
+          "reflectance_residual": 1.953e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 147.2606,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.569,
+          "reflectance_recomputed": 0.568965,
+          "reflectance_residual": 3.464e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 232.1726,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.6104,
+          "reflectance_recomputed": 0.610442,
+          "reflectance_residual": 4.173e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 316.5197,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.6404,
+          "reflectance_recomputed": 0.640351,
+          "reflectance_residual": 4.92e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 245.8655,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.5739,
+          "reflectance_recomputed": 0.573944,
+          "reflectance_residual": 4.36e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 382.1231,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.5915,
+          "reflectance_recomputed": 0.591539,
+          "reflectance_residual": 3.904e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 315.9174,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.6135,
+          "reflectance_recomputed": 0.613507,
+          "reflectance_residual": 6.9e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 80.916,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.6645,
+          "reflectance_recomputed": 0.664536,
+          "reflectance_residual": 3.63e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 9.1888,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.6154,
+          "reflectance_recomputed": 0.615389,
+          "reflectance_residual": 1.126e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 13.7933,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.6522,
+          "reflectance_recomputed": 0.652175,
+          "reflectance_residual": 2.526e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1318.0278,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.7035,
+          "reflectance_recomputed": 0.703472,
+          "reflectance_residual": 2.823e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 404.1895,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.7233,
+          "reflectance_recomputed": 0.72332,
+          "reflectance_residual": 2.017e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 92.1867,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.7616,
+          "reflectance_recomputed": 0.761589,
+          "reflectance_residual": 1.094e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 51.6047,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.7342,
+          "reflectance_recomputed": 0.734177,
+          "reflectance_residual": 2.32e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 73.8235,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.697,
+          "reflectance_recomputed": 0.69697,
+          "reflectance_residual": 3.047e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 41.9094,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.6786,
+          "reflectance_recomputed": 0.678572,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Pink Clay": {
+      "material_id": "pink_clay",
+      "display_name": "Pink Clay",
+      "canonical_name": "Pink clay (kaolinite-rich, Fe-bearing)",
+      "chemical_formula": null,
+      "material_class": "phyllosilicate_clay",
+      "aliases": [
+        "Rose clay"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 16.1711,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.5405,
+          "reflectance_recomputed": 0.540539,
+          "reflectance_residual": 3.937e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 56.6123,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.4173,
+          "reflectance_recomputed": 0.417267,
+          "reflectance_residual": 3.349e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 164.2621,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.3582,
+          "reflectance_recomputed": 0.358178,
+          "reflectance_residual": 2.195e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 101.0783,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.3862,
+          "reflectance_recomputed": 0.386207,
+          "reflectance_residual": 6.81e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 156.5638,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.4116,
+          "reflectance_recomputed": 0.411647,
+          "reflectance_residual": 4.667e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 211.0132,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.4269,
+          "reflectance_recomputed": 0.426901,
+          "reflectance_residual": 6.7e-07,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 159.3852,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.3721,
+          "reflectance_recomputed": 0.372066,
+          "reflectance_residual": 3.432e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 287.8881,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.4457,
+          "reflectance_recomputed": 0.44566,
+          "reflectance_residual": 3.982e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 266.8958,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.5183,
+          "reflectance_recomputed": 0.518308,
+          "reflectance_residual": 7.68e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 66.5223,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.5463,
+          "reflectance_recomputed": 0.546326,
+          "reflectance_residual": 2.561e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 6.8916,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.4615,
+          "reflectance_recomputed": 0.461542,
+          "reflectance_residual": 4.155e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 11.0346,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.5217,
+          "reflectance_recomputed": 0.521738,
+          "reflectance_residual": 3.79e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1121.8166,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.5987,
+          "reflectance_recomputed": 0.598748,
+          "reflectance_residual": 4.785e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 333.5115,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.5968,
+          "reflectance_recomputed": 0.596838,
+          "reflectance_residual": 3.785e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 80.964,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.6689,
+          "reflectance_recomputed": 0.668874,
+          "reflectance_residual": 2.589e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 43.5971,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.6203,
+          "reflectance_recomputed": 0.620253,
+          "reflectance_residual": 4.682e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 60.1822,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.5682,
+          "reflectance_recomputed": 0.568182,
+          "reflectance_residual": 1.833e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 33.0863,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.5357,
+          "reflectance_recomputed": 0.535713,
+          "reflectance_residual": 1.336e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Potassium Nitrate": {
+      "material_id": "potassium_nitrate",
+      "display_name": "Potassium Nitrate",
+      "canonical_name": "Niter",
+      "chemical_formula": "KNO3",
+      "material_class": "nitrate",
+      "aliases": [
+        "Saltpetre",
+        "Saltpeter",
+        "Nitre"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 24.2567,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8108,
+          "reflectance_recomputed": 0.810811,
+          "reflectance_residual": 1.072e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 116.1527,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.8561,
+          "reflectance_recomputed": 0.856115,
+          "reflectance_residual": 1.487e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 386.4432,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.8427,
+          "reflectance_recomputed": 0.84265,
+          "reflectance_residual": 4.993e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 208.2561,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.8103,
+          "reflectance_recomputed": 0.810345,
+          "reflectance_residual": 4.462e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 324.5834,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.8534,
+          "reflectance_recomputed": 0.853414,
+          "reflectance_residual": 1.359e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 433.5887,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.8772,
+          "reflectance_recomputed": 0.877193,
+          "reflectance_residual": 6.99e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 322.29,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.7523,
+          "reflectance_recomputed": 0.752347,
+          "reflectance_residual": 4.745e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 488.6087,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.7564,
+          "reflectance_recomputed": 0.756382,
+          "reflectance_residual": 1.777e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 384.6316,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7469,
+          "reflectance_recomputed": 0.746949,
+          "reflectance_residual": 4.885e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 96.0878,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.7891,
+          "reflectance_recomputed": 0.789137,
+          "reflectance_residual": 3.727e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.0602,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8077,
+          "reflectance_recomputed": 0.807691,
+          "reflectance_residual": 8.98e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 17.4715,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.8261,
+          "reflectance_recomputed": 0.826087,
+          "reflectance_residual": 1.263e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1597.4156,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.8526,
+          "reflectance_recomputed": 0.85259,
+          "reflectance_residual": 1.041e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 470.45,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8419,
+          "reflectance_recomputed": 0.841897,
+          "reflectance_residual": 2.89e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 108.2192,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.894,
+          "reflectance_recomputed": 0.89404,
+          "reflectance_residual": 3.958e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 62.2816,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8861,
+          "reflectance_recomputed": 0.886076,
+          "reflectance_residual": 2.362e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 89.0697,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.8409,
+          "reflectance_recomputed": 0.840909,
+          "reflectance_residual": 9.28e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 49.6295,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8036,
+          "reflectance_recomputed": 0.803571,
+          "reflectance_residual": 2.915e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Red Clay": {
+      "material_id": "red_clay",
+      "display_name": "Red Clay",
+      "canonical_name": "Red clay (Fe-bearing)",
+      "chemical_formula": null,
+      "material_class": "phyllosilicate_clay",
+      "aliases": [
+        "Red illite",
+        "French red clay"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 11.3198,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.3784,
+          "reflectance_recomputed": 0.378379,
+          "reflectance_residual": 2.144e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 35.1386,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.259,
+          "reflectance_recomputed": 0.258992,
+          "reflectance_residual": 7.5e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 93.9997,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.205,
+          "reflectance_recomputed": 0.204969,
+          "reflectance_residual": 3.106e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 56.6387,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.2103,
+          "reflectance_recomputed": 0.210345,
+          "reflectance_residual": 4.47e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 90.1196,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.2369,
+          "reflectance_recomputed": 0.236948,
+          "reflectance_residual": 4.77e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 126.4634,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.2558,
+          "reflectance_recomputed": 0.255848,
+          "reflectance_residual": 4.802e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 101.0613,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.2359,
+          "reflectance_recomputed": 0.235916,
+          "reflectance_residual": 1.552e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 199.3071,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.3085,
+          "reflectance_recomputed": 0.308534,
+          "reflectance_residual": 3.39e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 196.9246,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.3824,
+          "reflectance_recomputed": 0.382425,
+          "reflectance_residual": 2.465e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 50.5725,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.4153,
+          "reflectance_recomputed": 0.415335,
+          "reflectance_residual": 3.519e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 5.1687,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.3462,
+          "reflectance_recomputed": 0.346156,
+          "reflectance_residual": 4.384e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 7.3564,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.3478,
+          "reflectance_recomputed": 0.347825,
+          "reflectance_residual": 2.526e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 845.6279,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.4513,
+          "reflectance_recomputed": 0.451337,
+          "reflectance_residual": 3.749e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 265.0423,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.4743,
+          "reflectance_recomputed": 0.474308,
+          "reflectance_residual": 8.31e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 63.3283,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.5232,
+          "reflectance_recomputed": 0.523179,
+          "reflectance_residual": 2.106e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 34.6997,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.4937,
+          "reflectance_recomputed": 0.49367,
+          "reflectance_residual": 2.956e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 44.936,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.4242,
+          "reflectance_recomputed": 0.424242,
+          "reflectance_residual": 4.191e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 25.3662,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.4107,
+          "reflectance_recomputed": 0.410714,
+          "reflectance_residual": 1.417e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Sodium Bicarbonate": {
+      "material_id": "sodium_bicarbonate",
+      "display_name": "Sodium Bicarbonate",
+      "canonical_name": "Nahcolite",
+      "chemical_formula": "NaHCO3",
+      "material_class": "carbonate",
+      "aliases": [
+        "Baking soda",
+        "Sodium hydrogen carbonate"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 25.0653,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8378,
+          "reflectance_recomputed": 0.837839,
+          "reflectance_residual": 3.919e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 133.7221,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.9856,
+          "reflectance_recomputed": 0.985612,
+          "reflectance_residual": 1.186e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 457.6551,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.9979,
+          "reflectance_recomputed": 0.99793,
+          "reflectance_residual": 2.959e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 233.5257,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.9103,
+          "reflectance_recomputed": 0.910345,
+          "reflectance_residual": 4.473e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 365.8246,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.9618,
+          "reflectance_recomputed": 0.961847,
+          "reflectance_residual": 4.736e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 483.4514,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.9781,
+          "reflectance_recomputed": 0.97807,
+          "reflectance_residual": 2.979e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 357.9882,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.8357,
+          "reflectance_recomputed": 0.835681,
+          "reflectance_residual": 1.937e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 512.6387,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.7936,
+          "reflectance_recomputed": 0.793581,
+          "reflectance_residual": 1.855e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 377.5087,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7331,
+          "reflectance_recomputed": 0.733116,
+          "reflectance_residual": 1.628e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 100.756,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.8275,
+          "reflectance_recomputed": 0.827476,
+          "reflectance_residual": 2.435e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.6345,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8462,
+          "reflectance_recomputed": 0.846153,
+          "reflectance_residual": 4.718e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 17.4715,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.8261,
+          "reflectance_recomputed": 0.826087,
+          "reflectance_residual": 1.263e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1722.1804,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.9192,
+          "reflectance_recomputed": 0.91918,
+          "reflectance_residual": 1.962e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 488.1195,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8735,
+          "reflectance_recomputed": 0.873518,
+          "reflectance_residual": 1.769e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 111.4257,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.9205,
+          "reflectance_recomputed": 0.92053,
+          "reflectance_residual": 2.969e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 64.061,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.9114,
+          "reflectance_recomputed": 0.911392,
+          "reflectance_residual": 8.21e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 96.2915,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.9091,
+          "reflectance_recomputed": 0.90909,
+          "reflectance_residual": 9.52e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 52.9381,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8571,
+          "reflectance_recomputed": 0.857142,
+          "reflectance_residual": 4.17e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Sulfur Powder": {
+      "material_id": "sulfur_powder",
+      "display_name": "Sulfur Powder",
+      "canonical_name": "Sulfur",
+      "chemical_formula": "S8",
+      "material_class": "native_element",
+      "aliases": [
+        "Brimstone",
+        "Sulphur"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 21.0225,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.7027,
+          "reflectance_recomputed": 0.702704,
+          "reflectance_residual": 3.52e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 65.3969,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.482,
+          "reflectance_recomputed": 0.482014,
+          "reflectance_residual": 1.427e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 240.2214,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.5238,
+          "reflectance_recomputed": 0.523809,
+          "reflectance_residual": 9.4e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 181.2438,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.7034,
+          "reflectance_recomputed": 0.703448,
+          "reflectance_residual": 4.806e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 308.5452,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.8112,
+          "reflectance_recomputed": 0.811245,
+          "reflectance_residual": 4.502e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 415.5225,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.8406,
+          "reflectance_recomputed": 0.840643,
+          "reflectance_residual": 4.33e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 337.8765,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.7887,
+          "reflectance_recomputed": 0.788732,
+          "reflectance_residual": 3.227e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 489.5511,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.7578,
+          "reflectance_recomputed": 0.757841,
+          "reflectance_residual": 4.11e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 373.7378,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7258,
+          "reflectance_recomputed": 0.725793,
+          "reflectance_residual": 6.75e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 92.1976,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.7572,
+          "reflectance_recomputed": 0.757188,
+          "reflectance_residual": 1.166e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 11.4859,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.7692,
+          "reflectance_recomputed": 0.769229,
+          "reflectance_residual": 2.922e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 15.6324,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.7391,
+          "reflectance_recomputed": 0.739131,
+          "reflectance_residual": 3.105e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1545.1637,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.8247,
+          "reflectance_recomputed": 0.824701,
+          "reflectance_residual": 1.15e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 453.8849,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8123,
+          "reflectance_recomputed": 0.812253,
+          "reflectance_residual": 4.708e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 97.7981,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.8079,
+          "reflectance_recomputed": 0.807947,
+          "reflectance_residual": 4.695e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 57.8329,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8228,
+          "reflectance_recomputed": 0.822785,
+          "reflectance_residual": 1.499e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 88.2672,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.8333,
+          "reflectance_recomputed": 0.833333,
+          "reflectance_residual": 3.286e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 50.7324,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8214,
+          "reflectance_recomputed": 0.821428,
+          "reflectance_residual": 2.834e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    },
+    "Talc": {
+      "material_id": "talc",
+      "display_name": "Talc",
+      "canonical_name": "Talc",
+      "chemical_formula": "Mg3Si4O10(OH)2",
+      "material_class": "phyllosilicate",
+      "aliases": [
+        "Talcum",
+        "Soapstone powder"
+      ],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 29.1081,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.973,
+          "reflectance_recomputed": 0.972975,
+          "reflectance_residual": 2.513e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 145.435,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 1.0719,
+          "reflectance_recomputed": 1.071943,
+          "reflectance_residual": 4.293e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 476.6449,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 1.0393,
+          "reflectance_recomputed": 1.039337,
+          "reflectance_residual": 3.737e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 263.1521,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 1.0276,
+          "reflectance_recomputed": 1.027586,
+          "reflectance_residual": 1.386e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 397.1374,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 1.0442,
+          "reflectance_recomputed": 1.044177,
+          "reflectance_residual": 2.32e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 515.2478,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 1.0424,
+          "reflectance_recomputed": 1.042397,
+          "reflectance_residual": 2.51e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 366.0329,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.8545,
+          "reflectance_recomputed": 0.85446,
+          "reflectance_residual": 3.998e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 555.9868,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.8607,
+          "reflectance_recomputed": 0.860686,
+          "reflectance_residual": 1.427e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 439.938,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.8544,
+          "reflectance_recomputed": 0.854353,
+          "reflectance_residual": 4.694e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 104.6462,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.8594,
+          "reflectance_recomputed": 0.859425,
+          "reflectance_residual": 2.457e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 13.2088,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8846,
+          "reflectance_recomputed": 0.884615,
+          "reflectance_residual": 1.461e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 19.3106,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.913,
+          "reflectance_recomputed": 0.913044,
+          "reflectance_residual": 4.368e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1858.6752,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.992,
+          "reflectance_recomputed": 0.992032,
+          "reflectance_residual": 3.183e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 522.3541,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.9348,
+          "reflectance_recomputed": 0.934782,
+          "reflectance_residual": 1.754e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 121.0452,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 1.0,
+          "reflectance_recomputed": 1.0,
+          "reflectance_residual": 0.0,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 68.5097,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.9747,
+          "reflectance_recomputed": 0.974683,
+          "reflectance_residual": 1.683e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 101.9085,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.9621,
+          "reflectance_recomputed": 0.962121,
+          "reflectance_residual": 2.072e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 57.3496,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.9286,
+          "reflectance_recomputed": 0.92857,
+          "reflectance_residual": 2.996e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": [
+        "REFLECTANCE_ABOVE_ONE"
+      ]
+    },
+    "Tartaric Acid": {
+      "material_id": "tartaric_acid",
+      "display_name": "Tartaric Acid",
+      "canonical_name": "Tartaric acid",
+      "chemical_formula": "C4H6O6",
+      "material_class": "organic_acid",
+      "aliases": [],
+      "measurement_type": "MEASURED",
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "acquisition_settings": {
+        "gain": "UNKNOWN",
+        "integration_cycles": "UNKNOWN",
+        "measurement_mode": "UNKNOWN",
+        "led_current": "UNKNOWN",
+        "illumination": "UNKNOWN_SINGLE_SOURCE",
+        "geometry": "UNKNOWN",
+        "distance_mm": "UNKNOWN",
+        "repeats": "UNKNOWN",
+        "note": "The historical session did not record acquisition settings. These are UNKNOWN, not defaults."
+      },
+      "channels": {
+        "A": {
+          "wavelength_nm": 410,
+          "raw_sample": 25.8738,
+          "dark_reference": 0.0,
+          "white_reference": 29.9166,
+          "reflectance_as_supplied": 0.8649,
+          "reflectance_recomputed": 0.864864,
+          "reflectance_residual": 3.568e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "B": {
+          "wavelength_nm": 435,
+          "raw_sample": 130.7939,
+          "dark_reference": 0.0,
+          "white_reference": 135.6742,
+          "reflectance_as_supplied": 0.964,
+          "reflectance_recomputed": 0.964029,
+          "reflectance_residual": 2.927e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "C": {
+          "wavelength_nm": 460,
+          "raw_sample": 432.9683,
+          "dark_reference": 0.0,
+          "white_reference": 458.6046,
+          "reflectance_as_supplied": 0.9441,
+          "reflectance_recomputed": 0.944099,
+          "reflectance_residual": 6.6e-07,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "D": {
+          "wavelength_nm": 485,
+          "raw_sample": 241.368,
+          "dark_reference": 3.4855,
+          "white_reference": 256.1812,
+          "reflectance_as_supplied": 0.9414,
+          "reflectance_recomputed": 0.941379,
+          "reflectance_residual": 2.07e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "E": {
+          "wavelength_nm": 510,
+          "raw_sample": 365.8246,
+          "dark_reference": 0.0,
+          "white_reference": 380.3354,
+          "reflectance_as_supplied": 0.9618,
+          "reflectance_recomputed": 0.961847,
+          "reflectance_residual": 4.736e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "F": {
+          "wavelength_nm": 535,
+          "raw_sample": 473.3343,
+          "dark_reference": 0.0,
+          "white_reference": 494.2911,
+          "reflectance_as_supplied": 0.9576,
+          "reflectance_recomputed": 0.957602,
+          "reflectance_residual": 2.31e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "G": {
+          "wavelength_nm": 560,
+          "raw_sample": 357.4854,
+          "dark_reference": 0.0,
+          "white_reference": 428.3792,
+          "reflectance_as_supplied": 0.8345,
+          "reflectance_recomputed": 0.834507,
+          "reflectance_residual": 6.9e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "H": {
+          "wavelength_nm": 585,
+          "raw_sample": 533.8416,
+          "dark_reference": 0.0,
+          "white_reference": 645.9812,
+          "reflectance_as_supplied": 0.8264,
+          "reflectance_recomputed": 0.826404,
+          "reflectance_residual": 4.24e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "I": {
+          "wavelength_nm": 610,
+          "raw_sample": 409.7709,
+          "dark_reference": 0.0,
+          "white_reference": 514.937,
+          "reflectance_as_supplied": 0.7958,
+          "reflectance_recomputed": 0.795769,
+          "reflectance_residual": 3.1e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "J": {
+          "wavelength_nm": 645,
+          "raw_sample": 100.756,
+          "dark_reference": 0.0,
+          "white_reference": 121.7631,
+          "reflectance_as_supplied": 0.8275,
+          "reflectance_recomputed": 0.827476,
+          "reflectance_residual": 2.435e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "K": {
+          "wavelength_nm": 680,
+          "raw_sample": 12.6345,
+          "dark_reference": 0.0,
+          "white_reference": 14.9317,
+          "reflectance_as_supplied": 0.8462,
+          "reflectance_recomputed": 0.846153,
+          "reflectance_residual": 4.718e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "L": {
+          "wavelength_nm": 705,
+          "raw_sample": 18.3911,
+          "dark_reference": 0.0,
+          "white_reference": 21.1497,
+          "reflectance_as_supplied": 0.8696,
+          "reflectance_recomputed": 0.869568,
+          "reflectance_residual": 3.211e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "R": {
+          "wavelength_nm": 730,
+          "raw_sample": 1731.7776,
+          "dark_reference": 0.0,
+          "white_reference": 1873.6044,
+          "reflectance_as_supplied": 0.9243,
+          "reflectance_recomputed": 0.924303,
+          "reflectance_residual": 2.7e-06,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "S": {
+          "wavelength_nm": 760,
+          "raw_sample": 478.1804,
+          "dark_reference": 0.0,
+          "white_reference": 558.7975,
+          "reflectance_as_supplied": 0.8557,
+          "reflectance_recomputed": 0.855731,
+          "reflectance_residual": 3.11e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "T": {
+          "wavelength_nm": 810,
+          "raw_sample": 109.0208,
+          "dark_reference": 0.0,
+          "white_reference": 121.0452,
+          "reflectance_as_supplied": 0.9007,
+          "reflectance_recomputed": 0.900662,
+          "reflectance_residual": 3.81e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "U": {
+          "wavelength_nm": 860,
+          "raw_sample": 62.2816,
+          "dark_reference": 0.0,
+          "white_reference": 70.2892,
+          "reflectance_as_supplied": 0.8861,
+          "reflectance_recomputed": 0.886076,
+          "reflectance_residual": 2.362e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "V": {
+          "wavelength_nm": 900,
+          "raw_sample": 95.4891,
+          "dark_reference": 0.0,
+          "white_reference": 105.9207,
+          "reflectance_as_supplied": 0.9015,
+          "reflectance_recomputed": 0.901515,
+          "reflectance_residual": 1.5e-05,
+          "dark_provenance": "STANDALONE_DARK_TABLE"
+        },
+        "W": {
+          "wavelength_nm": 940,
+          "raw_sample": 52.9381,
+          "dark_reference": 0.0,
+          "white_reference": 61.7612,
+          "reflectance_as_supplied": 0.8571,
+          "reflectance_recomputed": 0.857142,
+          "reflectance_residual": 4.17e-05,
+          "dark_provenance": "INFERRED_FROM_MATERIAL_TABLES"
+        }
+      },
+      "quality_flags": []
+    }
+  }
+}

@@ -1,10 +1,19 @@
-﻿"""
+"""
 Run every suite and print one summary.
 
 Each suite is a standalone program that must run in its OWN process:
-firmware/ESP32 and firmware/BD both contain a module called `config`, and
-the ESP32 firmware is reloaded from scratch by several suites. Sharing one
-interpreter would let one suite's imports decide another suite's results.
+ESP32/ and BD/ both contain a module called `config`, and the ESP32
+firmware is reloaded from scratch several times within one suite.
+Sharing an interpreter would let one suite's imports decide another
+suite's results.
+
+Five suites, one per question:
+
+    architecture  are the boundaries still where they are supposed to be
+    esp32         does the hardware controller behave
+    science       is the mathematics right
+    data          is the scientific record sound
+    pc            does the orchestration hold the port and the order
 
     py run_all.py            every suite
     py run_all.py esp32      only suites whose name contains "esp32"
@@ -19,24 +28,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# In dependency order: the fast, foundational ones first, so a broken
-# protocol is reported before a slow end-to-end run.
+# Architecture first: if a boundary has moved, every later failure is
+# likely to be a symptom of that rather than a fault of its own.
 SUITES = (
-    ("test_architecture.py", "layer boundaries and metric dependence"),
-    ("test_st3215.py", "ST3215 protocol and verified movement"),
-    ("test_servo_manager.py", "servo lifecycle and the movement gate"),
-    ("test_carousel.py", "carousel geometry and planning"),
-    ("test_esp32.py", "sensor lifecycle and command protocol"),
-    ("test_pc.py", "client, archive and data layout"),
-    ("test_integration.py", "ESP32 -> PC -> BD end to end"),
-    ("test_science.py", "formulas and protected data"),
-    ("test_calibration.py", "calibration build, validate, activate"),
-    ("test_inference.py", "feature space, registry, mixture"),
-    ("test_evidence.py", "representations, reliability, distances"),
-    ("test_decision.py", "decision levels, learning history, leakage"),
-    ("test_db1.py", "DB1 integrity and determinism"),
-    ("test_science_plan.py", "Mars Yard, requirements, plan, four sites"),
-    ("test_science_exploration.py", "mission analysis, limits, readiness"),
+    ("test_architecture.py", "domain boundaries and obsolete architecture"),
+    ("test_esp32.py", "protocol, drivers, carousel, on fake hardware"),
+    ("test_science.py", "formulas, comparison, Decision Model"),
+    ("test_data.py", "record model, RAW immutability, provenance"),
+    ("test_pc.py", "serial lifecycle, error kinds, measurement order"),
 )
 
 

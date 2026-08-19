@@ -11,7 +11,13 @@
 # reaches the device.
 
 FIRMWARE_NAME = "freya-science-module"
-FIRMWARE_VERSION = "5.0.0"
+FIRMWARE_VERSION = "6.0.0"
+
+# Bumped when the COMMAND SURFACE changes - a command added, removed or
+# renamed, or a response field the PC depends on. 2 is the flat
+# firmware with connect_servo/disconnect_servo; 1 was the package
+# layout with select_servo and the capability table.
+PROTOCOL_VERSION = 2
 
 # Bumped when the shape of an acquisition response changes. 2 is the
 # WHITE/UV/IR one-shot protocol with repeats; 1 was the single
@@ -85,8 +91,13 @@ REPEAT_DELAY_MS = 60
 # Upper bound accepted from the PC, as a runaway guard.
 MAX_REPEATS = 25
 
-# Seconds to wait after boot before touching the I2C bus, so the 3.3 V
+# Seconds after reset before the I2C bus may be touched, so the 3.3 V
 # rail and the AS7265x internal startup are finished.
+#
+# This does NOT delay the protocol. The board serves ping and
+# get_status immediately; whatever remains of this wait is paid by the
+# first command that actually needs the sensor. See
+# sensor.py::SensorRuntime._await_power_on.
 STARTUP_DELAY_SECONDS = 3
 
 # Bounded sensor bring-up. A single failed attempt at boot must never
@@ -99,8 +110,24 @@ SENSOR_INIT_RETRY_MS = 400
 I2C_SCAN_ATTEMPTS = 3
 I2C_SCAN_RETRY_MS = 150
 
-# Longest wait for one virtual-register transaction.
+# Longest wait for ONE virtual-register transaction.
 VIRTUAL_REGISTER_TIMEOUT_MS = 1071
+
+# Longest an entire sensor operation may take, however many
+# transactions it is made of.
+#
+# ONE BOUNDED WAIT DOES NOT BOUND THEIR SUM. Bringing the AS7265x up
+# runs about twenty virtual-register transactions, each containing two
+# bounded waits, and the whole thing is retried SENSOR_INIT_ATTEMPTS
+# times. A sensor that answers on the I2C bus but never sets its ready
+# bit makes every one of those waits run to full length: measured on
+# hardware, that took the firmware past three minutes without
+# answering, which the PC could only read as a dead board.
+#
+# 8 seconds is generous for a healthy sensor - a good bring-up takes
+# well under one - and short enough that a sick one is REPORTED rather
+# than waited on.
+SENSOR_OPERATION_BUDGET_MS = 8000
 
 # Milliseconds between polls of STATUS / DATA_READY.
 POLLING_DELAY_MS = 5
@@ -112,9 +139,9 @@ ILLUMINATION_SETTLE_MS = 300
 # ==========================================
 # CAROUSEL GEOMETRY (physical facts, never calibrated away)
 # ==========================================
-# What the mechanism IS, independent of what drives it. Both servo
-# backends read these; neither may contradict them, and nothing here is
-# ever "tuned".
+# What the mechanism IS, independent of what drives it. The servo and
+# the carousel both read these; neither may contradict them, and
+# nothing here is ever "tuned".
 CAROUSEL_SLOT_COUNT = 4
 
 # 360 / 4 = 90 degrees between neighbouring slot centres.
@@ -128,16 +155,12 @@ CAROUSEL_SLOT_GEOMETRY_DEG = 360.0 / CAROUSEL_SLOT_COUNT
 CAROUSEL_SCAN_LOAD_OFFSET = 2
 CAROUSEL_HALF_TURN_DEG = 180.0
 
-# Historical name for the slot spacing, kept because reports use it.
-SLOT_STEP_DEG = CAROUSEL_SLOT_GEOMETRY_DEG
-
 # Which servo direction advances the slot number at a fixed position,
 # i.e. which way to turn for Slot 1 -> Slot 2 -> Slot 3. Software cannot
 # know how the carousel is mounted: verify it once with a single
 # whole-slot move, and flip this if the slot numbers run backwards.
 #
-# This is a property of the MECHANISM, not of the actuator, so it is
-# shared by both backends.
+# This is a property of the MECHANISM, not of the actuator.
 CAROUSEL_FORWARD_DIRECTION = "cw"
 
 # Fine adjustment exists for small mechanical corrections only.
@@ -170,11 +193,9 @@ HOME_SETTLE_TIME = 0.3
 # through option [0] Carousel Setup, and after every reboot it is
 # disconnected again.
 #
-# An earlier revision also supported an MG995 continuous-rotation PWM
-# servo, driven open-loop on timed pulses. It has been removed. Every
-# movement is now commanded in encoder counts and verified by reading
-# the encoder back, so none of the timing calibration that backend
-# needed applies any more.
+# Every movement is commanded in encoder counts and verified by reading
+# the encoder back, so nothing in the ST3215 section below is a timing
+# calibration.
 
 # ==========================================
 # ST3215 (Waveshare serial bus servo, UART2)
@@ -182,9 +203,37 @@ HOME_SETTLE_TIME = 0.3
 # The ST3215 is reached over UART2 through a Waveshare Serial Bus Servo
 # Driver Board. The link from this PCB is three wires and nothing else:
 #
-#     ESP32 GPIO17 / TX2 ---> driver board TX
-#     ESP32 GPIO16 / RX2 ---> driver board RX
-#     ESP32 GND          ---> driver board GND
+#     ESP32 GPIO16 ---> driver board RX      (this board TRANSMITS here)
+#     ESP32 GPIO17 <--- driver board TX      (this board RECEIVES here)
+#     ESP32 GND    <--> driver board GND
+#
+# MEASURED ON THE FITTED HARDWARE 2026-08-19, three independent ways.
+#
+# 1. Line states, with the ESP32's own pulls and nothing transmitting:
+#
+#        GPIO16   follows the pull both ways   -> FLOATING
+#        GPIO17   high against a pull-down     -> DRIVEN by something
+#
+#    An adapter INPUT is high impedance and cannot hold a line, so a
+#    floating pin is the one wired to the adapter's RX. An adapter
+#    OUTPUT idles high, so the driven pin is the one wired to its TX.
+#    That alone fixes the direction: transmit on 16, receive on 17.
+#
+# 2. With the servo bus powered, orientation TX 16 / RX 17 returned a
+#    clean 6-byte echo of our own frame at every one of eight baud
+#    rates. A transparent half-duplex adapter echoes at any baud
+#    because it converts levels rather than reframing; the opposite
+#    orientation never produced a clean echo.
+#
+# 3. A genuine status packet was captured from the servo:
+#
+#        FF FF 01 02 00 FC     ID 1, error byte 0x00, checksum valid
+#
+#    so the servo exists, answers to ID 1, and runs at 1 Mbps.
+#
+# The previous assignment had these the other way round, which is why
+# the bus scan reported ECHO_ONLY and sent everyone looking for a
+# power fault that was not there.
 #
 # The servo is powered from an EXTERNAL supply at the driver board. No
 # servo current flows through this PCB, and this firmware has no
@@ -197,8 +246,11 @@ HOME_SETTLE_TIME = 0.3
 # verified by reading the encoder back.
 
 ST3215_UART_ID = 2
-ST3215_TX_PIN = 17
-ST3215_RX_PIN = 16
+
+# THIS BOARD TRANSMITS ON 16 AND RECEIVES ON 17. See the wiring note
+# above for the three measurements that establish it.
+ST3215_TX_PIN = 16
+ST3215_RX_PIN = 17
 
 # 1 Mbps is the ST3215 factory baud rate (memory table address 0x06, code
 # 0). Change it only if the servo itself has been reconfigured.

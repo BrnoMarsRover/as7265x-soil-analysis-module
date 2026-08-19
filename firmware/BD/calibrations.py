@@ -2,12 +2,12 @@
 Calibration storage: ONE library file holding every calibration made.
 
 PERSISTENCE ONLY. Building a calibration document and deciding whether it
-is scientifically acceptable both moved to Measurements/calibration.py when
+is scientifically acceptable both moved to Science/calibration.py when
 the layers were separated (see Documentation/ARCHITECTURE.md).
 
 That split has one consequence worth stating plainly. `activate()` must
 not promote a calibration that failed validation — but validation is
-science, and BD -> Measurements is the forbidden dependency edge. So the
+science, and BD -> Science is the forbidden dependency edge. So the
 validator is INJECTED: the caller supplies it. BD still refuses to
 activate anything the validator rejects, and BD still imports nothing
 scientific.
@@ -38,7 +38,7 @@ re-derived without any other file.
 A stored calibration is never rewritten and never deleted by this module.
 Saving appends; activating changes one field.
 
-Layer rule: BD must never import Measurements.
+Layer rule: BD must never import Science.
 """
 
 import json
@@ -97,7 +97,7 @@ class FullCalibration:
 
     A RECORD MODEL. Everything here is field access over a stored
     document — no thresholds, no judgements. Whether the numbers are
-    scientifically acceptable is Measurements/calibration.py.
+    scientifically acceptable is Science/calibration.py.
     """
 
     kind = "FULL"
@@ -415,7 +415,7 @@ class CalibrationStore:
 
         `validator` is a callable taking the calibration document and
         returning {"status": PASS|WARNING|FAIL, ...} — normally
-        Measurements.calibration.validate_calibration. It is required, not
+        Science.calibration.validate_calibration. It is required, not
         optional: a calibration that failed its checks must never become
         active, and BD cannot make that judgement itself without importing
         the science layer.

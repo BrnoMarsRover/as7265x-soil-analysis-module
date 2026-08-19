@@ -2,7 +2,7 @@
 
 ERC 2026, Science Task, Scientific Exploration sub-task.
 
-`Measurements/` answers "what did the instrument measure?". `DecisionModel/`
+`Science/` answers "what did the instrument measure?". `Science/`
 answers "what does this one measurement most defensibly mean?". Neither
 knows there is a competition. **`Science/` is the layer that knows**: it
 holds the pre-declared hypothesis, the four planned sites, the mission
@@ -24,7 +24,7 @@ requirement registry.
                            │
                            ▼
 ┌─────────────────────────────────────────────┐
-│          PHASE 1 — MEASUREMENT              │   Measurements/
+│          PHASE 1 — MEASUREMENT              │   Science/
 │                                             │   (already existed)
 │ Sensor acquisition                          │
 │ Raw 18/54 channels                          │
@@ -38,7 +38,7 @@ requirement registry.
                        │  EvidencePackage
                        ▼
 ┌─────────────────────────────────────────────┐
-│        PHASE 2 — DECISION MODEL             │   DecisionModel/
+│        PHASE 2 — DECISION MODEL             │   Science/
 │                                             │   (already existed)
 │ DB1 measured legacy   [READ ONLY]           │
 │ DB2 full measured     [READ ONLY]           │
@@ -88,8 +88,8 @@ firmware/
 ├── ESP32/          acquire      MicroPython, flat on the device
 ├── PC/             orchestrate  operator UI, workflow, transport
 ├── BD/             remember     channels, databases, calibrations, samples
-├── Measurements/   understand   deterministic maths -> EvidencePackage
-├── DecisionModel/  interpret    one measurement -> Decision
+├── Science/   understand   deterministic maths -> EvidencePackage
+├── Science/  interpret    one measurement -> Decision
 ├── Science/        the mission  plan, sites, run, analysis, requirements
 ├── Tests/          verify       runs without a board
 └── research/       investigate  dataset building, projection
@@ -99,12 +99,12 @@ Layer rule, enforced by `Tests/test_architecture.py` §2bb:
 
 ```text
 Science -> BD              allowed
-Science -> Measurements    allowed
-Science -> DecisionModel   allowed
+Science -> Science    allowed
+Science -> Science.decision   allowed
 
 BD -> Science              FORBIDDEN
-Measurements -> Science    FORBIDDEN
-DecisionModel -> Science   FORBIDDEN
+Science -> Science    FORBIDDEN
+Science.decision -> Science   FORBIDDEN
 ESP32 -> Science           FORBIDDEN
 Science -> PC / ESP32      FORBIDDEN
 ```
@@ -352,7 +352,7 @@ would delete science and hide the deletion.
  7.  reach_site / abandon_site (with a reason)
  8.  add_photograph
  9.  add_observation
-10.  measure -> Measurements -> DecisionModel
+10.  measure -> Science -> Science.decision
 11.  bind_measurement
 
 12. End traverse                     run.end_traverse()   <- 2.5 h starts

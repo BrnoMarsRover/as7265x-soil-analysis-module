@@ -6,10 +6,10 @@ spectrum**.
 
 ```text
 1. physical acquisition            ESP32/
-2. deterministic processing        Measurements/     -> EvidencePackage
+2. deterministic processing        Science/     -> EvidencePackage
 3. immutable measured references   BD/ DB1, DB2
 4. learning / experience           BD/ decision_learning.sqlite3
-5. decision model                  DecisionModel/    -> Decision
+5. decision model                  Science/    -> Decision
 6. explainable conclusion          PC/
 ```
 
@@ -30,11 +30,11 @@ and that almost nothing of layer 4 exists.
 | Material taxonomy: `material_id`, `canonical_name`, `chemical_formula`, `material_class`, `aliases` | inside `DB1.json` / `DB3.json` | **already exists** — no new taxonomy invented, see §51 |
 | Calibration library and activation | `BD/calibrations.py` | reuse, schema extended |
 | Sample archive | `BD/samples.py` | reuse; learning DB references it by id + hash |
-| Repeat aggregation, CV, outlier rejection | `Measurements/aggregation.py` | reuse |
-| cosine / RMSE / MAE / SAM / Pearson | `Measurements/metrics.py` | reuse the primitives; ranking replaced |
-| QC checks | `Measurements/quality.py` | reuse the checks; **verdict semantics split** |
-| NNLS mixture | `Measurements/mixture.py` | reuse, demoted to secondary evidence |
-| Cross-database inference, consensus, confidence | `Measurements/inference.py` | **moves to `DecisionModel/`** |
+| Repeat aggregation, CV, outlier rejection | `Science/aggregation.py` | reuse |
+| cosine / RMSE / MAE / SAM / Pearson | `Science/metrics.py` | reuse the primitives; ranking replaced |
+| QC checks | `Science/quality.py` | reuse the checks; **verdict semantics split** |
+| NNLS mixture | `Science/mixture.py` | reuse, demoted to secondary evidence |
+| Cross-database inference, consensus, confidence | `Science/inference.py` | **moves to `Science/`** |
 
 ### What is wrong today, evidenced by the operator's own session
 
@@ -58,18 +58,18 @@ current pipeline:
   a winner that led by 0.001. §25.
 - **One prediction was simply wrong** (Iron(II) Sulfate measured, Kaolin
   reported) and the system had nowhere to record that fact. §27.
-- `Measurements/analysis.py` reaches a semantic conclusion
+- `Science/analysis.py` reaches a semantic conclusion
   (`best_match`, `automatic_conclusion`), which §10 forbids.
 
 ### Layer rule, unchanged and extended
 
 ```text
-BD -> Measurements       FORBIDDEN
-BD -> DecisionModel      FORBIDDEN
-Measurements -> BD       allowed
-DecisionModel -> BD      allowed
-DecisionModel -> Measurements  allowed
-Measurements -> DecisionModel  FORBIDDEN
+BD -> Science       FORBIDDEN
+BD -> Science.decision      FORBIDDEN
+Science -> BD       allowed
+Science.decision -> BD      allowed
+Science.decision -> Science  allowed
+Science -> Science.decision  FORBIDDEN
 ```
 
 `Tests/test_architecture.py` enforces all six.
@@ -93,7 +93,7 @@ Each stage lands with its own tests and leaves the tree green.
   Historical predictions are immutable; a new model version writes a new
   row. §5, §6, §46.
 
-### Stage A2 — Measurements: evidence, not conclusions
+### Stage A2 — Science: evidence, not conclusions
 
 - `preprocessing.py` — dark correction, reference normalization,
   unit-vector, SNV.
@@ -108,7 +108,7 @@ Each stage lands with its own tests and leaves the tree green.
   shrinkage Mahalanobis, kNN. §15.
 - `evidence.py` — assembles the versioned `EvidencePackage`. §42.
 
-### Stage A3 — DecisionModel: cold start
+### Stage A3 — Science.decision: cold start
 
 - `engine.py` — the hierarchical decision. §21, §22.
 - `evidence_fusion.py` — magnitude-aware fusion, never equal rank sums.
@@ -147,7 +147,7 @@ support group-aware validation. §33, §62.
 
 ```text
 firmware/
-├── Measurements/          deterministic mathematics -> EvidencePackage
+├── Science/          deterministic mathematics -> EvidencePackage
 │   ├── preprocessing.py       dark, normalize, unit, SNV, conditioning
 │   ├── spectral_features.py   wavelength-aware derivatives, energies,
 │   │                          cross-illumination ratios
@@ -156,7 +156,7 @@ firmware/
 │   ├── class_distance.py      centroid, standardized, shrunk Mahalanobis, kNN
 │   └── evidence.py            the versioned EvidencePackage
 │
-├── DecisionModel/         interpretation -> Decision
+├── Science/         interpretation -> Decision
 │   ├── engine.py              the hierarchy, four levels
 │   ├── evidence_fusion.py     magnitude-aware, one vote per family
 │   ├── hierarchy.py           family before material
@@ -186,7 +186,7 @@ firmware/
 | A prediction is never ground truth | `add_ground_truth` refuses any source naming a model | `test_decision` §1 |
 | A historical prediction is never rewritten | `add_prediction` refuses a duplicate (measurement, version) | `test_decision` §1 |
 | A raw measurement is never edited | observations are insert-only and hashed | `test_decision` §1 |
-| A decision never modifies a reference | no DecisionModel module names a database file | `test_decision` §8, `test_architecture` §2c |
+| A decision never modifies a reference | no Science.decision module names a database file | `test_decision` §8, `test_architecture` §2c |
 
 ### Old pipeline versus new, on the twelve verified measurements
 
@@ -245,13 +245,13 @@ wrong name. Both remaining problems have the same cause and the same fix:
 ### Running it
 
 ```bash
-py -m DecisionModel.training.import_seed
+py -m Science.decision.training.import_seed
 ```
 
 ```bash
-py -m DecisionModel.training.import_seed --apply
+py -m Science.decision.training.import_seed --apply
 ```
 
 ```bash
-py -m DecisionModel.training.validate --record --detail
+py -m Science.decision.training.validate --record --detail
 ```

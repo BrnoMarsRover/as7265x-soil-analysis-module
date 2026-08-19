@@ -1,6 +1,6 @@
 # Databases
 
-Three databases, one file each, in `firmware/BD/data/`.
+Three databases, one file each, in `firmware/BD/`.
 
 ```text
 DB1.json                  measured here, 18 bands, 23 materials   READY

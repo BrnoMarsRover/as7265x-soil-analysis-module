@@ -40,7 +40,7 @@ aggregate: "every VERIFIED carbonate observation under profile P,
 excluding session S, that model v4 got wrong". A JSON file answers that
 by loading everything into memory and looping.
 
-Layer rule: BD must never import Measurements or DecisionModel.
+Layer rule: BD must never import Science or Science.decision.
 """
 
 import hashlib
@@ -300,7 +300,7 @@ class DecisionLearningStore:
         if self.get_observation(measurement_id) is not None:
             raise LearningError(
                 "OBSERVATION_EXISTS",
-                "{} is already recorded. Measurements are immutable; a "
+                "{} is already recorded. Science are immutable; a "
                 "re-analysis is a new prediction, not an edit."
                 .format(measurement_id),
                 {"measurement_id": measurement_id},

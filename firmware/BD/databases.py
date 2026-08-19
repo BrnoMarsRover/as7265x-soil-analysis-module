@@ -3,15 +3,15 @@ Reference material databases and the legacy White/Dark references.
 
 PERSISTENCE ONLY. This module loads, validates the structure of, and
 reports on scientific data files. It computes no similarity, no
-reflectance and no ranking — those moved to Measurements/metrics/ and
-Measurements/analysis.py when the layers were separated (see Documentation/ARCHITECTURE.md).
+reflectance and no ranking — those moved to Science/metrics/ and
+Science/analysis.py when the layers were separated (see Documentation/ARCHITECTURE.md).
 
 Both files here are PROTECTED SCIENTIFIC DATA and are opened read-only.
 There is deliberately no save/write path in this module: normal operation
 must never be able to modify DB1 or the legacy references, and a bug
 cannot corrupt what it cannot open for writing.
 
-Layer rule: BD must never import Measurements.
+Layer rule: BD must never import Science.
 """
 
 import json
@@ -142,7 +142,7 @@ class References:
             "file": str(self.path),
             "calibration_id": self.calibration_id,
             "protected": True,
-            "database": str(config.DATABASE_FILE),
+            "database": str(config.DB1_FILE),
             "illuminations": ["white"],
             "white_channels": len(CHANNELS) - len(self.white_missing),
             "dark_channels": len(CHANNELS) - len(self.dark_missing),
@@ -232,7 +232,7 @@ class MaterialDatabase:
     Read-only library of reference material reflectance spectra.
 
     Loading and reporting only. Comparison against these spectra is
-    Measurements/metrics/, which is handed `self.materials` and returns a
+    Science/metrics/, which is handed `self.materials` and returns a
     ranking; this class deliberately has no opinion about similarity.
     """
 
@@ -243,7 +243,7 @@ class MaterialDatabase:
     protected = True
 
     def __init__(self, path=None, layer=None, protected=None):
-        self.path = path or config.DATABASE_FILE
+        self.path = path or config.DB1_FILE
 
         if layer is not None:
             self.layer = layer

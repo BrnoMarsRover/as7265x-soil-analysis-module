@@ -1,67 +1,123 @@
-﻿"""
-PC layer tests: Sample persistence and the JSON protocol client.
+"""
+PC: the serial lifecycle, the error kinds, and the workflow's ordering.
 
-The store is exercised in a temporary directory - never against
-firmware/PC/data - and the serial link is driven through a loopback
-that can answer, misbehave, or emit MicroPython console noise.
+The serial link is driven against a fake port that behaves the way the
+real one was MEASURED to behave on this bench - it resets on an open
+that asserts DTR/RTS, it echoes at the REPL, and it raises the two
+Windows errors that distinguish a missing port from a busy one.
+
+The two properties this suite exists for:
+
+    THE PORT IS RELEASED ON EVERY PATH OUT. A normal quit, a failed
+    ping, a timeout, a malformed frame and an exception all end with
+    the handle closed - because relying on interpreter exit is what
+    leaves COM4 held and turns the next run into a PORT_BUSY that has
+    nothing to do with another program.
+
+    A FAILURE IS NAMED, NOT GUESSED. "The module did not answer" has
+    seven causes needing seven different actions, and telling an
+    operator the port is busy when the port opened perfectly sends them
+    to Task Manager for a fault that is in the firmware.
+
+Run:  py test_pc.py
 """
 
 import json
 import sys
-import tempfile
-import time
-import types
-from pathlib import Path
 
 import support
-from support import Checks
 
 support.add_project_root()
 support.add_path("PC")
 
-import esp32_link                              # noqa: E402
-from Measurements import analysis as sample_analysis                         # noqa: E402
-from BD import samples as sample_store                            # noqa: E402
-from BD.samples import (                     # noqa: E402
-    STATE_EMPTY,
-    STATE_LOADED,
-    STATE_MEASURED,
-    STATE_READY_TO_LOAD,
-    SampleStore,
-    StorageError,
-    validate_sample_id,
-)
+import serial_link                                   # noqa: E402
+from serial_link import DeviceError, LinkError, SerialLink  # noqa: E402
+
+checks = support.Checks("pc")
 
 
-# ----------------------------------------------------------------------
-# loopback serial
-# ----------------------------------------------------------------------
+# ======================================================================
+# a fake port that behaves like the measured one
+# ======================================================================
 
-class FakeSerial:
-    """A serial port whose other end is a Python function."""
+class FakePort:
+    """
+    Stands in for serial.Serial, recording what was done to it.
 
-    def __init__(self, responder, noise=()):
-        self.responder = responder
-        self.pending = [line.encode("utf-8") + b"\n" for line in noise]
+    `script` is a list of byte strings to hand back, in order, so a
+    test can present a boot banner, a REPL echo or a damaged frame and
+    watch what the link makes of it.
+    """
+
+    def __init__(self, script=None, answer=True):
+        self.port = None
+        self.baudrate = None
+        self.bytesize = None
+        self.parity = None
+        self.stopbits = None
+        self.timeout = None
+        self.exclusive = None
+
+        self._dtr = True
+        self._rts = True
+
+        self.is_open = False
+        self.closed_count = 0
+        self.opened_count = 0
+
         self.written = []
-        self.timeout = 0.5
-        self.closed = False
+        self.buffer_resets = 0
+        self.script = list(script or [])
+        self.answer = answer
+
+        # Every DTR/RTS transition, so a test can prove the lines were
+        # low BEFORE the port opened rather than merely afterwards.
+        self.line_history = []
+
+    # -- the attributes pySerial exposes ------------------------------
+
+    @property
+    def dtr(self):
+        return self._dtr
+
+    @dtr.setter
+    def dtr(self, value):
+        self._dtr = value
+        self.line_history.append(("dtr", value, self.is_open))
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, value):
+        self._rts = value
+        self.line_history.append(("rts", value, self.is_open))
+
+    def open(self):
+        self.is_open = True
+        self.opened_count += 1
+
+    def close(self):
+        self.is_open = False
+        self.closed_count += 1
 
     def reset_input_buffer(self):
-        pass
-
-    def reset_output_buffer(self):
-        pass
+        self.script = []
+        self.buffer_resets += 1
 
     def write(self, data):
         self.written.append(data)
 
-        request = json.loads(data.decode("utf-8"))
-
-        for line in self.responder(request):
-            self.pending.append(
-                (line if isinstance(line, str) else json.dumps(line))
-                .encode("utf-8") + b"\n"
+        if self.answer:
+            request = json.loads(data.decode("utf-8"))
+            self.script.append(
+                (json.dumps({
+                    "request_id": request["request_id"],
+                    "ok": True,
+                    "cmd": request["cmd"],
+                    "data": {"pong": True, "echoed": request["cmd"]},
+                }) + "\n").encode("utf-8")
             )
 
         return len(data)
@@ -69,907 +125,691 @@ class FakeSerial:
     def flush(self):
         pass
 
-    def readline(self):
-        return self.pending.pop(0) if self.pending else b""
+    def read(self, count=1):
+        if not self.script:
+            return b""
 
-    def close(self):
-        self.closed = True
+        return self.script.pop(0)
 
 
-def install_fake_serial(responder, noise=()):
-    """Point esp32_link at a loopback instead of pyserial."""
-    port = FakeSerial(responder, noise)
+def link_with(port, **kwargs):
+    """A SerialLink whose open() produces the given fake port."""
+    link = SerialLink("COM_TEST", **kwargs)
 
-    module = types.ModuleType("serial")
-    module.EIGHTBITS = 8
-    module.PARITY_NONE = "N"
-    module.STOPBITS_ONE = 1
-    module.SerialException = OSError
-    module.Serial = lambda **kwargs: port
+    def fake_serial():
+        return port
 
-    esp32_link.serial = module
+    original = serial_link.serial.Serial
+    serial_link.serial.Serial = fake_serial
+
+    try:
+        link.open()
+
+    finally:
+        serial_link.serial.Serial = original
+
+    return link
+
+
+class FakeSerialModule:
+    """Only the pieces serial_link touches."""
+
+    EIGHTBITS = 8
+    PARITY_NONE = "N"
+    STOPBITS_ONE = 1
+
+    class SerialException(Exception):
+        pass
+
+    Serial = FakePort
+
+
+_real_serial = serial_link.serial
+serial_link.serial = FakeSerialModule
+
+
+# ======================================================================
+checks.section("opening the port does not reset the board")
+
+port = FakePort()
+link = link_with(port)
+
+checks.equal(port.port, "COM_TEST", "the port name is passed through")
+checks.equal(port.baudrate, 115200, "at 115200 baud")
+checks.ok(port.exclusive is True,
+          "exclusive access is requested, so a second client gets a clean "
+          "refusal from the OS instead of two programs interleaving bytes")
+
+before_open = [entry for entry in port.line_history if entry[2] is False]
+
+checks.ok(("dtr", False, False) in before_open,
+          "DTR is driven low BEFORE the port is opened")
+checks.ok(("rts", False, False) in before_open,
+          "and so is RTS - after the open would be too late, the reset "
+          "circuit has already fired")
+checks.ok(port.dtr is False and port.rts is False,
+          "and both stay low while the link is in use")
+
+link.close()
+checks.equal(port.closed_count, 1, "close() closes the port")
+
+link.close()
+checks.equal(port.closed_count, 1,
+             "and closing twice is harmless, which is what makes it safe "
+             "in a finally block")
+
+
+# ======================================================================
+checks.section("a hardware reset is deliberate and separate")
+
+port = FakePort()
+link = link_with(port)
+
+link.hard_reset()
+
+transitions = [entry for entry in port.line_history if entry[2] is True]
+rts_pulse = [entry for entry in transitions if entry[0] == "rts"]
+
+checks.ok(("rts", True, True) in transitions,
+          "hard_reset asserts RTS")
+checks.ok(rts_pulse and rts_pulse[-1] == ("rts", False, True),
+          "and releases it again - a pulse, not a hold")
+checks.ok(all(entry[1] is False for entry in transitions
+              if entry[0] == "dtr"),
+          "with DTR held low throughout, which is what boots the "
+          "APPLICATION rather than the serial bootloader")
+
+checks.equal(port.buffer_resets, 1,
+             "and the receive buffer is cleared AFTER the pulse - "
+             "everything already in it came from a board that has just "
+             "been reset")
+
+link.close()
+
+# The regression this guards. Observed on hardware: `device.py reset`
+# runs an mpremote command first, mpremote leaves a `>>>` prompt in the
+# OS receive buffer, and the ping that follows the reset read that
+# stale prompt and reported DEVICE_AT_REPL about a board that was at
+# that moment booting perfectly.
+stale = FakePort(script=[b">>> \r\n"])
+link = link_with(stale)
+
+link.hard_reset()
+
+online = link.wait_online(timeout=2.0)
+
+checks.ok(online,
+          "a `>>>` left in the buffer by a previous session does NOT "
+          "become a DEVICE_AT_REPL verdict about the board that was "
+          "just reset")
+
+link.close()
+
+
+# ======================================================================
+checks.section("failures are named")
+
+def failing_open(exception_text):
+    link = SerialLink("COM_TEST")
+
+    def raiser():
+        raise FakeSerialModule.SerialException(exception_text)
+
+    original = FakeSerialModule.Serial
+    FakeSerialModule.Serial = raiser
+
+    try:
+        link.open()
+
+        return None
+
+    except LinkError as error:
+        return error
+
+    finally:
+        FakeSerialModule.Serial = original
+
+
+error = failing_open(
+    "could not open port 'COM4': FileNotFoundError(2, 'The system cannot "
+    "find the file specified.', None, 2)")
+checks.equal(error.code, "PORT_NOT_FOUND",
+             "a missing port is PORT_NOT_FOUND")
+checks.ok("not plugged in" in error.message or "does not exist"
+          in error.message,
+          "and the message says to check the cable")
+
+error = failing_open(
+    "could not open port 'COM4': PermissionError(13, 'Access is denied.', "
+    "None, 5)")
+checks.equal(error.code, "PORT_BUSY", "a held port is PORT_BUSY")
+checks.ok("another program" in error.message,
+          "and the message says which kind of program to close")
+
+error = failing_open("something else entirely went wrong")
+checks.equal(error.code, "PORT_OPEN_FAILED",
+             "anything else is PORT_OPEN_FAILED, not guessed at")
+
+checks.ok(error.code != "PORT_BUSY",
+          "PORT_BUSY is never the fallback diagnosis")
+
+
+# ======================================================================
+checks.section("a port that opened is never blamed for the firmware")
+
+port = FakePort(answer=False)
+link = link_with(port, connect_timeout=0.3)
+
+try:
+    link.wait_online(timeout=0.3)
+    failed = None
+
+except LinkError as error:
+    failed = error
+
+checks.ok(failed is not None, "a silent board fails")
+checks.equal(failed.code, "PROTOCOL_TIMEOUT",
+             "as PROTOCOL_TIMEOUT - the port opened, so the port is not "
+             "the problem")
+checks.ok("opened" in failed.message,
+          "and the message says so explicitly")
+
+link.close()
+
+
+# ======================================================================
+checks.section("the REPL cannot fake a healthy link")
+
+# The measured signature: MicroPython echoes the request and evaluates
+# it, so the echo carries OUR request_id and no "ok".
+echo = FakePort(answer=False, script=[
+    b'{"request_id": "1", "cmd": "ping"}\r\n',
+    b"{'request_id': '1', 'cmd': 'ping'}\r\n>>> ",
+])
+link = link_with(echo, connect_timeout=0.5)
+
+try:
+    link.wait_online(timeout=0.5)
+    result = "ONLINE"
+
+except LinkError as error:
+    result = error.code
+
+checks.equal(result, "DEVICE_AT_REPL",
+             "an echoed request is not an answer - it carries our own "
+             "request_id and would otherwise report a healthy link to a "
+             "board that is not running the firmware")
+
+link.close()
+
+
+# ======================================================================
+checks.section("request and response matching")
+
+port = FakePort()
+link = link_with(port)
+
+data = link.request("ping")
+checks.equal(data["echoed"], "ping", "the answer to our request comes back")
+
+sent = json.loads(port.written[0].decode("utf-8"))
+checks.ok("request_id" in sent, "every request carries an id")
+checks.ok("timestamp" in sent, "and a timestamp")
+checks.ok(port.written[0].endswith(b"\n"), "and ends with a newline")
+
+first = json.loads(port.written[0].decode("utf-8"))["request_id"]
+link.request("get_status")
+second = json.loads(port.written[1].decode("utf-8"))["request_id"]
+
+checks.ok(first != second, "request ids advance")
+
+# An answer to a DIFFERENT request must not be accepted as ours.
+stray = FakePort(answer=False, script=[
+    b'{"request_id": "999", "ok": true, "data": {"stray": true}}\n',
+])
+link_stray = link_with(stray, timeout=0.3)
+
+try:
+    link_stray.request("ping", timeout=0.3)
+    outcome = "ACCEPTED"
+
+except LinkError as error:
+    outcome = error.code
+
+checks.equal(outcome, "PROTOCOL_TIMEOUT",
+             "a frame answering someone else's request is ignored")
+
+link_stray.close()
+
+# A device error is the firmware speaking, not a transport failure.
+refuse = FakePort(answer=False, script=[
+    b'{"request_id": "1", "ok": false, "cmd": "select_slot", '
+    b'"error": {"code": "SERVO_NOT_CONNECTED", "message": "no servo"}}\n',
+])
+link_refuse = link_with(refuse, timeout=0.5)
+
+try:
+    link_refuse.request("select_slot", timeout=0.5)
+    outcome = None
+
+except DeviceError as error:
+    outcome = error
+
+checks.ok(outcome is not None, "an ok:false answer raises")
+checks.equal(outcome.code, "SERVO_NOT_CONNECTED",
+             "carrying the firmware's own code")
+checks.ok(isinstance(outcome, LinkError),
+          "and it is a LinkError too, so one except clause can catch "
+          "everything the link can go wrong with")
+
+link_refuse.close()
+link.close()
+
+
+# ======================================================================
+checks.section("the buffer is not cleared before every request")
+
+source = open(serial_link.__file__, encoding="utf-8").read()
+
+calls = [
+    line for line in source.splitlines()
+    if "reset_input_buffer" in line and not line.strip().startswith("#")
+]
+
+checks.equal(len(calls), 1,
+             "the receive buffer is cleared in exactly ONE place - "
+             "clearing it as a matter of routine would throw away the "
+             "boot traceback that explains the previous failure")
+
+# And that place is hard_reset, where it is not routine at all:
+# everything buffered was produced by a board that no longer exists.
+reset_body = source[source.index("def hard_reset"):
+                    source.index("def wait_online")]
+
+checks.ok("reset_input_buffer" in reset_body,
+          "and that place is hard_reset - after a reset the buffer holds "
+          "the previous session's output by definition")
+
+request_body = source[source.index("    def request(self"):
+                      source.index("    def _read_response")]
+
+request_calls = [
+    line for line in request_body.splitlines()
+    if "reset_input_buffer" in line and not line.strip().startswith("#")
+]
+
+checks.equal(request_calls, [],
+             "NOT in request(), where request ids already separate the "
+             "answers")
+checks.ok("NO reset_input_buffer here" in request_body,
+          "and a comment there says why, at the one place it is tempting")
+
+
+# ======================================================================
+checks.section("the client releases the port on every path out")
+
+import rover_science_client as client   # noqa: E402
+
+ports = []
+
+
+def tracked_serial():
+    port = FakePort()
+    ports.append(port)
 
     return port
 
 
-def answer_ok(request, data=None):
-    return {
-        "request_id": request["request_id"],
-        "ok": True,
-        "cmd": request["cmd"],
-        "data": data if data is not None else {},
-    }
+FakeSerialModule.Serial = tracked_serial
+
+code = client.main(["--port", "COM_TEST", "--command", "ping"])
+checks.equal(code, 0, "a one-shot command succeeds")
+checks.equal(ports[-1].closed_count, 1, "and closes the port")
+
+FakeSerialModule.Serial = lambda: FakePort(answer=False)
+code = client.main(["--port", "COM_TEST", "--command", "ping"])
+checks.ok(code != 0, "a silent board makes the command fail")
+
+ports.clear()
+FakeSerialModule.Serial = tracked_serial
 
 
-def main_tests():
-    checks = Checks("PC controller")
+def exploding_interactive(link):
+    raise RuntimeError("something in the workflow blew up")
 
-    # ==================================================================
-    checks.section("1. Sample ID rules")
 
-    checks.equal(validate_sample_id("  S001 "), "S001", "IDs are trimmed")
-    checks.equal(validate_sample_id("ROCK-07"), "ROCK-07", "hyphens allowed")
-    checks.equal(validate_sample_id("a_1"), "a_1", "underscores allowed")
+original_interactive = client.interactive
+client.interactive = exploding_interactive
 
-    for bad in ("", "   ", "S 001", "S/001", "S:1", "..", "x" * 25):
-        checks.raises(
-            StorageError,
-            lambda value=bad: validate_sample_id(value),
-            "{!r} is refused".format(bad),
-        )
+try:
+    client.main(["--port", "COM_TEST"])
+    raised = False
 
-    checks.raises(
-        StorageError,
-        lambda: validate_sample_id(7),
-        "a non-string ID is refused",
-    )
+except RuntimeError:
+    raised = True
 
-    # ==================================================================
-    checks.section("2. Sample lifecycle")
+finally:
+    client.interactive = original_interactive
 
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        store = SampleStore(root / "samples.json")
+checks.ok(raised, "an unhandled workflow exception still propagates")
+checks.equal(ports[-1].closed_count, 1,
+             "and the port is STILL closed - the finally runs whatever "
+             "happened above it")
 
-        checks.ok(store.ready, "a fresh store is ready")
-        checks.equal(store.count(), 0, "and empty")
-        checks.ok(
-            not (root / "samples.json").exists(),
-            "nothing is written to disk until the first sample",
-        )
+ports.clear()
 
-        record = store.create("S001", 1, "2026-08-11T10:00:00+00:00",
-                              {"task": "regolith survey"})
 
-        checks.equal(record["state"], STATE_READY_TO_LOAD, "created as READY")
-        checks.equal(record["slot_id"], 1, "slot recorded")
-        checks.equal(
-            record["metadata"]["task"], "regolith survey", "metadata kept"
-        )
-        checks.ok(
-            record["metadata"]["hypothesis"] is None,
-            "an unanswered field stays null, never invented",
-        )
-        checks.equal(store.count(), 1, "the archive has one record")
-        checks.ok(
-            (root / "samples.json").exists(),
-            "written to the single archive file",
-        )
+def interrupting_interactive(link):
+    raise KeyboardInterrupt
 
-        store.set_state("S001", STATE_LOADED, "loaded_at", "2026-08-11T10:05")
 
-        checks.equal(
-            store.get_state("S001"), STATE_LOADED, "state advances to LOADED"
-        )
-        checks.equal(
-            store.get_sample("S001")["timestamps"]["loaded_at"],
-            "2026-08-11T10:05",
-            "the transition is stamped",
-        )
-        checks.equal(
-            store.get_sample("S001")["timestamps"]["created_at"],
-            "2026-08-11T10:00:00+00:00",
-            "the earlier timestamp survives",
-        )
+client.interactive = interrupting_interactive
 
-        # Completing the SAME record, as measurement does.
-        record = store.get_sample("S001")
-        record["state"] = STATE_MEASURED
-        record["measurement"] = {"raw": {"A": 1.0}}
-        record["analysis"] = {
-            "best_match": "Kaolin", "best_similarity": 97.5,
-            "status": "STRONG_REFERENCE_MATCH",
-        }
-        record["analysis_status"] = "OK"
-        record["timestamps"]["measured_at"] = "2026-08-11T10:09"
+try:
+    code = client.main(["--port", "COM_TEST"])
 
-        store.save(record)
+finally:
+    client.interactive = original_interactive
 
-        checks.equal(store.count(), 1, "no second sample was created")
+checks.equal(code, 0, "Ctrl+C is a normal exit")
+checks.equal(ports[-1].closed_count, 1, "and it closes the port too")
 
-        summary = store.find_summary("S001")
 
-        checks.equal(summary["state"], STATE_MEASURED, "summary state updated")
-        checks.equal(summary["best_match"], "Kaolin", "summary carries the match")
-        checks.close(
-            summary["best_similarity"], 97.5, "and the score"
-        )
-        checks.ok(summary["measured"], "summary marks it measured")
+# ======================================================================
+checks.section("the workflow is four slots and one science layer")
 
-        # Metadata may be corrected; science may not be touched by it.
-        store.update_metadata("S001", {"note": "dry, fine grained"})
-        reloaded = store.get_sample("S001")
+from workflow import measure, screen, session   # noqa: E402
 
-        checks.equal(
-            reloaded["metadata"]["note"], "dry, fine grained", "note added"
-        )
-        checks.equal(
-            reloaded["metadata"]["task"], "regolith survey",
-            "existing metadata survives the merge",
-        )
-        checks.equal(
-            reloaded["measurement"], {"raw": {"A": 1.0}},
-            "the measurement is untouched by a metadata edit",
-        )
+checks.equal(measure.SLOT_COUNT, 4, "the measurement screens know 4 slots")
+checks.equal(screen.SLOT_COUNT, 4, "and so does the main screen")
+checks.equal(session.SLOT_COUNT, 4, "and the session")
 
-        # MEASURED is not EMPTY: clearing the slot keeps the record.
-        active = store.active_samples()
+measure_source = open(measure.__file__, encoding="utf-8").read()
 
-        checks.equal(
-            active[1]["sample_id"], "S001",
-            "a measured sample still occupies its slot",
-        )
+save_at = measure_source.index("add_measurement")
+analyse_at = measure_source.index("analyse_measurement")
 
-        store.set_state("S001", STATE_EMPTY)
+checks.ok(save_at < analyse_at,
+          "RAW IS PERSISTED BEFORE SCIENCE IS CALLED - the whole point of "
+          "the ordering, checked in the source because it cannot be "
+          "checked any other way without hardware")
 
-        checks.equal(
-            store.active_samples(), {},
-            "clearing the slot frees it",
-        )
-        checks.ok(
-            store.get_sample("S001") is not None,
-            "but the scientific record is still there",
-        )
+checks.ok("ACQUISITION_FAILED" in measure_source,
+          "a failed acquisition is recorded as a failure")
+checks.ok("full of zeros" in measure_source,
+          "and the code says why it is not recorded as a spectrum of zeros")
 
-        # Rename and delete.
-        store.rename("S001", "S001B")
 
-        checks.ok(store.has_sample("S001B"), "renamed sample is archived")
-        checks.ok(not store.has_sample("S001"), "the old ID is gone")
-        checks.equal(
-            store.get_sample("S001B")["analysis"]["best_match"], "Kaolin",
-            "every scientific value survived the rename",
-        )
+# ======================================================================
+checks.section("the screens actually speak the store's API")
 
-        store.create("S002", 2, "2026-08-11T11:00:00+00:00")
+# THE CHECK THAT WAS MISSING.
+#
+# BD/samples.py was rewritten for the three-layer record model and the
+# screens were carried over from the monolith, still calling the flat
+# one. `store.save`, `store.ready`, `store.archive_path` and
+# `store.migrated_from` had all been deleted, and `active_samples()`
+# had changed what it RETURNS - none of which shows up until a screen
+# runs. The first thing the operator client did on connecting was
+# crash with AttributeError.
+#
+# Grepping the source for the names is not enough on its own, but it
+# is cheap and it catches the whole class.
 
-        checks.raises(
-            StorageError,
-            lambda: store.rename("S002", "S001B"),
-            "renaming onto an existing ID is refused",
-        )
+import ast   # noqa: E402
 
-        store.delete("S001B")
+from BD.acquisition_profiles import AcquisitionProfileStore  # noqa: E402
+from BD.calibrations import CalibrationStore                 # noqa: E402
+from BD.decision_learning import DecisionLearningStore       # noqa: E402
+from BD.registry import DatabaseRegistry                     # noqa: E402
+from BD.samples import SampleStore                           # noqa: E402
 
-        checks.equal(store.count(), 1, "delete removes the record")
-        checks.ok(
-            not store.has_sample("S001B"), "and it can no longer be found"
-        )
-        checks.raises(
-            StorageError,
-            lambda: store.delete("NOPE"),
-            "deleting an unknown sample is refused",
-        )
+WORKFLOW = support.PC_DIR / "workflow"
 
-    # ==================================================================
-    checks.section("3. a damaged index is never overwritten")
 
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        index = root / "samples.json"
-        index.write_text("{ this is not json", encoding="utf-8")
+def attributes_reached_for(name):
+    """Every `<...>.name.ATTR` the workflow reaches for."""
+    found = {}
 
-        store = SampleStore(index)
+    for path in sorted(WORKFLOW.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
 
-        checks.ok(not store.ready, "a corrupt index is not ready")
-        checks.ok(store.error is not None, "and says so")
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute):
+                continue
 
-        checks.raises(
-            StorageError,
-            lambda: store.create("S001", 1, "now"),
-            "writes are refused while the index looks damaged",
-        )
-        checks.equal(
-            index.read_text(encoding="utf-8"), "{ this is not json",
-            "the damaged file was NOT modified",
-        )
-
-    # ==================================================================
-    checks.section("4. atomic writes")
-
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        store = SampleStore(root / "samples.json")
-
-        store.create("S001", 1, "now")
-
-        leftovers = list(root.rglob("*.tmp"))
-
-        checks.equal(leftovers, [], "no temporary files are left behind")
-
-        payload = json.loads((root / "samples.json").read_text("utf-8"))
-
-        checks.equal(payload["version"], 2, "the archive records its version")
-        checks.equal(len(payload["samples"]), 1, "and one sample")
-
-        # A second store sees what the first wrote.
-        checks.equal(
-            SampleStore(root / "samples.json").count(), 1,
-            "the archive survives a restart of the program",
-        )
-
-    # ==================================================================
-    checks.section("5. the archive lives in BD, beside the science data")
-
-    checks.equal(
-        sample_store.ARCHIVE_PATH.name, "samples.json",
-        "the Sample archive is one named file",
-    )
-    checks.equal(
-        sample_store.ARCHIVE_PATH.parent.name, "data",
-        "inside BD/data, where all persistent science data lives",
-    )
-    checks.equal(
-        sample_store.ARCHIVE_PATH.name, "samples.json", "archive filename"
-    )
-    checks.ok(
-        sample_store.ARCHIVE_PATH.is_absolute(),
-        "the path is absolute, so the working directory does not matter",
-    )
-    # ARCHITECTURE.md gave each data class its own labelled home instead of three
-    # loose JSON files in one directory. DB1 and the legacy calibration are
-    # protected; only the sample archive is ever written.
-    # One file per thing, flat, self-describing. Each database carries
-    # its own metadata and provenance inside it - no side-car manifests.
-    data = sample_store.BD_DIR / "data"
-
-    for name in ("DB1.json", "DB2.json", "DB3.json",
-                 "calibration_legacy.json", "samples.json"):
-        checks.ok((data / name).exists(), "BD/data/{} exists".format(name))
-
-    # A flat set of named files, with ONE deliberate exception. Every
-    # reference database is a single self-describing JSON file, and that
-    # stays true. `decision_learning/` is not a reference database: it
-    # holds a binary SQLite file plus the human-readable seed that file
-    # is rebuilt from, and those two belong together rather than loose
-    # among the databases they must never be confused with.
-    #
-    # Dot-directories are excluded: .cache holds downloaded third-party
-    # archives, is gitignored, and is not part of the data layout.
-    checks.equal(
-        sorted(
-            p.name for p in data.iterdir()
-            if p.is_dir() and not p.name.startswith(".")
-        ),
-        ["decision_learning"],
-        "BD/data is flat apart from the decision learning directory",
-    )
-    checks.ok(
-        (data / "decision_learning" / "seed_observations.json").exists(),
-        "which keeps its observations in a readable, rebuildable seed "
-        "beside the binary",
-    )
-    checks.equal(
-        sorted(path.name for path in sample_store.BD_DIR.glob("*.json")),
-        [],
-        "no loose scientific JSON is left at the top of BD",
-    ) if sample_store.ARCHIVE_PATH.exists() else checks.ok(
-        (sample_store.BD_DIR / "database.json").exists(),
-        "the reference data it sits beside is there",
-    )
-
-    # ==================================================================
-    checks.section("5b. full scientific records survive a round trip")
-
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        store = SampleStore(root / "samples.json")
-
-        channels = sample_analysis.CHANNELS
-
-        full = {
-            "sample_id": "S010",
-            "slot_id": 2,
-            "state": STATE_MEASURED,
-            "measured": True,
-            "timestamps": {
-                "created_at": "2026-08-14T10:00:00+00:00",
-                "loaded_at": "2026-08-14T10:02:00+00:00",
-                "measured_at": "2026-08-14T10:05:00+00:00",
-            },
-            "metadata": {"task": "crater floor", "note": "dry"},
-            "measurement": {
-                "wavelengths": sample_analysis.channel_wavelengths(),
-                "raw": {c: 100.0 + i for i, c in enumerate(channels)},
-                "dark_corrected": {
-                    c: 99.0 + i for i, c in enumerate(channels)
-                },
-                "normalized": {
-                    c: 0.4 + i / 100.0 for i, c in enumerate(channels)
-                },
-                "sensor_settings": {
-                    "integration_cycles": 100, "gain": 2, "gain_x": "16x",
-                    "measurement_mode": 2, "led_current": 1,
-                },
-            },
-            "calibration": {
-                "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
-                "dark_reference": {c: 1.0 for c in channels},
-                "white_reference": {c: 250.0 for c in channels},
-            },
-            "reference_matches": [
-                {"rank": n + 1, "material": "M{}".format(n),
-                 "similarity_percent": 90.0 - n}
-                for n in range(22)
-            ],
-            "analysis": {
-                "best_match": "M0", "best_similarity": 90.0,
-                "second_match": "M1", "second_similarity": 89.0,
-                "score_difference": 1.0, "status": "AMBIGUOUS",
-                "automatic_conclusion": "spectral similarity only",
-            },
-            "analysis_status": "OK",
-        }
-
-        store.save(full)
-
-        # Reload from disk, exactly as a restart would.
-        reloaded = SampleStore(root / "samples.json").get_sample("S010")
-
-        measurement = reloaded["measurement"]
-        calibration = reloaded["calibration"]
-
-        for name, block in (
-            ("raw", measurement["raw"]),
-            ("dark_corrected", measurement["dark_corrected"]),
-            ("normalized", measurement["normalized"]),
-            ("wavelengths", measurement["wavelengths"]),
-            ("dark_reference", calibration["dark_reference"]),
-            ("white_reference", calibration["white_reference"]),
-        ):
-            checks.equal(
-                sorted(block.keys()), sorted(channels),
-                "{} survives with all 18 channels".format(name),
+            base = node.value
+            hit = (
+                (isinstance(base, ast.Attribute) and base.attr == name)
+                or (isinstance(base, ast.Name) and base.id == name)
             )
 
-        checks.equal(
-            len(reloaded["reference_matches"]), 22,
-            "every material comparison survives",
-        )
-        checks.equal(
-            reloaded["reference_matches"][0]["material"], "M0",
-            "ranked best first",
-        )
-        checks.equal(
-            reloaded["analysis"]["second_match"], "M1",
-            "the second match survives",
-        )
-        checks.close(
-            reloaded["analysis"]["score_difference"], 1.0,
-            "and the margin",
-        )
-        checks.equal(
-            reloaded["analysis"]["automatic_conclusion"],
-            "spectral similarity only", "and the conclusion",
-        )
-        checks.equal(
-            reloaded["measurement"]["sensor_settings"]["gain_x"], "16x",
-            "sensor settings survive",
-        )
-        checks.equal(
-            reloaded["metadata"]["task"], "crater floor", "metadata survives"
-        )
-        checks.equal(
-            reloaded["timestamps"]["loaded_at"], "2026-08-14T10:02:00+00:00",
-            "timestamps survive",
-        )
-        checks.equal(reloaded, full, "nothing at all was dropped")
+            if hit:
+                found.setdefault(node.attr, set()).add(
+                    "%s:%d" % (path.name, node.lineno))
 
-        # The compact table still gets its columns.
-        summary = store.find_summary("S010")
+    return found
 
-        checks.equal(summary["best_match"], "M0", "the table row is derived")
-        checks.close(summary["best_similarity"], 90.0, "with its score")
 
-    # ==================================================================
-    checks.section("5c. old short records stay readable")
+for name, instance in (
+    ("store", SampleStore()),
+    ("calibrations", CalibrationStore()),
+    ("profiles", AcquisitionProfileStore()),
+    ("registry", DatabaseRegistry()),
+):
+    used = attributes_reached_for(name)
+    missing = sorted(a for a in used if not hasattr(instance, a))
 
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        archive = root / "samples.json"
+    checks.equal(
+        missing, [],
+        "every attribute the screens use on `{}` exists ({} checked)"
+        .format(name, len(used)))
 
-        archive.write_text(json.dumps({
-            "version": 1,
-            "samples": [{
-                "sample_id": "s1",
-                "slot_id": 1,
-                "state": "MEASURED",
-                "measured": True,
-                "created_at": "2026-08-14T13:18:24+00:00",
-                "measured_at": "2026-08-14T13:18:49+00:00",
-                "best_match": "Magnesium Carbonate",
-                "best_similarity": 94.95,
-                "status": "AMBIGUOUS",
-                "analysis_status": "OK",
-            }],
-        }), encoding="utf-8")
 
-        store = SampleStore(archive)
+# ======================================================================
+checks.section("the main screen renders")
 
-        checks.ok(store.ready, "an old short archive loads")
-        checks.equal(store.count(), 1, "with its record")
+import tempfile              # noqa: E402
+from pathlib import Path     # noqa: E402
 
-        summary = store.summaries()[0]
+from workflow.session import Mission   # noqa: E402
 
-        checks.equal(
-            summary["best_match"], "Magnesium Carbonate",
-            "the flat best_match is still found",
-        )
-        checks.close(
-            summary["best_similarity"], 94.95, "and its score"
-        )
-        checks.equal(summary["state"], "MEASURED", "and the state")
-        checks.equal(
-            summary["created_at"], "2026-08-14T13:18:24+00:00",
-            "and the flat timestamp",
-        )
-        checks.ok(summary["measured"], "and the measured flag")
+STATUS = {
+    "firmware": "freya-science-module",
+    "version": "6.0.0",
+    "protocol_version": 2,
+    "commands": ["ping", "get_status"],
+    "sensor": {"state": "NOT_INITIALIZED", "ready": False},
+    "servo": {"connected": False, "label": "NOT CONNECTED"},
+    "carousel": {
+        "slot_count": 4,
+        "position_valid": True,
+        "selected_slot": 1,
+        "current_load_slot": 1,
+        "current_scan_slot": 3,
+        "carousel_phase": "LOAD",
+    },
+    "slots": [
+        {"slot_id": n, "occupied": False, "sample_id": None}
+        for n in range(1, 5)
+    ],
+}
 
-    # ==================================================================
-    checks.section("6. protocol: a good round trip")
 
-    port = install_fake_serial(
-        lambda request: [answer_ok(request, {"pong": True})]
-    )
+class FakeLink:
+    online = True
+    port = "COM_TEST"
 
-    link = esp32_link.ESP32Link("COM_TEST")
-    link.open()
+    def get_status(self):
+        return dict(STATUS)
 
-    data = link.ping()
 
-    checks.ok(data["pong"], "ping returns its data block")
+mission = Mission(FakeLink())
 
-    sent = json.loads(port.written[-1].decode("utf-8"))
+handle = tempfile.NamedTemporaryFile(suffix=".json", delete=False,
+                                     mode="w", encoding="utf-8")
+handle.write(json.dumps({"schema_version": 4, "samples": []}))
+handle.close()
 
-    checks.equal(sent["cmd"], "ping", "the command is sent")
-    checks.ok("request_id" in sent, "with a request id")
-    checks.ok("timestamp" in sent, "and a PC timestamp")
+mission.store = SampleStore(Path(handle.name)).load()
 
-    link.close()
+status = mission.hardware_status()
+checks.equal(mission.firmware_version, "6.0.0",
+             "the session records which firmware it is talking to")
 
-    # ==================================================================
-    checks.section("7. protocol: errors, noise and stray frames")
+view = mission.slot_view(status)
 
-    def refuse(request):
-        return [{
-            "request_id": request["request_id"],
-            "ok": False,
-            "cmd": request["cmd"],
-            "error": {
-                "code": "SLOT_NOT_AT_LOADER",
-                "message": "Slot 1 is not at the loading position.",
-            },
-            "data": {"moved": False, "carousel_phase": "SCAN"},
-        }]
+checks.equal(len(view), 4, "the slot view has one row per slot")
+checks.equal([row["slot_id"] for row in view], [1, 2, 3, 4],
+             "numbered 1 to 4")
+checks.ok(all(row["sample_id"] is None for row in view),
+          "and an empty archive gives four empty slots")
 
-    install_fake_serial(refuse)
-    link = esp32_link.ESP32Link("COM_TEST")
-    link.open()
+mission.store.create("S001", 2)
+view = mission.slot_view(status)
+row = mission.entry_for(view, 2)
 
+checks.equal(row["sample_id"], "S001", "a created Sample appears in its slot")
+checks.equal(row["state"], "READY_TO_LOAD", "with its lifecycle state")
+checks.equal(row["measurement_count"], 0, "and no measurements yet")
+
+mission.store.set_state("S001", "LOADED")
+mission.store.add_measurement(
+    "S001", raw={"white": {"A": 1.0}},
+    acquisition={"firmware_version": "6.0.0"})
+
+row = mission.entry_for(mission.slot_view(status), 2)
+checks.equal(row["state"], "MEASURED", "measuring moves it to MEASURED")
+checks.equal(row["measurement_count"], 1, "and the measurement is counted")
+
+missing = mission.entry_for(mission.slot_view(status), 4)
+checks.equal(missing["sample_id"], None, "an empty slot reports no sample")
+checks.equal(missing["measurement_count"], 0, "and no measurements")
+
+# The screen itself. It prints; what matters is that it does not raise.
+from workflow import display, screen   # noqa: E402
+
+import io                              # noqa: E402
+import contextlib                      # noqa: E402
+
+for name, call in (
+    ("print_main_screen",
+     lambda: screen.print_main_screen(mission, status,
+                                      mission.slot_view(status))),
+    ("print_startup_screen",
+     lambda: screen.print_startup_screen("NOT CONNECTED")),
+    ("print_system_status",
+     lambda: display.print_system_status(mission)),
+):
     try:
-        link.measure_raw(1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            call()
+
         raised = None
 
-    except esp32_link.LinkError as error:
-        raised = error
+    except Exception as error:
+        raised = "{}: {}".format(type(error).__name__, error)
 
-    checks.ok(raised is not None, "an ok:false response raises LinkError")
-    checks.equal(raised.code, "SLOT_NOT_AT_LOADER", "the code is preserved")
-    checks.equal(
-        raised.data["moved"], False,
-        "the partial data block reaches the caller",
-    )
+    checks.ok(raised is None,
+              "{} renders without raising{}".format(
+                  name, "" if raised is None else " (" + raised + ")"))
 
-    link.close()
 
-    # Console noise, a stray frame for another request, then the answer.
-    def noisy(request):
-        return [
-            "MicroPython v1.28.0 on 2026-04-06; ESP32 module",
-            ">>> ",
-            {"request_id": "999", "ok": True, "cmd": "other", "data": {}},
-            "not json at all",
-            answer_ok(request, {"firmware": "freya-science-module"}),
-        ]
+# ======================================================================
+checks.section("the record screens render a three-layer record")
 
-    install_fake_serial(noisy)
-    link = esp32_link.ESP32Link("COM_TEST")
-    link.open()
+from BD.channels import CHANNELS as ALL_CHANNELS   # noqa: E402
+from workflow import records                       # noqa: E402
 
-    data = link.get_status()
+mission.store.add_analysis_run("S001", "M001", {
+    "analysis_status": "OK",
+    "decision_status": "OK",
+    "versions": {"science": "5.0.0", "decision_model": "V001",
+                 "databases": {"DB1": "measured18-v1"}},
+    "quality": {"hardware": {"status": "PASS"},
+                "normalization": {"status": "OK"}},
+    "representations": {
+        "normalized": {"white": {c: 0.5 for c in ALL_CHANNELS}},
+    },
+    "database_results": [
+        {"database": "DB1", "status": "READY",
+         "families": {"angular": {"winner": "Pink Clay"}}},
+    ],
+    "decision": {"level": "AMBIGUOUS_SET", "status": "AMBIGUOUS",
+                 "material": None, "confidence": "LOW",
+                 "candidates": [], "reason": "two candidates"},
+})
 
-    checks.equal(
-        data["firmware"], "freya-science-module",
-        "console noise and stray frames are skipped",
-    )
+record = mission.store.get_sample("S001")
 
-    link.close()
-
-    # Nothing but REPL noise: the timeout must explain why.
-    install_fake_serial(
-        lambda request: [
-            ">>> {'request_id': '1', 'cmd': 'ping'}",
-            ">>> ",
-        ]
-    )
-
-    link = esp32_link.ESP32Link("COM_TEST", timeout=0.4, connect_timeout=0.6)
-    link.open()
-
+for name, call in (
+    ("print_sample_table",
+     lambda: records.print_sample_table(mission.store)),
+    ("print_full_sample", lambda: records.print_full_sample(record)),
+):
     try:
-        link.wait_online()
-        message = ""
+        with contextlib.redirect_stdout(io.StringIO()):
+            call()
 
-    except TimeoutError as error:
-        message = str(error)
-
-    checks.ok(
-        "REPL" in message and "main.py" in message,
-        "a REPL prompt is diagnosed as main.py not running",
-    )
-
-    link.close()
-
-    # A JSON object addressed to us but without ok is malformed.
-    install_fake_serial(
-        lambda request: [{"request_id": request["request_id"], "data": {}}]
-    )
-
-    link = esp32_link.ESP32Link("COM_TEST", timeout=0.5)
-    link.open()
-
-    checks.raises(
-        esp32_link.LinkError, link.ping,
-        "a response without 'ok' is a protocol error",
-    )
-
-    link.close()
-
-    # ==================================================================
-    checks.section("8. protocol: the PC sends only hardware commands")
-
-    seen = []
-
-    def record_command(request):
-        seen.append(request["cmd"])
-
-        return [answer_ok(request, {})]
-
-    install_fake_serial(record_command)
-    link = esp32_link.ESP32Link("COM_TEST")
-    link.open()
-
-    link.ping()
-    link.get_status()
-    link.sync_load_slot(1)
-    link.select_slot(2, "S001")
-    link.move_slots("cw", 1)
-    link.fine_adjust(1.5)
-    link.clear_slot(2)
-    link.measure_raw(2, "S001")
-    link.sensor_test_raw()
-    link.list_saved_samples()
-    link.get_saved_sample("S001")
-    link.delete_saved_samples()
-    link.clear_all_slots()
-    link.get_servo_options()
-    link.select_servo("st3215")
-    link.servo_diagnostics()
-    link.get_servo_calibration()
-    link.set_servo_calibration({"neutral_us": 1500})
-    link.servo_configure(confirm=True)
-    link.servo_torque(True)
-    link.servo_test_move("slot_out_and_back", confirm=True)
-    link.servo_stop()
-
-    checks.equal(
-        sorted(set(seen)),
-        sorted([
-            "clear_all_slots", "clear_slot", "delete_saved_samples",
-            "fine_adjust", "get_saved_sample", "get_servo_calibration",
-            "get_servo_options", "get_status", "list_saved_samples",
-            "measure_raw", "move_slots", "ping", "select_servo",
-            "select_slot", "sensor_test_raw", "servo_configure",
-            "servo_diagnostics", "servo_stop", "servo_test_move",
-            "servo_torque", "set_servo_calibration", "sync_position",
-        ]),
-        "the client speaks exactly the hardware protocol",
-    )
-
-    scientific = {
-        "measure_sample", "test_measurement", "sensor_diagnostics",
-        "list_samples", "get_sample", "prepare_load", "confirm_loaded",
-        "get_references", "get_database_status", "raw_measurement",
-    }
-
-    checks.equal(
-        sorted(scientific.intersection(seen)), [],
-        "no scientific or persistence command is ever sent to the ESP32",
-    )
-
-    link.close()
-
-    # ==================================================================
-    checks.section("8b. a damaged answer is not a missing answer")
-
-    # Observed on hardware during a calibration: about sixty corrupted
-    # bytes arrived in front of an otherwise perfect frame, the line
-    # would not parse, and the PC then waited out its full 180 s timeout
-    # for an answer it had already received. Both halves of that are
-    # fixed here - the frame is recovered when it can be, and when it
-    # cannot the wait ends immediately instead of running to the timeout.
-
-    checks.equal(
-        esp32_link.salvage_json('��{"ok": true, "n": 1}')["n"], 1,
-        "a frame with rubbish in front of it is recovered",
-    )
-    checks.ok(
-        esp32_link.salvage_json("no json here at all") is None,
-        "and a line with no object in it is not",
-    )
-    checks.ok(
-        esp32_link.looks_like_a_frame('��"data": {"J": 4.2'),
-        "a fragment carrying response fields is recognised as our frame",
-    )
-    checks.ok(
-        not esp32_link.looks_like_a_frame("MicroPython v1.28.0 on ESP32"),
-        "while console noise is not",
-    )
-
-    # The recoverable case: the JSON survived, something landed in front.
-    def dirty_but_whole(request):
-        answer = json.dumps(answer_ok(request, {"recovered": True}))
-
-        return ["�" * 40 + answer]
-
-    install_fake_serial(dirty_but_whole)
-    link = esp32_link.ESP32Link("COM_TEST", timeout=1.0)
-    link.open()
-
-    checks.ok(
-        link.get_status()["recovered"],
-        "a response behind line noise is still delivered",
-    )
-    checks.equal(link.salvaged_frames, 1, "and counted as salvaged")
-
-    link.close()
-
-    # The unrecoverable case: the damage ate the head of the frame. The
-    # command is a pure read, so asking again is safe and is what the
-    # link does.
-    attempts = []
-
-    def damaged_once(request):
-        attempts.append(request["cmd"])
-
-        if len(attempts) == 1:
-            return ['�' * 60 + '"data": {"bulbs_off": true, "acq']
-
-        return [answer_ok(request, {"illumination": "ir"})]
-
-    install_fake_serial(damaged_once)
-    link = esp32_link.ESP32Link("COM_TEST", timeout=1.0)
-    link.open()
-
-    started = time.monotonic()
-    data = link.acquire_block("ir", 2)
-    elapsed = time.monotonic() - started
-
-    checks.equal(
-        data["illumination"], "ir",
-        "an acquisition whose answer was destroyed is simply asked again",
-    )
-    checks.equal(len(attempts), 2, "exactly once more")
-    checks.equal(link.corrupt_frames, 1, "and the damage is counted")
-    checks.ok(
-        elapsed < 5.0,
-        "without waiting out the acquisition timeout first",
-    )
-
-    link.close()
-
-    # A movement is NOT retried. A relative step whose acknowledgement
-    # was lost has still happened, and sending it again would move the
-    # carousel twice.
-    movements = []
-
-    def always_damaged(request):
-        movements.append(request["cmd"])
-
-        return ['�' * 60 + '"ok": true, "data": {']
-
-    install_fake_serial(always_damaged)
-    link = esp32_link.ESP32Link("COM_TEST", timeout=1.0)
-    link.open()
-
-    try:
-        link.move_slots("cw", 1)
         raised = None
 
-    except TimeoutError as error:
-        raised = error
+    except Exception as error:
+        raised = "{}: {}".format(type(error).__name__, error)
 
-    checks.ok(raised is not None, "a damaged answer to a move fails")
-    checks.equal(
-        len(movements), 1,
-        "and the movement is sent exactly once - never repeated",
-    )
-    checks.ok(
-        "damaged" in str(raised),
-        "the message says the answer arrived damaged, not that it was "
-        "missing",
-    )
+    checks.ok(raised is None,
+              "{} renders without raising{}".format(
+                  name, "" if raised is None else " (" + raised + ")"))
 
-    link.close()
+# The RAW table must actually print the numbers it was given, not a
+# column of dashes - which is what a shape mismatch looks like, and is
+# indistinguishable on screen from a measurement of nothing.
+buffer = io.StringIO()
 
-    # ==================================================================
-    checks.section("9. the application wires PC, BD and ESP32 together")
+with contextlib.redirect_stdout(buffer):
+    display.print_triad_table({"white": {c: 123.5 for c in ALL_CHANNELS}})
 
-    import rover_science_client as app
+rendered = buffer.getvalue()
 
-    checks.ok(
-        (app.PROJECT_ROOT / "BD").exists()
-        and (app.PROJECT_ROOT / "Measurements").exists(),
-        "BD and Measurements are located relative to the application, "
-        "not the shell",
-    )
-    checks.ok(
-        hasattr(app, "Mission") and hasattr(app.Mission, "analyse_raw"),
-        "the mission controller owns the analysis call",
-    )
-    checks.equal(app.SLOT_COUNT, 4, "the UI knows about four slots")
-    checks.ok(
-        hasattr(app, "sync_esp32_samples"),
-        "the ESP32 -> PC sync exists",
-    )
-    checks.ok(
-        "7" in [key for key, _l, _d, _h in app.TOOLS_MENU],
-        "and has its own Tools entry",
-    )
-    checks.equal(
-        [key for key, _l, _d, _h in app.TOOLS_MENU][-1], "8",
-        "with the decision learning history after it",
-    )
-    checks.ok(
-        hasattr(app, "menu_learning_history")
-        and hasattr(app, "capture_ground_truth"),
-        "the learning history and ground-truth capture screens exist",
-    )
-    checks.ok(
-        hasattr(app, "print_decision")
-        and hasattr(app, "print_evidence_summary"),
-        "and the client can show a decision and the evidence behind it",
-    )
-    checks.ok(
-        "Sync ESP32 Samples to PC" in [
-            label for _k, label, _d, _h in app.TOOLS_MENU
-        ],
-        "under its documented name",
-    )
-    checks.ok(
-        hasattr(app, "clear_all_slots"), "Clear ALL physical slots exists"
-    )
-    checks.ok(
-        hasattr(app, "delete_esp32_samples"),
-        "Delete ALL ESP32 Samples exists",
-    )
-    checks.ok(
-        hasattr(app, "menu_select_servo"),
-        "the servo selection screen exists - option [0] asks first",
-    )
-    checks.ok(
-        hasattr(app, "menu_servo_diagnostics"),
-        "the servo diagnostics screen exists",
-    )
-    checks.ok(
-        hasattr(app, "menu_servo_calibration"),
-        "and the servo settings screen exists",
-    )
-    checks.ok(
-        hasattr(app, "menu_servo_movement_test"),
-        "the operator-confirmed movement test screen exists",
-    )
-    checks.ok(
-        hasattr(app, "menu_servo_configure"),
-        "the servo mode configuration screen exists",
-    )
-    # The client must ask the firmware what the servo can do rather than
-    # hardcoding it. One actuator is fitted, but capability-driven
-    # formatting is what keeps the screens honest when the firmware
-    # reports something the client did not expect.
-    source = (support.PC_DIR / "rover_science_client.py").read_text(
-        encoding="utf-8"
+checks.ok("123.5" in rendered,
+          "print_triad_table prints the RAW values it was handed")
+checks.ok("WHITE raw" in rendered, "under a named illumination column")
+checks.ok("One illumination" in rendered,
+          "and says plainly that an 18-channel record is a complete "
+          "legacy measurement, not a 54-feature one with parts missing")
+
+buffer = io.StringIO()
+
+with contextlib.redirect_stdout(buffer):
+    display.print_triad_table(
+        {"white": {c: 100.0 for c in ALL_CHANNELS},
+         "uv": {c: 40.0 for c in ALL_CHANNELS},
+         "ir": {c: 60.0 for c in ALL_CHANNELS}},
+        {"white": {c: 0.25 for c in ALL_CHANNELS},
+         "uv": {c: 0.25 for c in ALL_CHANNELS},
+         "ir": {c: 0.25 for c in ALL_CHANNELS}},
     )
 
-    checks.ok(
-        "select_servo" in source,
-        "the client can state which servo is installed",
-    )
-    checks.ok(
-        "verified_movement" in source,
-        "and adapts its output to what the active backend can do",
-    )
+rendered = buffer.getvalue()
 
-    # Spectra that differ must not be treated as the same measurement.
-    same = {c: 1.0 for c in sample_analysis.CHANNELS}
-    other = dict(same)
-    other["K"] = 2.0
+for column in ("WHITE raw", "UV raw", "IR raw"):
+    checks.ok(column in rendered,
+              "a three-illumination measurement shows {}".format(column))
 
-    checks.ok(app._same_spectrum(same, dict(same)), "identical spectra match")
-    checks.ok(
-        not app._same_spectrum(same, other), "a differing channel does not"
-    )
-    checks.ok(
-        not app._same_spectrum(same, {}), "an absent spectrum never matches"
-    )
+checks.ok("0.25" in rendered,
+          "with reflectance beside RAW when a run produced it")
 
-    offenders = []
+buffer = io.StringIO()
 
-    for path in (support.PC_DIR).glob("*.py"):
-        text = path.read_text(encoding="utf-8")
+with contextlib.redirect_stdout(buffer):
+    display.print_triad_table(None)
 
-        for token in ("import machine", "from machine", "I2C(", "PWM("):
-            if token in text:
-                offenders.append("{}: {}".format(path.name, token))
+checks.ok("no spectrum" in buffer.getvalue(),
+          "and an absent RAW block says so instead of printing an empty "
+          "table")
 
-    checks.equal(
-        offenders, [], "no PC module reaches for hardware directly"
-    )
-
-    # The client formats on what the firmware SAYS the servo can do.
-    for token in ("capabilities", "position_feedback",
-                  "print_st3215_settings"):
-        checks.ok(
-            token in source,
-            "the client branches on capability, not on servo name ('{}')"
-            .format(token),
-        )
-
-    # And the timed open-loop vocabulary is gone with the backend that
-    # needed it. A pulse width on the PC side would mean the removal was
-    # only half done.
-    for token in ("print_mg995_calibration", "MG995_STOP_US",
-                  "adjust_pulse", "edit_timings"):
-        checks.ok(
-            token not in source,
-            "no MG995 timing vocabulary remains on the PC ('{}')".format(
-                token
-            ),
-        )
-
-    # And the ESP32 register level must never appear on the PC side.
-    # Displaying the firmware's checksum-error COUNTER is telemetry and is
-    # fine; computing a checksum would mean the PC had grown a protocol
-    # implementation of its own.
-    for token in ("0xFF", "checksum(", "REG_", "duty_ns", "build_packet",
-                  "encode_signed", "INST_"):
-        checks.ok(
-            token not in source,
-            "the client contains no ESP32-level detail ('{}')".format(token),
-        )
-
-    return checks.report()
+Path(handle.name).unlink(missing_ok=True)
 
 
-if __name__ == "__main__":
-    sys.exit(main_tests())
+serial_link.serial = _real_serial
+
+sys.exit(checks.report())

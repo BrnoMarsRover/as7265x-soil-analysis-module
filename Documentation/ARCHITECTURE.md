@@ -1,226 +1,378 @@
 # Architecture
 
-The software of a scientific instrument. Four runtime layers, one
-responsibility each, with the boundaries enforced by tests rather than by
-convention.
+The system in one picture, and the rules that keep it that shape.
 
-```text
-firmware/
-├── ESP32/          acquire      MicroPython, uploaded to the board
-├── PC/             orchestrate  operator UI, workflow, serial transport
-├── BD/             remember     channels, databases, calibrations, samples
-├── Measurements/   understand   calibration maths, metrics, inference
-├── Tests/          verify       runs without a board
-└── research/       investigate  dataset building, spectral projection
+```
+                         OPERATOR
+                            │
+                            ▼
+                            PC
+                 workflow / orchestration
+                      /              \
+                     /                \
+                    ▼                  ▼
+                 ESP32              Science
+             hardware + RAW       scientific math
+                    │                  │
+                    │                  ▼
+                    │                  BD
+                    │        calibration / DB1 / DB2 /
+                    │        DB3 / training / samples
+                    │                  ▲
+                    └── Measurement ───┘
 ```
 
-Everything else in the repository is not software: `Hardware/` is the
-Altium design, `Documentation/` is this, `Photos/` is images.
+Five questions, five answers:
+
+| Question | Answer |
+|---|---|
+| Who controls physical hardware? | **ESP32** |
+| Who controls operator workflow? | **PC** |
+| Who performs scientific processing? | **Science** |
+| Who produces the final classification? | **Decision Model, inside Science** |
+| Where are calibration, references and completed results stored? | **BD** |
+| Who generates the final report? | **Not this project.** |
 
 ---
 
-## 1. Why these layers
+## 1. The directory layout
 
-The split is by *what a machine has to be* to run the code, not by
-convenience.
-
-**ESP32 acquires.** It moves the carousel, drives the AS7265x, and returns
-raw counts. It performs no science: it does not know what a material is,
-loads no database, and imports nothing from the host. It must also stay
-MicroPython-compatible, which rules out the scientific Python stack.
-
-### Inside the ESP32 layer
-
-The device firmware is itself layered, and the direction is one-way:
-
-```text
-main.py          build the subsystems, register the commands, serve
-   |
-protocol/        the wire format and the command surface
-   |             transport, router, servo/carousel/sensor/sample commands
-control/         hardware subsystem logic
-   |             servo_manager (actuator lifecycle), carousel (geometry)
-drivers/         one module per physical device, and nothing else
-                 as7265x, st3215, st3215_registers, servo_base
+```
+firmware/
+├── ESP32/      the hardware controller, MicroPython, flat
+├── PC/         operator workflow and orchestration
+├── Science/    every scientific formula and the Decision Model
+├── BD/         calibration, DB1/DB2/DB3, training data, records
+├── Tests/      five suites
+├── tools/      device.py — deploy and verify the ESP32
+└── research/   non-production: experiments, ERC planning, training
 ```
 
-A driver reaching back into the carousel would stop being reusable and
-would make swapping actuators a non-local change. Nothing at runtime would
-complain, so `test_architecture.py` reads the import statements and fails
-if any module imports a layer above itself.
+`ESP32/`, `PC/`, `Science/` and `BD/` are the production domains.
+`Tests/`, `tools/` and `research/` support them. There is nothing else.
 
-**Drivers know about devices, not about instruments.** `st3215.py`
-understands positions, counts, speeds, feedback and the serial protocol.
-It does not know what a sample, a loader or a scanner is. A method like
-`servo.go_to_slot_1()` would put mechanism-specific knowledge inside a
-device driver.
+---
 
-**The carousel knows about geometry, not about actuators.** It asks for
-"two slots clockwise" or "half a turn" and the driver decides how many
-encoder counts that is.
-`carousel.py` contains no pulse width, no encoder count, no packet and no
-register — asserted by test, because that is exactly the kind of boundary
-that erodes one convenient reference at a time.
+## 2. Dependency direction
 
-**Two actuators, honestly different.** The shared contract in
-`servo_base.py` covers only what a carousel needs — move slots, move
-degrees, half turn, stop, capture an origin, report status. It deliberately
-does *not* define a common `set_pulse_width()` or a mandatory
-`read_encoder()`, because either would be a lie about one backend. What the
-backends do share is a `capabilities()` dictionary, so high-level code asks
-what the actuator can do instead of testing its name.
+Allowed:
 
-### Two serial channels, never conflated
-
-```text
-PC  <--- USB / CP2102, sys.stdin + sys.stdout ---> ESP32   host protocol
-ESP32 <--- UART2, GPIO17 / GPIO16 / GND ---> servo driver  servo bus
+```
+PC ──────► ESP32       JSON over USB, nothing else
+PC ──────► Science
+PC ──────► BD
+Science ─► BD          calibration and reference databases
+Tests ───► everything
+tools ───► PC/serial_link.py
 ```
 
-`main.py` never creates a UART; only `st3215.py` does. Nothing in
-`st3215.py` touches the console streams, and nothing in
-`protocol/transport.py` opens a UART. All three facts are enforced by
-`test_architecture.py`.
+Forbidden, and each enforced by a check in `Tests/test_architecture.py`:
 
-**PC orchestrates.** Operator interface, sample workflow, serial
-transport. It owns no scientific formula and writes no scientific file
-itself — it calls BD to persist and Measurements to compute.
-
-**BD remembers.** The channel vocabulary, the three databases,
-calibrations and the measured-sample archive. It loads, validates
-structure and reports; it computes no similarity.
-
-**Measurements understands.** Dark correction, normalization, quality
-control, metrics, cross-database inference, mixture estimation. Pure
-computation over plain dictionaries — no serial port, no I²C, no UI.
-
-### The one forbidden edge
-
-```text
-BD → Measurements    FORBIDDEN, tested
-Measurements → BD    allowed and used
+```
+ESP32 ──► Science, BD, PC        the device cannot see a database
+Science ► a serial port, a servo, a carousel, the operator
+BD ─────► Science                storage must be readable without
+                                 the layer that interprets it
+BD ─────► hardware
+production ► research            an unvalidated experiment must never
+                                 reach a reported conclusion
 ```
 
-Persistence must not depend on mathematics. That is the edge which, left
-open, re-entangles data with the algorithms that interpret it — the
-original problem this architecture was built to fix. `test_architecture`
-reads the import statements and fails if it appears.
+`BD/channels.py` is the one thing every layer imports. It holds the
+18 channel letters, their wavelengths and the feature-space
+identifiers — the *schema* of the stored data, not its meaning. BD has
+to be able to check the shape of a record without depending on Science.
 
-The consequence shows up in two places, both deliberate:
+---
 
-- The 18-channel vocabulary lives in `BD/channels.py`, not in
-  Measurements, because BD must validate record shape without importing
-  the science layer.
-- `BD/calibrations.py::activate()` takes a **validator callable**. It must
-  refuse to activate a calibration that failed its checks, but the check
-  itself is science, so PC injects it.
+## 3. ESP32 — hardware, and only hardware
 
-## 2. Feature spaces
+Seven files, flat, no packages:
 
-The sensor has **18 detectors**. It does not have 54 wavelengths. What it
-can produce is 18 bands under each of three illuminations — **54
-features**, which is a different claim.
+| File | Responsibility |
+|---|---|
+| `boot.py` | Deliberately empty. Explains why. |
+| `main.py` | Build the runtime state, build the protocol, serve. |
+| `config.py` | Every hardware constant, once. |
+| `sensor.py` | AS7265x driver and the one sensor lifecycle. |
+| `servo.py` | ST3215 wire protocol, driver and connection gate. |
+| `carousel.py` | Slot geometry and logical position. |
+| `protocol.py` | Newline-JSON framing, dispatch, and all 25 commands. |
 
-```text
-AS7265X_18              "A" … "W"                 18 features
-AS7265X_54_MULTIILLUM   "white:A" … "ir:W"        54 features
+The device never learns what a material is. No cosine, no
+normalization, no database, no decision.
+
+### Protocol first
+
+Nothing between reset and the serving loop touches a peripheral — no
+I²C transaction, no UART, no settling delay, no retry loop. A board
+that cannot be reached cannot be diagnosed.
+
+```
+RESET → boot.py → main.py → JSON protocol ONLINE
+                              │
+                              ├── sensor:   NOT_INITIALIZED → READY | UNAVAILABLE
+                              ├── servo:    not connected until asked
+                              └── carousel: position invalid until declared
 ```
 
-Every database, measurement and comparison declares its space.
-Comparing 18 against 54 **raises** rather than aligning the first 18
-numbers. Narrowing 54 → 18 is permitted because a 54-feature measurement
-genuinely *contains* its WHITE bands; the reverse is impossible and is not
-offered.
+Measured on hardware: the board answers `ping` **3 ms** after boot. The
+3-second sensor settling delay is still enforced, but it is paid by the
+first command that actually needs the sensor, not by the protocol.
 
-## 3. Metrics: evidence families
+Every one of those degraded states leaves `ping`, `get_status` and the
+diagnostics answering — because those are how an operator finds out
+which of them is the problem.
 
-Implementing five similarity metrics and averaging them looks rigorous and
-is not, because the metrics are not independent:
+### Carousel geometry
 
-```text
-SAM  = arccos(cosine)             → rank-identical to cosine
-RMSE = Euclidean / sqrt(18)       → rank-identical to Euclidean
-cosine(x, kx) = pearson(x, kx) = 1  → both blind to brightness
+```
+4 slots, 90° apart
+loader and scanner exactly 180° apart = 2 slots
+
+    load_slot = ((scan_slot - 1 + 2) % 4) + 1
 ```
 
-Measured on DB1: **45% of the 253 material pairs score cosine ≥ 0.99**,
-median 0.9859. The worst pair — Borax vs Tartaric Acid at 0.99991 — is two
-chemically unrelated materials. Cosine alone cannot discriminate here.
+Its own inverse: Slot 1 at the loader necessarily means Slot 3 at the
+scanner. The mapping, the slot count and the offset all come from
+`config.py`, and the carousel asserts their consistency at construction.
 
-But the obvious fix was also wrong. The previous ensemble weighted
-cosine : RMSE : Pearson equally and called them three independent views.
-Pearson is the cosine of the mean-centered vectors and is **identically
-scale-invariant**: on a real spectrum scaled to 0.25×, cosine = 1.000000,
-Pearson = 1.000000, RMSE = 0.0235. So the ensemble was two shape metrics
-and one magnitude metric weighted 1:1:1 — a hidden 2:1 bias toward shape,
-the exact failure it was meant to fix.
+**Logical geometry is not actuator calibration.** One slot is 90°,
+always, even where the real mechanism needs a small correction. The
+correction is a mechanical calibration; the 90° is a fact about the
+carousel.
 
-Metrics are therefore grouped into **families**, each nominating one
-ranking statistic; only families vote:
+---
 
-| Family | Ranks by | Also reported | Sees brightness? |
-|---|---|---|---|
-| `magnitude` | RMSE | MAE | **yes** |
-| `angular` | cosine | spectral angle (deg) | no |
-| `centered_shape` | Pearson r | — | no |
+## 4. PC — workflow and orchestration
 
-Families combine by **rank**, not by blending scores — a cosine of 0.99, an
-RMSE of 0.03 and an r of 0.87 cannot be meaningfully averaged.
+```
+PC/
+├── rover_science_client.py   entry point: parse, open one port, hand over
+├── serial_link.py            the ONE serial owner
+└── workflow/
+    ├── prompts.py            the only input() in the project
+    ├── display.py            results → tables
+    ├── session.py            link, stores, loaded science layer
+    ├── calibration.py        making and choosing a calibration
+    ├── carousel.py           servo setup, alignment, diagnostics
+    ├── measure.py            the measurement sequence
+    ├── records.py            the archive, and ground truth
+    └── screen.py             the main screen and the menu loop
+```
 
-Family weights are equal and labelled `PROVISIONAL_UNVALIDATED`. Correcting
-a 2:1 bias by asserting a different ratio would replace one invented number
-with another; weights get derived from a validation dataset or not at all.
+The PC implements no scientific formula. Every number on screen was
+computed by Science.
 
-## 4. Three databases, never pooled
+### Exactly one serial owner
 
-| | Evidence | Space | Meaning of a 0.97 match |
-|---|---|---|---|
-| **DB1** | MEASURED | 18 | "resembles something we measured here" |
-| **DB2** | MEASURED | 54 | the same, with UV and IR |
-| **DB3** | REFERENCE_PROJECTED | 18 | "resembles a lab spectrum, after modelling our sensor" |
+`serial_link.py` is the only module in the project that imports
+pyserial. Two facts in it were measured on the bench, not assumed:
 
-Those are different claims, so scores are never averaged across databases.
-Each is analysed separately and reported separately; what combines is the
-*ranking*. Agreement between DB1 and DB3 is strong evidence — they share
-no instrument, no operator and no measurement. Agreement between DB1 and
-DB2 is weaker: same instrument.
+- **Opening the port resets the board.** pySerial asserts DTR and RTS
+  on open, which drives the auto-reset circuit. Setting both low
+  *before* `open()` leaves the firmware running.
+- **A hardware reset is an RTS pulse with DTR low**, producing
+  `boot:0x13 (SPI_FAST_FLASH_BOOT)`. Driving both lines instead lands
+  in `boot:0x3 (DOWNLOAD_BOOT)`, where the firmware never runs.
 
-See `DATABASES.md`.
+Failures carry a code, because "the module did not answer" has seven
+causes needing seven different actions:
 
-## 5. Confidence is not similarity
+```
+PORT_NOT_FOUND      no such port
+PORT_BUSY           it exists and something else holds it
+PORT_OPEN_FAILED    it exists, is free, and would not open
+PORT_LOST           it disappeared mid-request
+PROTOCOL_TIMEOUT    the port opened; nothing answered
+DEVICE_AT_REPL      MicroPython is at >>>, not serving
+MALFORMED_RESPONSE  something answered and it was not a frame
+DEVICE_ERROR        the firmware answered "ok": false
+```
 
-A 99% cosine against a library where every pair scores 99% carries no
-information. Confidence comes from evidence structure:
+---
 
-- how far the winner leads the runner-up
-- whether the metric families agree
-- whether the databases agree
-- measurement quality
-- whether the sample resembles the library at all
+## 5. Science — the mathematics, and nothing else
 
-Any of these failing lowers it, and the system may answer **UNKNOWN**
-rather than crowning whichever entry ranked first. Confidence is a
-heuristic engineering judgement, explicitly not a calibrated probability.
+```
+Science/
+├── channels via BD          the 18 bands and the feature spaces
+├── preprocessing.py         dark, white, representations, repeats
+├── quality.py               measurement quality and channel reliability
+├── features.py              derivatives, ratios, cross-illumination
+├── metrics.py               cosine, SAM, correlation, distances, ranking
+├── comparison.py            distance to a material CLASS
+├── calibration.py           building and validating a calibration
+├── taxonomy.py              material identity and family
+├── class_models.py          class statistics from verified history
+├── model_registry.py        which model is ACTIVE, and why
+├── decision.py              the Decision Model
+└── pipeline.py              evidence, and the one entry point
+```
 
-## 6. Imports
+Deterministic and hardware-independent:
 
-`BD` and `Measurements` are packages imported from the `firmware/` root.
-`PC` and `Tests` are scripts that put that root on `sys.path` and then use
-absolute package imports. `ESP32` stays flat — MicroPython has no packages
-and the six files are uploaded flat to the device.
+```python
+run = pipeline.analyze(measurement, calibration, registry, ...)
+```
 
-`ESP32/as7265x.py` necessarily carries its own channel layout: it cannot
-import `BD`. `test_architecture` asserts the host's expected sensor
-settings match `ESP32/config.py`, so the two cannot drift apart silently.
+Given the same Measurement, calibration and databases it returns the
+same answer. It opens no port, moves nothing, asks nothing, writes
+nothing.
 
-## 7. History
+### The order
 
-Three earlier decisions are folded into the text above rather than kept as
-separate records:
+```
+RAW Measurement
+  → schema / acquisition validation
+  → calibration selection
+  → dark correction
+  → white normalization
+  → quality evaluation
+  → feature extraction
+  → DB1, DB2, DB3, each INDEPENDENTLY
+  → individual metric evidence
+  → distance to reference, distance to class
+  → cross-method and cross-database agreement
+  → Decision Model
+  → AnalysisRun
+```
 
-- The four-layer split and the forbidden BD→Measurements edge.
-- Evidence families replacing the equal-weight three-metric ensemble.
-- All software under `firmware/`. An earlier revision placed the layers at
-  the repository root; that mixed software with the Altium design at the
-  same level and was reversed. The move cost two path constants, which is
-  itself evidence the layering was real rather than positional.
+Each stage records its own status. A database that will not load, an
+absent class snapshot or a model that raises leaves everything the
+earlier stages produced intact:
+
+```
+analysis_status = PARTIAL
+DB1  OK      evidence kept
+DB2  OK      evidence kept
+DB3  FAILED  reason recorded
+```
+
+### One comparison, not two
+
+`pipeline.build()` compares the measurement against each database once
+and keeps the three results apart. The Decision Model is the only thing
+allowed to combine them. There is deliberately no second per-database
+comparison reaching its own consensus — that arrangement produced two
+answers in one record with nothing to say which was right.
+
+### Provenance classes
+
+Never blurred:
+
+| Class | Example |
+|---|---|
+| `MEASURED` | an AS7265x raw channel; DB1 and DB2 |
+| `CALCULATED` | dark-corrected, normalized, a cosine, a 54-vector |
+| `REFERENCE` | a published external spectrum, as published |
+| `DERIVED_REFERENCE` | that spectrum projected onto our bands; DB3 |
+| `MODEL_INFERENCE` | a Decision Model conclusion |
+
+---
+
+## 6. BD — the authoritative record store
+
+```
+BD/
+├── calibration/   dark and white references, and the conditions
+├── DB1/           MEASURED here, 18 channels, 23 materials, legacy
+├── DB2/           MEASURED here, 54 features (WHITE/UV/IR)
+├── DB3/           DERIVED_REFERENCE, 84 external spectra projected
+├── training/      labelled records and the decision history, OFFLINE only
+├── models/        validated model artifacts and the registry
+└── samples/       completed Sample records — the run's only output
+```
+
+One directory per thing it answers a question about. Two of these are
+read-only scientific evidence and one is the only thing the system
+writes.
+
+### The three databases are never pooled
+
+A cosine of 0.97 against DB1 means *"this looks like something we
+measured here"*. The same number against DB3 means *"this looks like a
+laboratory spectrum, after modelling our sensor"*. They are compared
+separately, reported separately, and only then checked for agreement.
+
+DB1 is compared **only** against the frozen legacy calibration it was
+built with. Normalizing it against today's calibration would silently
+change what every stored number means.
+
+---
+
+## 7. The record model
+
+```
+Sample                      the physical material
+│
+├── metadata
+│
+└── Measurements[]          one completed physical acquisition each
+      │
+      ├── RAW, grouped by illumination     ← written once, never again
+      ├── acquisition metadata
+      ├── acquisition_status
+      ├── calibration_id
+      │
+      └── AnalysisRuns[]    one interpretation each
+            ├── preprocessing
+            ├── quality
+            ├── metrics
+            ├── DB1 / DB2 / DB3, separately
+            ├── reference distances
+            ├── class distances
+            ├── method and database agreement
+            ├── Decision Model result
+            └── versions and provenance
+```
+
+Three layers, never collapsed. A store where `sample.measurement` is
+singular cannot be taught repeatability afterwards without rewriting
+every record ever saved.
+
+**RAW is immutable.** Once a successful Measurement is persisted its
+`raw` block is never written again — not by normalization, a new
+calibration, a new Science version or an edit. There is no API to
+modify a Measurement; the only way to add data is to add a record.
+
+**RAW is saved before Science runs.** The measurement flow is
+
+```
+acquire → PERSIST RAW → analyse → persist the AnalysisRun
+```
+
+so a database that will not load, an exception in the pipeline or a
+model that raises costs an *analysis*, not an *experiment*.
+
+**A failed acquisition is not poor quality.** It is stored with
+`acquisition_status = FAILED` and no `raw` key at all — deliberately
+not a successful measurement full of zeros, which cannot be told apart
+from a genuinely dark reading.
+
+---
+
+## 8. Where the project stops
+
+```
+FREYA
+  ↓
+complete structured Sample Result
+  ↓
+BD/samples/
+  ↓
+──────── PROJECT BOUNDARY ────────
+  ↓
+external AI or human workflow
+  ↓
+report / document / prose
+```
+
+The system produces a structured, versioned, traceable scientific
+record. It does not produce prose, PDFs, mission reports or competition
+documents, and production Science contains nothing that could.
+
+The record has to carry enough evidence for someone outside to write
+that report without guessing: which pipeline, which model, which
+library versions, which calibration, what each database said on its
+own, where the methods disagreed, and what was refused.

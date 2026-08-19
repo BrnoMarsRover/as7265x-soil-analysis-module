@@ -1,4 +1,4 @@
-﻿"""
+"""
 Shared test scaffolding.
 
 Runs the REAL firmware modules on CPython. Nothing here reimplements
@@ -17,18 +17,18 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The runtime layers sit under firmware/ (see Documentation/ARCHITECTURE.md).
-# ESP32/ is a MicroPython package tree - drivers/, control/, protocol/ -
-# imported with ESP32/ itself on the path. BD/ and Measurements/ are
-# packages imported from the project root; PC/ is a pair of scripts.
+# The four production domains. ESP32/ is a FLAT MicroPython tree -
+# seven modules, no packages - imported with ESP32/ itself on the path.
+# BD/ and Science/ are packages imported from firmware/; PC/ is a
+# script plus the workflow package beside it.
+FIRMWARE = REPO
+
 ESP32_DIR = REPO / "ESP32"
 PC_DIR = REPO / "PC"
 BD_DIR = REPO / "BD"
-MEASUREMENTS_DIR = REPO / "Measurements"
-
-# Historical name. Used to point at firmware/, which ARCHITECTURE.md dissolved;
-# the layer directories are now the repository root.
-FIRMWARE = REPO
+SCIENCE_DIR = REPO / "Science"
+TOOLS_DIR = REPO / "tools"
+RESEARCH_DIR = REPO / "research"
 
 
 # ----------------------------------------------------------------------
@@ -750,10 +750,9 @@ def install_machine(device, servo=None):
     firmware did to it, which is how a test asserts on packets without a
     servo on the bench.
 
-    There is deliberately no PWM peripheral. Nothing in the firmware can
-    create one since the MG995 was removed, and a stub for a peripheral
-    that cannot be reached only invites assertions that pass for the
-    wrong reason.
+    There is deliberately no PWM peripheral. Nothing in the firmware
+    can create one, and a stub for a peripheral that cannot be reached
+    only invites assertions that pass for the wrong reason.
     """
     machine = types.ModuleType("machine")
 
@@ -829,27 +828,23 @@ def install_machine(device, servo=None):
     return machine
 
 
-# Every module name the ESP32 firmware tree can occupy. Reloading the
-# firmware means clearing all of them: a stale `control.carousel` holding a
+# Every module name the ESP32 firmware tree occupies. Reloading the
+# firmware means clearing all of them: a stale `carousel` holding a
 # reference to the previous `config` is how a test ends up asserting
 # against the wrong constants.
-ESP32_TOP_LEVEL = ("config", "main", "boot")
-ESP32_PACKAGES = ("drivers", "control", "protocol")
+#
+# The firmware is flat, so this list IS the deployment manifest minus
+# boot.py's do-nothing. tools/device.py asserts the two agree.
+ESP32_MODULES = (
+    "boot", "main", "config", "sensor", "servo", "carousel", "protocol",
+)
 
 
 def purge_esp32_modules():
-    """Drop every cached ESP32 firmware module, packages included."""
+    """Drop every cached ESP32 firmware module."""
     for name in list(sys.modules):
-        if name in ESP32_TOP_LEVEL:
+        if name in ESP32_MODULES:
             del sys.modules[name]
-
-            continue
-
-        for package in ESP32_PACKAGES:
-            if name == package or name.startswith(package + "."):
-                del sys.modules[name]
-
-                break
 
 
 def load_esp32(device, servo=None):
@@ -902,17 +897,23 @@ def shrink_timings(config):
     return config
 
 
-def build_firmware(device=None, servo=None, boot=True):
+def build_firmware(device=None, servo=None, bring_up_sensor=True):
     """
     A freshly loaded firmware instance, wired to fake hardware.
 
-    Returns (main_module, HardwareModule, config, fake_servo). The
-    firmware tree is purged and re-imported every time, so one test's
-    config override cannot leak into the next - and so the exception
-    classes a test catches belong to the instance under test.
+    Returns (main_module, service, config, fake_servo), where `service`
+    is the Protocol bound to a fresh Hardware. The firmware tree is
+    purged and re-imported every time, so one test's config override
+    cannot leak into the next - and so the exception classes a test
+    catches belong to the instance under test.
 
-    NO SERVO IS SELECTED on return. That is the real boot state: the
-    caller selects one, exactly as the operator does.
+    NOTHING IS CONNECTED on return, and no peripheral has been touched.
+    That is the real post-reset state: the sensor comes up on the first
+    command that needs it and the operator connects the servo.
+
+    `bring_up_sensor` runs the sensor's first initialization eagerly,
+    for the tests that want a ready sensor without going through a
+    command.
     """
     if device is None:
         device = FakeAS7265X()
@@ -925,32 +926,34 @@ def build_firmware(device=None, servo=None, boot=True):
     shrink_timings(config)
 
     import main
+    import protocol
 
-    module = main.HardwareModule()
+    hardware = main.Hardware()
+    service = protocol.Protocol(hardware)
 
-    if boot:
-        module.boot()
+    if bring_up_sensor:
+        hardware.sensor.bring_up()
 
     # Handles for the test, not for the firmware.
-    module.fake_servo = fake_servo
-    module.fake_sensor = device
+    service.fake_servo = fake_servo
+    service.fake_sensor = device
 
-    return main, module, config, fake_servo
+    return main, service, config, fake_servo
 
 
-def command(module, cmd, **payload):
+def command(service, cmd, **payload):
     """Round trip one command through the real dispatcher."""
     request = {"request_id": "1", "cmd": cmd}
     request.update(payload)
 
-    return module.dispatch_command(request)
+    return service.dispatch(request)
 
 
 def add_project_root():
     """
     Put the project root on the path.
 
-    This is how BD and Measurements are reached: they are packages, so
+    This is how BD and Science are reached: they are packages, so
     `from BD.samples import SampleStore` resolves from the
     root. It replaces the old add_path("BD"), which put BD's *contents*
     on the path as top-level modules and made `import config` ambiguous
@@ -969,7 +972,7 @@ def add_path(subdirectory):
     Put one layer directory on the path.
 
     Still correct for PC/, whose modules are flat scripts. For BD and
-    Measurements use add_project_root() and import them as packages.
+    Science use add_project_root() and import them as packages.
     """
     path = str(REPO / subdirectory)
 
@@ -977,3 +980,25 @@ def add_path(subdirectory):
         sys.path.insert(0, path)
 
     return path
+
+
+def capture_frames(service, sink):
+    """
+    Collect the frames a Protocol writes, instead of printing them.
+
+    process_line() answers through the transport rather than by
+    returning, which is exactly the path a test of framing wants to
+    exercise: the check is that ONE well-formed frame goes out per
+    line in, including for input the dispatcher never sees.
+    """
+    protocol = sys.modules["protocol"]
+
+    def send_json(payload):
+        sink.append(payload)
+
+    protocol.send_json = send_json
+
+    # The Protocol object resolves send_json through the module, so
+    # replacing it there is enough - but process_line closes over the
+    # module-level name at call time, which is what makes this work.
+    return sink

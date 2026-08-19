@@ -13,7 +13,7 @@ makes "is this calibration valid for this measurement?" answerable:
 
 A calibration describes the instrument only under the profile it was
 taken with. Applying it across profiles is a research operation with its
-own validation (DecisionModel/calibration_transfer.py), never a silent
+own validation (Science.decision/calibration_transfer.py), never a silent
 default.
 
 THE FINGERPRINT
@@ -43,7 +43,7 @@ as unknown - never defaulted to a plausible number. Two profiles that
 both say "distance unknown" are not thereby known to match, and the
 comparison says so.
 
-Layer rule: BD must never import Measurements or DecisionModel.
+Layer rule: BD must never import Science or Science.decision.
 """
 
 import hashlib

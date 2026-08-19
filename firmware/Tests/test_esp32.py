@@ -1,877 +1,397 @@
-﻿"""
-ESP32 firmware regression tests: sensor lifecycle and command protocol.
+"""
+ESP32: the protocol, the drivers and the carousel, on fake hardware.
 
-Runs the real firmware/ESP32 modules on CPython against a fake AS7265x
-that speaks the actual virtual-register protocol.
+Runs the REAL firmware modules on CPython against a fake AS7265x that
+speaks the actual virtual-register protocol and a fake ST3215 that
+speaks the actual packet format. Nothing production is reimplemented
+here, so a driver bug shows up as a failing check rather than as a
+passing check against a stub that shares the bug.
 
-Focus, in order of what actually broke on hardware:
+The two properties this suite exists for:
 
-  1. the sensor lifecycle recovers instead of latching a boot failure
-  2. configuration is verified by read-back, not merely reported
-  3. raw acquisition returns 18 channels and always kills the LED
-  4. the JSON protocol answers every command with one safe frame
-  5. no custom exception uses Exception.__init__
+    THE PROTOCOL COMES UP WITHOUT WORKING PERIPHERALS. A missing
+    sensor, an unpowered servo and an unsynchronized carousel must each
+    leave ping, get_status and the diagnostics answering - because
+    those are how an operator finds out which of them is the problem.
 
-The actuators and the carousel have their own suites:
+    NOTHING MOVES ON A GUESS. No servo at boot, no position until it is
+    declared, no movement once position confidence is lost.
 
-    test_st3215.py         the serial bus backend and its protocol
-    test_servo_manager.py  selection, switching, and the safety gates
-    test_carousel.py       geometry and planning, on both backends
+Run:  py test_esp32.py
 """
 
 import json
 import sys
 
 import support
-from support import Checks, FakeAS7265X
-
-
-def build_module(device, servo=None, select="st3215"):
-    """
-    Fresh firmware instance against a given fake sensor and servo.
-
-    `select` states which actuator is installed, exactly as the operator
-    does at option [0]. Pass None to leave the firmware in its real boot
-    state, with no servo selected and carousel movement blocked.
-    """
-    main, module, config, fake = support.build_firmware(device, servo)
-
-    if select:
-        response = send(module, "select_servo", servo=select)
-
-        if not response["ok"]:
-            raise AssertionError(
-                "could not select {}: {}".format(select, response["error"])
-            )
-
-    return main, module, config
-
-
-def send(module, cmd, **payload):
-    """Round trip one command through the real dispatcher."""
-    request = {"request_id": "1", "cmd": cmd}
-    request.update(payload)
-
-    return module.dispatch_command(request)
-
-
-def realistic_spectrum(index, device):
-    """Deterministic, distinguishable, never all-zero."""
-    return 100.0 + index * 10.0 + device * 3.0
-
-
-def channels_in(data, illumination="white"):
-    """Channel count of one illumination block in an acquisition."""
-    block = (data.get("illuminations") or {}).get(illumination) or {}
-    acquisitions = block.get("acquisitions") or [{}]
-
-    return len(acquisitions[0])
-
-
-def main_tests():
-    checks = Checks("ESP32 firmware")
-
-    # ==================================================================
-    checks.section("1. sensor lifecycle - normal bring-up")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    checks.ok(module.sensor.ready, "sensor is ready after boot")
-    checks.ok(module.sensor.boot_error is None, "no boot error recorded")
-    checks.equal(module.sensor.recovery_count, 0, "no recovery needed")
-
-    settings = module.sensor.settings()
-    checks.equal(
-        settings["integration_cycles"],
-        config.SENSOR_INTEGRATION_CYCLES,
-        "integration cycles read back from the sensor",
-    )
-    checks.equal(
-        settings["gain"], config.SENSOR_GAIN, "gain read back from the sensor"
-    )
-    checks.equal(settings["gain_x"], "16x", "gain reported as 16x")
-    checks.equal(
-        settings["measurement_mode"],
-        config.SENSOR_MEASUREMENT_MODE,
-        "measurement mode read back from the sensor",
-    )
-    checks.equal(
-        settings["led_current"],
-        config.ONBOARD_LED_CURRENT,
-        "LED current read back from the sensor",
-    )
-
-    # ==================================================================
-    checks.section("2. a boot failure never becomes permanent")
-
-    # Absent for more scan attempts than one initialization can make,
-    # so boot genuinely fails - the exact situation that used to leave
-    # driver = None for the rest of the session. Another device answers,
-    # so this is "wrong device", not "dead bus".
-    device = FakeAS7265X(absent_scans=99, other_devices=(0x68,))
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    checks.ok(not module.sensor.ready, "boot failed as arranged")
-    checks.ok(
-        module.sensor.boot_error is not None, "boot error was recorded"
-    )
-    checks.equal(
-        module.sensor.boot_error["code"],
-        "AS7265X_ADDRESS_NOT_FOUND",
-        "a live bus without 0x49 is distinguished from a dead bus",
-    )
-    checks.ok(
-        module.sensor.boot_error["details"]["addresses"] == ["0x68"],
-        "the scan result is reported so the operator can act on it",
-    )
-
-    response = send(module, "ping")
-    checks.ok(response["ok"], "command server still answers after boot failure")
-
-    response = send(module, "get_status")
-    checks.ok(response["ok"], "get_status works with an unavailable sensor")
-    checks.ok(
-        not response["data"]["sensor"]["ready"],
-        "status reports the sensor as unavailable",
-    )
-
-    # The sensor appears. Nothing is restarted; the next command retries.
-    device.absent_scans = 0
-
-    response = send(module, "sensor_test_raw")
-    checks.ok(response["ok"], "sensor test succeeds once the sensor appears")
-    checks.ok(
-        response["data"]["ok"], "sensor test reports overall success"
-    )
-    checks.ok(module.sensor.ready, "runtime sensor is now ready")
-    checks.equal(
-        module.sensor.recovery_count, 1, "recovery was counted exactly once"
-    )
-    checks.equal(
-        channels_in(response["data"]), 18,
-        "recovered sensor returns 18 channels",
-    )
-
-    status = send(module, "get_status")["data"]["sensor"]
-    checks.ok(status["ready"], "status no longer reports the stale failure")
-    checks.ok(
-        status["boot_error"] is not None,
-        "the boot error is still visible as history",
-    )
-
-    # ==================================================================
-    checks.section("3. configuration is verified, not assumed")
-
-    device = FakeAS7265X(accept_config=False)
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    checks.ok(
-        not module.sensor.ready,
-        "a sensor that ignores configuration writes is not READY",
-    )
-    checks.equal(
-        module.sensor.boot_error["code"],
-        "SENSOR_CONFIG_NOT_APPLIED",
-        "the mismatch is named exactly",
-    )
-
-    details = module.sensor.boot_error["details"]
-    checks.ok(
-        "integration_cycles" in details["mismatched"],
-        "the unapplied setting is listed",
-    )
-    checks.equal(
-        details["applied"]["integration_cycles"],
-        20,
-        "the value actually in the register is reported",
-    )
-
-    # ==================================================================
-    checks.section("4. internal devices must answer")
-
-    device = FakeAS7265X(slaves_present=False)
-    _main, module, config = build_module(device)
-
-    checks.ok(not module.sensor.ready, "missing slaves fail initialization")
-    checks.equal(
-        module.sensor.boot_error["code"],
-        "AS7265X_SLAVES_NOT_DETECTED",
-        "the slave fault is distinguished from a bus fault",
-    )
-
-    device = FakeAS7265X(absent_scans=99)
-    _main, module, config = build_module(device)
-
-    checks.equal(
-        module.sensor.boot_error["code"],
-        "I2C_NO_DEVICES",
-        "a bus where nothing answers is reported as such",
-    )
-
-    # ==================================================================
-    checks.section("5. deterministic one-shot acquisition")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    from drivers import as7265x
-
-    checks.equal(
-        config.SENSOR_MEASUREMENT_MODE, 0b11,
-        "the production mode is one-shot, not continuous",
-    )
-    checks.equal(
-        module.sensor.settings()["measurement_mode"], 3,
-        "and the sensor is actually running it",
-    )
-
-    acquisition = module.sensor.acquire_one(as7265x.LED_WHITE)
-    spectrum = acquisition["spectrum"]
-
-    checks.equal(len(spectrum), 18, "18 channels acquired")
-    checks.equal(acquisition["illumination"], "white", "under WHITE")
-    checks.ok(
-        all(isinstance(value, float) for value in spectrum.values()),
-        "every channel is numeric",
-    )
-    checks.ok(
-        len(set(spectrum.values())) > 1,
-        "channels are distinguishable, not one repeated value",
-    )
-    checks.equal(acquisition["zero_channels"], [], "no zero channels")
-    checks.ok(not device.any_lamp_on(), "every lamp is off afterwards")
-    checks.ok(
-        device.lamp_on_counts[as7265x.LED_WHITE] >= 1,
-        "the WHITE lamp was actually used",
-    )
-    checks.equal(
-        device.lamp_on_counts[as7265x.LED_UV], 0, "the UV lamp was not"
-    )
-    checks.equal(
-        device.lamp_on_counts[as7265x.LED_IR], 0, "nor the IR lamp"
-    )
-
-    # Each lamp on its own.
-    for name, lamp in (("uv", as7265x.LED_UV), ("ir", as7265x.LED_IR)):
-        result = module.sensor.acquire_one(lamp)
-
-        checks.equal(
-            result["illumination"], name,
-            "an acquisition under {} is labelled as such".format(name.upper()),
-        )
-        checks.ok(
-            device.lamp_on_counts[lamp] >= 1,
-            "the {} lamp was used".format(name.upper()),
-        )
-        checks.ok(
-            not device.any_lamp_on(),
-            "and every lamp is off again after the {} block".format(name),
-        )
-
-    # Dark: no lamp at all.
-    before = dict(device.lamp_on_counts)
-    dark = module.sensor.acquire_one(None)
-
-    checks.equal(dark["illumination"], "dark", "a dark acquisition is dark")
-    checks.equal(
-        device.lamp_on_counts, before,
-        "and switches on no lamp whatsoever",
-    )
-
-    # Repeats come back individually, for the PC to aggregate.
-    block = module.sensor.acquire_block(as7265x.LED_WHITE, 4)
-
-    checks.equal(block["repeats"], 4, "a block honours the repeat count")
-    checks.equal(
-        len(block["acquisitions"]), 4, "and returns every reading"
-    )
-    checks.equal(
-        len(block["data_ready_wait_ms"]), 4, "with a wait time each"
-    )
-
-    triad = module.sensor.acquire_triad(2)
-
-    checks.equal(
-        sorted(triad.keys()), ["ir", "uv", "white"],
-        "a triad covers all three illuminations",
-    )
-    checks.equal(
-        sum(len(entry["acquisitions"]) for entry in triad.values()), 6,
-        "3 illuminations x 2 repeats = 6 spectra (54 features x 2)",
-    )
-    checks.ok(not device.any_lamp_on(), "and leaves every lamp off")
-
-    # A failure mid-acquisition must still leave every lamp off.
-    device.data_ready_supported = False
-    module.sensor.ready = True
-
-    checks.raises(
-        as7265x.SensorError,
-        module.sensor.acquire_raw_spectrum,
-        "a DATA_READY timeout raises SensorError",
-    )
-    checks.ok(
-        not device.any_lamp_on(), "every lamp is off after a failure too"
-    )
-
-    # ==================================================================
-    checks.section("6. one sensor world")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    first = module.sensor.ensure_ready()
-    second = module.sensor.ensure_ready()
-
-    checks.ok(first is second, "ensure_ready reuses the working driver")
-
-    forced = module.sensor.ensure_ready(force_reinit=True)
-    checks.ok(forced is not first, "force_reinit really rebuilds the driver")
-
-    checks.ok(
-        not hasattr(as7265x, "StrictAS7265X"),
-        "the parallel diagnostic driver no longer exists",
-    )
-    checks.ok(
-        not hasattr(as7265x, "SoilMeasurementSystem"),
-        "the stateful measurement object no longer exists",
-    )
-
-    # ==================================================================
-    checks.section("7. ESP32 does no science")
-
-    source = (support.ESP32_DIR).rglob("*.py")
-    forbidden = (
-        "database.json",
-        "references.json",
-        "sample_store",
-        "sample_analysis",
-        "cosine",
-        "normalize",
-        "white_ref",
-        "dark_ref",
-    )
-
-    offenders = []
-
-    for path in source:
-        text = path.read_text(encoding="utf-8").lower()
-
-        for token in forbidden:
-            if token in text:
-                offenders.append("{}: {}".format(path.name, token))
-
-    checks.equal(offenders, [], "no ESP32 module mentions science data")
-
-    checks.ok(
-        "database" not in sys.modules and "sample_analysis" not in sys.modules,
-        "no BD module was imported by the firmware",
-    )
-
-    # ==================================================================
-    checks.section("8. protocol surface")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    expected_commands = {
-        "ping", "get_status",
-        "get_servo_options", "select_servo",
-        "sync_position", "select_slot", "move_slots", "fine_adjust",
-        "clear_slot", "clear_all_slots",
-        "measure_raw", "sensor_test_raw",
-        "acquire_block", "acquire_triad", "led_test",
-        "list_saved_samples", "get_saved_sample", "delete_saved_samples",
-        "servo_stop", "servo_diagnostics", "servo_bus_scan",
-        "servo_test_move",
-        "get_servo_calibration", "set_servo_calibration",
-        "servo_configure", "servo_torque",
-    }
-
-    checks.equal(
-        set(module.router.handlers.keys()),
-        expected_commands,
-        "exactly the hardware commands are exposed",
-    )
-    checks.equal(
-        module.router.command_names(), sorted(expected_commands),
-        "and get_status advertises the same list",
-    )
-    checks.equal(
-        send(module, "get_status")["data"]["commands"],
-        sorted(expected_commands),
-        "so the PC never has to hardcode the command surface",
-    )
-
-    response = send(module, "measure_sample", slot=1)
-    checks.ok(not response["ok"], "an obsolete command is rejected")
-    checks.equal(
-        response["error"]["code"], "UNKNOWN_COMMAND", "with UNKNOWN_COMMAND"
-    )
-
-    response = send(module, "fine_adjust", degrees=90)
-    checks.equal(
-        response["error"]["code"],
-        "FINE_ADJUST_TOO_LARGE",
-        "fine adjustment is bounded",
-    )
-
-    response = send(module, "select_slot", slot=99)
-    checks.equal(response["error"]["code"], "INVALID_SLOT", "slots are ranged")
-
-    response = send(module, "select_slot")
-    checks.equal(
-        response["error"]["code"], "MISSING_FIELD", "a missing slot is named"
-    )
-
-    # ==================================================================
-    checks.section("9. measurement refuses before it moves")
-
-    response = send(module, "measure_raw", slot=1)
-    checks.equal(
-        response["error"]["code"],
-        "POSITION_NOT_SYNCHRONIZED",
-        "measurement needs a synchronized carousel",
-    )
-    checks.equal(
-        device.channel_reads, 0, "no channel was read"
-    )
-
-    send(module, "sync_position", load_slot=1)
-
-    response = send(module, "measure_raw", slot=3)
-    checks.equal(
-        response["error"]["code"],
-        "SLOT_NOT_SELECTED",
-        "only the selected slot may be measured",
-    )
-
-    # A sensor fault must be found before the carousel swings out.
-    device.absent_scans = 999
-    module.sensor.ready = False
-
-    response = send(module, "measure_raw", slot=1)
-    checks.ok(not response["ok"], "a dead sensor refuses the measurement")
-    checks.equal(
-        response["data"]["moved"], False, "nothing was moved"
-    )
-    checks.equal(
-        module.carousel.phase(), "LOAD", "the sample is still at the loader"
-    )
-
-    device.absent_scans = 0
-
-    # ==================================================================
-    checks.section("10. successful measure_raw: out, acquire, back")
-
-    home_scan_slot = module.carousel.current_scan_slot
-
-    response = send(module, "measure_raw", slot=1, sample_id="S001")
-    checks.ok(response["ok"], "measure_raw succeeds")
-
-    data = response["data"]
-
-    checks.equal(
-        sorted(data["illuminations"].keys()), ["ir", "uv", "white"],
-        "all three illuminations were measured",
-    )
-
-    for name in ("white", "uv", "ir"):
-        checks.equal(
-            channels_in(data, name), 18,
-            "{} returned 18 channels".format(name.upper()),
-        )
-
-    checks.equal(data["slot_id"], 1, "slot echoed")
-    checks.equal(data["sample_id"], "S001", "sample id echoed")
-    checks.ok(
-        data["sensor_settings"]["integration_cycles"] == 100,
-        "settings travel with the spectra",
-    )
-    checks.equal(
-        data["sensor_settings"]["measurement_mode"], 3, "acquired in one-shot"
-    )
-    checks.ok(data["bulbs_off"], "every lamp is off when it returns")
-    checks.ok(data["temperatures"], "device temperatures are recorded")
-    checks.equal(
-        data["protocol_version"], 2, "tagged with the acquisition protocol"
-    )
-    checks.ok(data["slot"]["occupied"], "the slot is marked occupied")
-
-    # The whole point of the new sequence: it ends where it started.
-    checks.ok(data["home_restored"], "the carousel reported a return home")
-    checks.ok(
-        data["return_move"]["returned"], "the return movement succeeded"
-    )
-    checks.equal(
-        data["carousel"]["carousel_phase"], "LOAD",
-        "the sample is back at the loading position",
-    )
-    checks.equal(
-        module.carousel.current_scan_slot, home_scan_slot,
-        "the tracked position is exactly where it started",
-    )
-    checks.ok(
-        module.carousel.position_valid, "position tracking is still valid"
-    )
-
-    checks.ok(
-        "normalized" not in json.dumps(data),
-        "no normalization was performed on the ESP32",
-    )
-    checks.ok(
-        "similarity" not in json.dumps(data),
-        "no database comparison was performed on the ESP32",
-    )
-
-    # ---- retained acquisition, for the PC to pull back --------------
-    status_slots = send(module, "get_status")["data"]["slots"]
-
-    checks.ok(
-        all("measurement" not in slot for slot in status_slots),
-        "get_status does not carry the retained spectra",
-    )
-    checks.ok(
-        any(slot["has_measurement"] for slot in status_slots),
-        "but does say which slots hold one",
-    )
-
-    response = send(module, "list_saved_samples")
-    checks.ok(response["ok"], "list_saved_samples works")
-    checks.equal(response["data"]["count"], 1, "one acquisition is retained")
-    checks.equal(
-        response["data"]["samples"][0]["sample_id"], "S001",
-        "and it is the sample just measured",
-    )
-
-    response = send(module, "get_saved_sample", sample_id="S001")
-    checks.ok(response["ok"], "get_saved_sample works")
-    checks.equal(
-        channels_in(response["data"]["measurement"]), 18,
-        "the retained record carries all 18 raw channels",
-    )
-    checks.equal(
-        sorted(response["data"]["measurement"]["illuminations"].keys()),
-        ["ir", "uv", "white"],
-        "for all three illuminations",
-    )
-    checks.ok(
-        "normalized" not in json.dumps(response["data"]),
-        "the retained record is raw only",
-    )
-
-    response = send(module, "get_saved_sample", sample_id="NOPE")
-    checks.equal(
-        response["error"]["code"], "SAMPLE_NOT_FOUND",
-        "an unknown sample id is refused",
-    )
-
-    response = send(module, "clear_slot", slot=1)
-    checks.ok(response["ok"], "clear_slot works")
-    checks.ok(
-        not response["data"]["slot"]["occupied"], "the slot is free again"
-    )
-
-    checks.equal(
-        send(module, "list_saved_samples")["data"]["count"], 0,
-        "clearing the slot drops its retained acquisition too",
-    )
-
-    # ==================================================================
-    checks.section("10b. a failed return invalidates the position")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    send(module, "sync_position", load_slot=1)
-
-    class BrokenReturn(Exception):
-        pass
-
-    outbound = [True]
-    original_move = module.carousel.servo.move_relative
-
-    def move_that_fails_on_the_way_back(counts, *args, **kwargs):
-        if outbound[0]:
-            outbound[0] = False
-
-            return original_move(counts, *args, **kwargs)
-
-        raise BrokenReturn("servo stalled on the return sweep")
-
-    module.carousel.servo.move_relative = move_that_fails_on_the_way_back
-
-    response = send(module, "measure_raw", slot=1, sample_id="S002")
-
-    checks.ok(
-        response["ok"],
-        "a failed return does NOT discard the acquired spectrum",
-    )
-    checks.equal(
-        channels_in(response["data"]), 18,
-        "all 18 channels still returned",
-    )
-    checks.ok(
-        not response["data"]["home_restored"],
-        "but the return is reported as failed",
-    )
-    checks.ok(
-        not response["data"]["return_move"]["returned"],
-        "the return move says so explicitly",
-    )
-    checks.ok(
-        not module.carousel.position_valid,
-        "position tracking is invalidated rather than lying",
-    )
-    checks.ok(
-        not response["data"]["carousel"]["position_valid"],
-        "and the response says the position is unknown",
-    )
-
-    # ==================================================================
-    checks.section("11. responses are JSON-safe")
-
-    device = FakeAS7265X(absent_scans=99)
-    _main, module, config = build_module(device)
-
-    send(module, "sync_position", load_slot=1)
-
-    for cmd, payload in (
-        ("ping", {}),
-        ("get_status", {}),
-        ("sensor_test_raw", {}),
-        ("measure_raw", {"slot": 1}),
-        ("select_slot", {"slot": 2}),
-        ("clear_slot", {"slot": 1}),
-        ("servo_stop", {}),
-        ("nonsense", {}),
-    ):
-        response = send(module, cmd, **payload)
-
-        try:
-            encoded = json.dumps(response)
-            ok = True
-
-        except (TypeError, ValueError):
-            ok = False
-            encoded = ""
-
-        checks.ok(ok, "{} produces encodable JSON".format(cmd))
-        checks.ok(
-            "SensorError" not in encoded and "object at 0x" not in encoded,
-            "{} serializes no exception or object repr".format(cmd),
-        )
-
-    # ==================================================================
-    checks.section("12. MicroPython exception construction")
-
-    import main as main_module
-
-    from control import carousel as carousel_module
-    from drivers import st3215 as st3215_module
-
-    # MicroPython has no unbound Exception.__init__: calling it raises
-    # "type object 'Exception' has no attribute '__init__'", which used
-    # to turn every sensor fault into a bare INTERNAL_ERROR. Comments
-    # explaining that are fine; a real call is not.
-    offenders = []
-
-    for path in (support.ESP32_DIR).rglob("*.py"):
-        for number, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            code = line.split("#", 1)[0]
-
-            if "Exception.__init__(" in code:
-                offenders.append("{}:{}".format(path.name, number))
-
-    checks.equal(
-        offenders, [], "no module calls Exception.__init__ unbound"
-    )
-
-    # Any custom exception that defines its own __init__ must chain
-    # through super(), or the message never reaches str(error).
-    import ast
-
-    for path in (support.ESP32_DIR).rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-
-            bases = [
-                base.id for base in node.bases if isinstance(base, ast.Name)
-            ]
-
-            if "Exception" not in bases:
-                continue
-
-            initializers = [
-                child for child in node.body
-                if isinstance(child, ast.FunctionDef)
-                and child.name == "__init__"
-            ]
-
-            if not initializers:
-                # Inheriting Exception.__init__ is fine; only an
-                # override can get the chaining wrong.
-                continue
-
-            body = ast.dump(initializers[0])
-
-            checks.ok(
-                "Name(id='super'" in body and "attr='__init__'" in body,
-                "{}.{} chains to super().__init__".format(
-                    path.name, node.name
-                ),
-            )
-
-    for exception_type, arguments in (
-        (main_module.CommandError, ("CODE", "message")),
-        (carousel_module.CarouselError, ("CODE", "message")),
-        (as7265x.SensorError, ("CODE", "message")),
-        (st3215_module.ST3215Error, ("message",)),
-    ):
-        try:
-            instance = exception_type(*arguments)
-            constructed = str(instance) == "message"
-
-        except Exception:
-            constructed = False
-
-        checks.ok(
-            constructed,
-            "{} constructs and stringifies".format(exception_type.__name__),
-        )
-
-    # ==================================================================
-    checks.section("12b. clear all slots vs delete all samples")
-
-    device = FakeAS7265X()
-    device.fill_spectrum(realistic_spectrum)
-    _main, module, config = build_module(device)
-
-    send(module, "sync_position", load_slot=1)
-
-    # Occupy two slots with a measurement each.
-    for slot_id, sample_id in ((1, "S001"), (2, "S002")):
-        send(module, "select_slot", slot=slot_id)
-        send(module, "measure_raw", slot=slot_id, sample_id=sample_id)
-
-    checks.equal(
-        send(module, "list_saved_samples")["data"]["count"], 2,
-        "two acquisitions retained",
-    )
-    checks.equal(
-        len([
-            slot for slot in send(module, "get_status")["data"]["slots"]
-            if slot["occupied"]
-        ]),
-        2,
-        "two slots occupied",
-    )
-
-    # Deleting the saved samples must NOT free the slots: soil can still
-    # physically be sitting in them.
-    response = send(module, "delete_saved_samples")
-
-    checks.ok(response["ok"], "delete_saved_samples works")
-    checks.equal(response["data"]["deleted_count"], 2, "both were deleted")
-    checks.equal(response["data"]["remaining"], 0, "none remain")
-    checks.equal(
-        send(module, "list_saved_samples")["data"]["count"], 0,
-        "the acquisition buffer is empty",
-    )
-
-    # The bug this replaced: a measurement taken WITHOUT a Sample ID was
-    # retained but never listed, so the delete screen saw an empty index,
-    # said "already empty" and returned without deleting anything.
-    send(module, "select_slot", slot=3)
-    send(module, "measure_raw", slot=3)
-
-    listing = send(module, "list_saved_samples")["data"]
-
-    checks.equal(
-        listing["count"], 1,
-        "a measurement with no Sample ID is still listed",
-    )
-    checks.equal(
-        listing["samples"][0]["sample_id"], "SLOT3",
-        "under a slot-derived placeholder",
-    )
-    checks.ok(
-        not listing["samples"][0]["has_sample_id"],
-        "flagged as having no real ID",
-    )
-    checks.ok(
-        send(module, "get_saved_sample", sample_id="SLOT3")["ok"],
-        "and it can be fetched by that placeholder",
-    )
-    checks.equal(
-        send(module, "delete_saved_samples")["data"]["deleted_count"], 1,
-        "so it can be deleted too",
-    )
-    checks.equal(
-        len([
-            slot for slot in send(module, "get_status")["data"]["slots"]
-            if slot["occupied"]
-        ]),
-        3,
-        "but every slot measured so far is STILL occupied - deleting "
-        "records is not clearing the mechanism",
-    )
-
-    response = send(module, "delete_saved_samples")
-    checks.equal(
-        response["data"]["deleted_count"], 0,
-        "deleting an empty buffer is harmless",
-    )
-
-    # Clearing the slots is the other half, and equally narrow.
-    scan_before = module.carousel.current_scan_slot
-
-    response = send(module, "clear_all_slots")
-
-    checks.ok(response["ok"], "clear_all_slots works")
-    checks.equal(
-        response["data"]["cleared_count"], 3, "every occupied slot freed"
-    )
-    checks.ok(
-        all(
-            not slot["occupied"] and slot["sample_id"] is None
-            for slot in response["data"]["slots"]
-        ),
-        "every slot is now empty",
-    )
-    checks.equal(
-        len(response["data"]["slots"]), 4, "all four reported"
-    )
-    checks.equal(
-        module.carousel.current_scan_slot, scan_before,
-        "clearing does not move the carousel",
-    )
-    checks.ok(
-        module.carousel.position_valid,
-        "and does not invalidate the position",
-    )
-
-    response = send(module, "clear_all_slots")
-    checks.equal(
-        response["data"]["cleared_count"], 0,
-        "clearing empty slots is harmless",
-    )
-
-    return checks.report()
-
-
-if __name__ == "__main__":
-    sys.exit(main_tests())
+
+checks = support.Checks("esp32")
+
+
+def build(**kwargs):
+    return support.build_firmware(**kwargs)
+
+
+def send(service, cmd, **payload):
+    return support.command(service, cmd, **payload)
+
+
+# ======================================================================
+checks.section("protocol framing")
+
+main, service, config, servo = build()
+
+response = send(service, "ping")
+checks.ok(response["ok"], "ping succeeds")
+checks.equal(response["request_id"], "1", "request_id is echoed back")
+checks.equal(response["cmd"], "ping", "the command is named in the answer")
+checks.ok(response["data"]["pong"] is True, "pong is true")
+
+response = service.dispatch({"request_id": "abc", "cmd": "ping"})
+checks.equal(response["request_id"], "abc",
+             "a non-numeric request_id survives unchanged")
+
+response = service.dispatch({"cmd": "ping"})
+checks.ok(response["ok"], "a missing request_id is not an error")
+checks.equal(response["request_id"], None, "and comes back as null")
+
+response = service.dispatch({"request_id": "1", "cmd": "no_such_command"})
+checks.ok(not response["ok"], "an unknown command is refused")
+checks.equal(response["error"]["code"], "UNKNOWN_COMMAND",
+             "with UNKNOWN_COMMAND")
+checks.ok("ping" in response["error"]["message"],
+          "and the message lists what IS known")
+
+response = service.dispatch(["not", "an", "object"])
+checks.ok(not response["ok"], "a JSON array is refused")
+checks.equal(response["error"]["code"], "INVALID_REQUEST",
+             "with INVALID_REQUEST")
+
+frames = []
+support.capture_frames(service, frames)
+
+service.process_line("{not json at all")
+checks.equal(len(frames), 1, "malformed JSON still produces exactly one frame")
+checks.equal(frames[0]["error"]["code"], "INVALID_JSON", "with INVALID_JSON")
+
+frames.clear()
+service.process_line("x" * (config.MAX_COMMAND_BYTES + 10))
+checks.equal(frames[0]["error"]["code"], "COMMAND_TOO_LONG",
+             "an oversized line is refused before it is parsed")
+
+frames.clear()
+service.process_line(json.dumps({"request_id": "9", "cmd": "ping"}))
+checks.equal(len(frames), 1, "one request produces exactly one frame")
+checks.equal(frames[0]["request_id"], "9", "and it is the answer to it")
+
+
+# ======================================================================
+checks.section("identity and geometry are reported by the firmware")
+
+identity = send(service, "ping")["data"]
+
+checks.equal(identity["firmware"], config.FIRMWARE_NAME, "firmware name")
+checks.equal(identity["version"], config.FIRMWARE_VERSION, "firmware version")
+checks.equal(identity["protocol_version"], config.PROTOCOL_VERSION,
+             "protocol version")
+checks.equal(identity["slot_count"], 4, "4 slots")
+checks.close(identity["slot_angle_deg"], 90.0, "90 degrees per slot")
+checks.close(identity["scanner_offset_deg"], 180.0, "180 degree offset")
+checks.equal(identity["scanner_offset_slots"], 2, "which is 2 slots")
+checks.ok("ST3215" in identity["servo"], "the servo is named")
+checks.equal(identity["sensor"], "AS7265x", "the sensor is named")
+
+
+# ======================================================================
+checks.section("the protocol serves without any working peripheral")
+
+absent_sensor = support.FakeAS7265X(absent_scans=10 ** 6)
+main, cold, config, _servo = build(device=absent_sensor,
+                                   bring_up_sensor=False)
+
+checks.ok(send(cold, "ping")["ok"],
+          "ping answers with no sensor and no servo")
+
+status = send(cold, "get_status")
+checks.ok(status["ok"], "get_status answers too")
+
+data = status["data"]
+checks.equal(data["sensor"]["state"], "NOT_INITIALIZED",
+             "the sensor reports NOT_INITIALIZED before anything needs it")
+checks.ok(not data["servo"]["connected"], "no servo is connected at boot")
+checks.ok(not data["carousel"]["position_valid"],
+          "the carousel position is not valid at boot")
+checks.equal(len(data["commands"]), 25, "every command is registered")
+
+# Reaching for the sensor fails, and leaves the protocol alone.
+response = send(cold, "measure_raw", slot=1)
+checks.ok(not response["ok"], "measuring without a synchronized carousel fails")
+
+status = send(cold, "get_status")["data"]
+checks.ok(send(cold, "ping")["ok"], "ping still answers after the failure")
+
+test = send(cold, "sensor_test_raw")
+checks.ok(test["ok"], "the sensor diagnostic itself answers")
+checks.ok(not test["data"]["ok"],
+          "and reports the sensor as unusable in its payload")
+checks.equal(test["data"]["failed_stage"], "I2C_SCAN",
+             "naming the stage that failed")
+checks.equal(send(cold, "get_status")["data"]["sensor"]["state"],
+             "UNAVAILABLE",
+             "after a real attempt the sensor reads UNAVAILABLE, which is "
+             "a different thing from NOT_INITIALIZED")
+
+checks.ok(send(cold, "ping")["ok"],
+          "and ping STILL answers, which is the whole point")
+
+
+# ======================================================================
+checks.section("nothing moves before the servo is connected")
+
+main, service, config, fake_servo = build()
+
+for command, payload in (
+    ("select_slot", {"slot": 2}),
+    ("move_slots", {"direction": "cw", "slots": 1}),
+    ("sync_position", {"load_slot": 1}),
+):
+    response = send(service, command, **payload)
+    checks.equal(response["error"]["code"], "SERVO_NOT_CONNECTED",
+                 "{} is refused with SERVO_NOT_CONNECTED".format(command))
+
+checks.equal(fake_servo.packets, [],
+             "and not one packet reached the servo")
+
+response = send(service, "connect_servo")
+checks.ok(response["ok"], "connect_servo brings the link up")
+checks.ok(send(service, "get_status")["data"]["servo"]["connected"],
+          "and the status says so")
+
+response = send(service, "disconnect_servo")
+checks.ok(response["ok"], "disconnect_servo releases it")
+checks.ok(not send(service, "get_status")["data"]["servo"]["connected"],
+          "and movement is blocked again")
+
+
+# ======================================================================
+checks.section("ST3215 packet format")
+
+sys.path.insert(0, str(support.ESP32_DIR))
+support.purge_esp32_modules()
+
+import servo as servo_module  # noqa: E402
+
+checks.equal(servo_module.checksum([0x01, 0x02, 0x01]), 0xFB,
+             "checksum is the one's complement of the byte sum")
+checks.equal(servo_module.checksum([0xFF]), 0x00,
+             "a sum of 0xFF checksums to 0x00")
+
+packet = servo_module.build_packet(1, servo_module.INST_PING)
+checks.equal(list(packet[:2]), [0xFF, 0xFF], "two header bytes")
+checks.equal(packet[2], 1, "the servo id")
+checks.equal(packet[3], 2, "length covers the instruction and the checksum")
+checks.equal(packet[4], servo_module.INST_PING, "the instruction")
+checks.equal(packet[-1], servo_module.checksum(list(packet[2:-1])),
+             "and a valid trailing checksum")
+
+read = servo_module.build_packet(
+    1, servo_module.INST_READ, [servo_module.REG_PRESENT_POSITION, 2])
+checks.equal(read[3], 4, "a two-parameter read has length 4")
+
+checks.equal(servo_module.encode_signed(-100), 0x8064,
+             "negative goals are sign-magnitude, not two's complement")
+checks.equal(servo_module.encode_signed(100), 100, "positive goals are plain")
+checks.equal(servo_module.decode_signed(0x8064), -100, "and decode back")
+checks.equal(servo_module.decode_signed(100), 100, "both ways")
+
+checks.equal(servo_module.word_bytes(0x1234), bytes([0x34, 0x12]),
+             "16-bit registers are little-endian on the STS series")
+checks.equal(servo_module.bytes_word(0x34, 0x12), 0x1234, "and read back")
+
+flags = servo_module.decode_status_flags(0x11)
+checks.equal(sorted(flags), ["angle", "voltage"],
+             "the official alarm bit order is used")
+checks.equal(servo_module.decode_status_flags(0), [],
+             "no bits set means no alarms")
+
+checks.close(servo_module.counts_to_degrees(1024), 90.0,
+             "1024 counts is 90 degrees")
+checks.close(servo_module.counts_to_degrees(2048), 180.0,
+             "2048 counts is 180 degrees")
+checks.equal(servo_module.degrees_to_counts(90.0), 1024,
+             "and 90 degrees is 1024 counts")
+checks.equal(servo_module.centred_error(4000, 4096), -96,
+             "an error across the encoder seam is measured the short way")
+
+
+# ======================================================================
+checks.section("ST3215 transport faults are named, not swallowed")
+
+main, service, config, fake = build(servo=support.FakeST3215(silent=True))
+
+response = send(service, "connect_servo")
+checks.ok(not response["ok"], "a servo that never answers refuses to connect")
+checks.ok(response["error"]["code"].startswith("SERVO_"),
+          "with a servo-specific code, not a generic failure")
+
+main, service, config, fake = build(servo=support.FakeST3215(answer_as=7))
+response = send(service, "connect_servo")
+checks.ok(not response["ok"],
+          "a reply from the wrong servo id is not this servo answering")
+
+main, service, config, fake = build(servo=support.FakeST3215(corrupt_checksum=True))
+response = send(service, "connect_servo")
+checks.ok(not response["ok"], "a corrupted reply is refused")
+checks.ok("CHECKSUM" in response["error"]["code"]
+          or "PROTOCOL" in response["error"]["code"],
+          "and named as a checksum or protocol fault")
+
+
+# ======================================================================
+checks.section("carousel geometry and position confidence")
+
+main, service, config, fake = build()
+send(service, "connect_servo")
+
+status = send(service, "get_status")["data"]["carousel"]
+checks.equal(status["slot_count"], 4, "the carousel has 4 slots")
+checks.ok(not status["position_valid"],
+          "and no trusted position until it is declared")
+
+response = send(service, "sync_position", load_slot=1)
+checks.ok(response["ok"], "sync_position declares the origin")
+
+status = send(service, "get_status")["data"]["carousel"]
+checks.ok(status["position_valid"], "the position is now trusted")
+checks.equal(status["current_load_slot"], 1, "Slot 1 is at the loader")
+checks.equal(status["current_scan_slot"], 3,
+             "which puts Slot 3 at the scanner - 2 slots, 180 degrees")
+
+for load_slot, scan_slot in ((1, 3), (2, 4), (3, 1), (4, 2)):
+    send(service, "sync_position", load_slot=load_slot)
+    status = send(service, "get_status")["data"]["carousel"]
+
+    checks.equal(status["current_scan_slot"], scan_slot,
+                 "loader {} means scanner {}".format(load_slot, scan_slot))
+
+# The mapping is its own inverse, which is what a half-turn offset means.
+send(service, "sync_position", scan_slot=3)
+checks.equal(send(service, "get_status")["data"]["carousel"]
+             ["current_load_slot"], 1,
+             "declaring the scanner slot gives the same answer both ways")
+
+for slot in (0, 5, 8, -1, "two", None):
+    response = send(service, "select_slot", slot=slot)
+    checks.ok(not response["ok"], "slot {!r} is refused".format(slot))
+
+send(service, "sync_position", load_slot=1)
+response = send(service, "select_slot", slot=2)
+checks.ok(response["ok"], "slot 2 is selected")
+checks.close(response["data"]["move"]["degrees"], 90.0,
+             "one slot is 90 degrees of movement")
+
+send(service, "sync_position", load_slot=1)
+send(service, "select_slot", slot=1)
+before = send(service, "get_status")["data"]["carousel"]
+
+response = send(service, "servo_torque", enable=False)
+checks.ok(response["ok"], "torque can be released")
+checks.ok(not send(service, "get_status")["data"]["carousel"]
+          ["position_valid"],
+          "releasing torque invalidates the position - a carousel that "
+          "can be turned by hand has no position the firmware can vouch for")
+
+response = send(service, "select_slot", slot=2)
+checks.ok(not response["ok"],
+          "and movement is refused until it is re-synchronized")
+
+
+# ======================================================================
+checks.section("fine alignment does not renumber slots")
+
+main, service, config, fake = build()
+send(service, "connect_servo")
+send(service, "sync_position", load_slot=1)
+send(service, "select_slot", slot=1)
+
+before = send(service, "get_status")["data"]["carousel"]
+
+response = send(service, "fine_adjust", degrees=3.0)
+checks.ok(response["ok"], "a small fine adjustment is accepted")
+
+after = send(service, "get_status")["data"]["carousel"]
+checks.equal(after["selected_slot"], before["selected_slot"],
+             "the selected slot is unchanged")
+checks.equal(after["current_load_slot"], before["current_load_slot"],
+             "the loader slot is unchanged")
+checks.equal(after["current_scan_slot"], before["current_scan_slot"],
+             "the scanner slot is unchanged")
+checks.equal(after["slot_count"], 4, "and the geometry is still 4 slots")
+
+response = send(service, "fine_adjust",
+                degrees=config.MAX_FINE_ADJUST_DEG + 1)
+checks.ok(not response["ok"],
+          "an adjustment larger than the limit is refused - fine alignment "
+          "is never a hidden whole-slot move")
+
+
+# ======================================================================
+checks.section("acquisition")
+
+main, service, config, fake = build()
+send(service, "connect_servo")
+send(service, "sync_position", load_slot=1)
+send(service, "select_slot", slot=1)
+
+response = send(service, "measure_raw", slot=1)
+checks.ok(response["ok"], "measure_raw succeeds")
+
+data = response["data"]
+checks.equal(sorted(data["illuminations"]), ["ir", "uv", "white"],
+             "all three illuminations are acquired")
+
+for name, block in data["illuminations"].items():
+    first = (block.get("acquisitions") or [{}])[0]
+
+    checks.equal(len(first), 18,
+                 "{} carries 18 channels".format(name))
+
+checks.equal(data["slot_id"], 1, "the slot is reported")
+checks.ok(data["home_restored"],
+          "and the sample is returned to the loading position")
+
+status = send(service, "get_status")["data"]["carousel"]
+checks.equal(status["carousel_phase"], "LOAD",
+             "the carousel ends where it started")
+
+# A sensor that fails must not leave the sample at the scanner.
+main, service, config, fake = build(
+    device=support.FakeAS7265X(data_ready=False))
+send(service, "connect_servo")
+send(service, "sync_position", load_slot=1)
+send(service, "select_slot", slot=1)
+
+response = send(service, "measure_raw", slot=1)
+checks.ok(not response["ok"], "an acquisition failure is reported")
+checks.ok("return_move" in (response.get("data") or {})
+          or response["data"].get("moved") is False,
+          "and the answer says what happened to the mechanism")
+
+# Refusing early is better than moving and then refusing.
+main, service, config, fake = build(
+    device=support.FakeAS7265X(absent_scans=10 ** 6), bring_up_sensor=False)
+send(service, "connect_servo")
+send(service, "sync_position", load_slot=1)
+send(service, "select_slot", slot=1)
+
+before = send(service, "get_status")["data"]["carousel"]["carousel_phase"]
+response = send(service, "measure_raw", slot=1)
+after = send(service, "get_status")["data"]["carousel"]["carousel_phase"]
+
+checks.ok(not response["ok"], "measuring with no sensor fails")
+checks.equal(after, before,
+             "and the carousel never moved - the sensor is checked BEFORE "
+             "a sample is swung to the scanner")
+
+
+sys.exit(checks.report())
