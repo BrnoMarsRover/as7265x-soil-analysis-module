@@ -167,6 +167,30 @@ checks.ok(response["ok"], "connect_servo brings the link up")
 checks.ok(send(service, "get_status")["data"]["servo"]["connected"],
           "and the status says so")
 
+# EVERY read-only servo command, against a connected driver.
+#
+# get_servo_calibration used to call servo.capabilities(), a method
+# deleted with the multi-servo capability table. Nothing here exercised
+# the command, so the suite stayed green while the command raised
+# AttributeError against every real ST3215 on the bench. A handler that
+# is never called by a test is a handler that is not tested.
+for command in ("get_servo_calibration", "servo_diagnostics"):
+    response = send(service, command)
+
+    checks.ok(response["ok"],
+              "{} answers against a connected servo".format(command))
+    checks.ok(isinstance(response.get("data"), dict),
+              "{} returns a data object".format(command))
+
+calibration = send(service, "get_servo_calibration")["data"]
+
+checks.equal(calibration["servo_type"], "st3215",
+             "get_servo_calibration names the actuator")
+checks.ok("capabilities" not in calibration,
+          "and carries no capability table - that machinery is gone")
+checks.ok("current" in calibration,
+          "but does carry the tunables it exists to report")
+
 response = send(service, "disconnect_servo")
 checks.ok(response["ok"], "disconnect_servo releases it")
 checks.ok(not send(service, "get_status")["data"]["servo"]["connected"],

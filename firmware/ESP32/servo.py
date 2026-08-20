@@ -408,6 +408,69 @@ def decode_status_flags(status_byte):
 
 
 # ======================================================================
+# releasing UART pins
+# ======================================================================
+
+def release_uart_pins(*pins):
+    """
+    Hand pins back to the GPIO matrix after uart.deinit().
+
+    MEASURED ON THIS HARDWARE, and the single most misleading fault
+    found in the whole servo path.
+
+    `uart.deinit()` stops the peripheral but does NOT detach its pins:
+    a pin that has been UART2's TX stays wired to the TX signal
+    afterwards. Open UART2 again with that same pin as RX, and every
+    byte transmitted arrives straight back - at ANY baud rate, with a
+    perfect checksum, looking exactly like a transparent half-duplex
+    adapter echoing the bus.
+
+    That is not inference. With GPIO17 previously used as TX, a probe
+    transmitting on GPIO18 - a pin wired to nothing at all - got its
+    own frame back on GPIO17:
+
+        tx=16 rx=17  (clean boot)      0 bytes
+        tx=17 rx=16  (swapped probe)   0 bytes
+        tx=16 rx=17  (again)           6 bytes, "echo"
+        tx=18 rx=17  (18 unconnected)  6 bytes, "echo"
+        tx=16 rx=18  (18 unconnected)  0 bytes
+
+    No external wiring can carry GPIO18 to GPIO17. The loop is inside
+    the chip, and it belongs to GPIO17 because GPIO17 was a TX.
+
+    Why it matters: bus_scan deliberately tries the SWAPPED pin order.
+    Without this call the first swapped probe poisons every probe for
+    the rest of the boot, the scan reports ECHO_ONLY, and its diagnosis
+    tells the operator that the ESP32 side is proven good and the servo
+    must be unpowered - on evidence the firmware manufactured itself.
+    A silent bus must be allowed to stay silent.
+
+    Re-initializing each pin as a plain input detaches it; verified on
+    hardware to clear the loopback completely.
+    """
+    try:
+        from machine import Pin
+
+    except ImportError:                                # pragma: no cover
+        # Not on the device - the test suites import this module on
+        # CPython, where there is no GPIO matrix to hand anything back
+        # to.
+        return
+
+    for pin in pins:
+        if pin is None:
+            continue
+
+        try:
+            Pin(int(pin), Pin.IN)
+
+        except Exception:
+            # A pin that cannot be reset is not a reason to fail the
+            # operation that was releasing it.
+            pass
+
+
+# ======================================================================
 # angular arithmetic on a seamless axis
 # ======================================================================
 
@@ -670,6 +733,11 @@ class ST3215:
 
         finally:
             self.uart = None
+
+            # The bus scan reopens UART2 in BOTH pin orders, and it is
+            # normally reached straight after a release. A TX pin left
+            # attached here would make that scan hear its own frames.
+            release_uart_pins(self.tx_pin, self.rx_pin)
 
         return {"servo": self.name, "released": True, "torque": "unchanged"}
 
@@ -2376,6 +2444,12 @@ def bus_scan(uart_id=None, tx_pin=None, rx_pin=None, bauds=None,
 
                 except AttributeError:
                     pass
+
+                # Before the NEXT combination opens UART2. Without this
+                # the swapped probe below leaves its TX pin attached,
+                # and every later probe hears its own transmission come
+                # back as a false echo. See release_uart_pins().
+                release_uart_pins(tx, rx)
 
             probes.append(combination)
 

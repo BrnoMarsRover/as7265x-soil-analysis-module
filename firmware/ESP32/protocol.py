@@ -253,9 +253,28 @@ def send_json(payload):
     # The leading newline is a guard, not decoration: it closes anything
     # already sitting on the console so this frame gets a line of its
     # own. See config.RESPONSE_GUARD_NEWLINE.
-    prefix = "\n" if config.RESPONSE_GUARD_NEWLINE else ""
+    #
+    # WRITTEN AS THREE PIECES, never concatenated.
+    #
+    # `prefix + text + "\n"` builds a SECOND complete copy of the
+    # response - the largest allocation this firmware makes - and it
+    # did so OUTSIDE the MemoryError guard above. Measured on hardware:
+    # a six-repeat acquisition block survived json.dumps and then died
+    # on that concatenation, so the sensor had been read, the data
+    # existed, and the PC was told only "the answer could not be sent
+    # (MemoryError)". Two consecutive blocks failed and passed
+    # alternately, because the error path's gc.collect() freed for the
+    # next request exactly what the concatenation had needed.
+    #
+    # Three writes allocate nothing beyond the 256-byte chunks
+    # _write_all already slices, and _ascii_only returns the SAME
+    # object when the text is pure ASCII, which every response of this
+    # protocol is.
+    if config.RESPONSE_GUARD_NEWLINE:
+        _write_all("\n")
 
-    _write_all(prefix + _ascii_only(text) + "\n")
+    _write_all(_ascii_only(text))
+    _write_all("\n")
 
 
 # ======================================================================
@@ -622,8 +641,13 @@ class Protocol:
 
         calibration = servo.calibration()
 
+        # NO capability table. It was seven booleans that were all True
+        # with one actuator, and it was deleted with the rest of the
+        # multi-servo machinery - but this call to it survived, so
+        # get_servo_calibration raised AttributeError against every real
+        # ST3215 while the fake-hardware suite never noticed, because
+        # nothing exercised this command. Found on the bench, 2026-08-20.
         calibration["servo_type"] = servo_module.SERVO_TYPE
-        calibration["capabilities"] = servo.capabilities()
         calibration["slot_step_deg"] = config.CAROUSEL_SLOT_GEOMETRY_DEG
         calibration["half_turn_deg"] = config.CAROUSEL_HALF_TURN_DEG
 

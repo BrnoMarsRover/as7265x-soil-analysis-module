@@ -207,33 +207,54 @@ HOME_SETTLE_TIME = 0.3
 #     ESP32 GPIO17 <--- driver board TX      (this board RECEIVES here)
 #     ESP32 GND    <--> driver board GND
 #
-# MEASURED ON THE FITTED HARDWARE 2026-08-19, three independent ways.
+# !! THE ORIENTATION BELOW IS NOT CURRENTLY PROVEN. READ THIS. !!
+#
+# It was recorded on 2026-08-19 from three observations. On 2026-08-20
+# the second of them was traced to a firmware fault and is now known to
+# be worthless, which undermines the conclusion the other two were read
+# through.
 #
 # 1. Line states, with the ESP32's own pulls and nothing transmitting:
 #
 #        GPIO16   follows the pull both ways   -> FLOATING
 #        GPIO17   high against a pull-down     -> DRIVEN by something
 #
-#    An adapter INPUT is high impedance and cannot hold a line, so a
-#    floating pin is the one wired to the adapter's RX. An adapter
-#    OUTPUT idles high, so the driven pin is the one wired to its TX.
-#    That alone fixes the direction: transmit on 16, receive on 17.
+#    read as: transmit on 16, receive on 17. Note that the PCB itself
+#    says the opposite - the schematic names GPIO17 ESP32_UART_TX2 and
+#    GPIO16 ESP32_UART_RX2, and puts a 10k pull-up (R11) on the GPIO16
+#    net, which is how an RX input is normally biased. A pull-up on
+#    GPIO16 would also explain that pin reading high without anything
+#    driving it.
 #
-# 2. With the servo bus powered, orientation TX 16 / RX 17 returned a
-#    clean 6-byte echo of our own frame at every one of eight baud
-#    rates. A transparent half-duplex adapter echoes at any baud
-#    because it converts levels rather than reframing; the opposite
-#    orientation never produced a clean echo.
+# 2. WITHDRAWN. "Orientation TX 16 / RX 17 returned a clean 6-byte echo
+#    of our own frame at every one of eight baud rates" was NOT the
+#    adapter. It was the ESP32 echoing to itself.
 #
-# 3. A genuine status packet was captured from the servo:
+#    uart.deinit() does not detach a pin from the UART2 TX signal, so
+#    once GPIO17 had been used as TX by the bus scan's swapped-pin
+#    probe, reopening UART2 with GPIO17 as RX looped every transmitted
+#    byte straight back - at any baud rate, with a perfect checksum.
+#    Proven on 2026-08-20 by transmitting on GPIO18, a pin wired to
+#    nothing at all, and receiving the frame on GPIO17.
+#
+#    "An echo at EVERY baud rate" is the signature of that loopback,
+#    not of a transparent adapter. servo.release_uart_pins() now
+#    prevents it; with the fix in place, TX 16 / RX 17 is silent at all
+#    eight baud rates.
+#
+# 3. A status packet was recorded as captured from the servo:
 #
 #        FF FF 01 02 00 FC     ID 1, error byte 0x00, checksum valid
 #
-#    so the servo exists, answers to ID 1, and runs at 1 Mbps.
+#    It has NOT been reproduced since. On 2026-08-20 a sweep of all 254
+#    IDs at 1 Mbps and at 115200, in both pin orders, produced zero
+#    status packets, zero checksum errors and zero answering IDs - only
+#    our own frames coming back.
 #
-# The previous assignment had these the other way round, which is why
-# the bus scan reported ECHO_ONLY and sent everyone looking for a
-# power fault that was not there.
+# The values below are therefore LEFT AS THEY WERE, deliberately: a
+# silent bus cannot tell you which way round it is wired, and changing
+# a pin assignment on a guess would destroy the one known-good record
+# there is. Re-measure this the moment the servo answers at all.
 #
 # The servo is powered from an EXTERNAL supply at the driver board. No
 # servo current flows through this PCB, and this firmware has no
@@ -247,10 +268,28 @@ HOME_SETTLE_TIME = 0.3
 
 ST3215_UART_ID = 2
 
-# THIS BOARD TRANSMITS ON 16 AND RECEIVES ON 17. See the wiring note
-# above for the three measurements that establish it.
-ST3215_TX_PIN = 16
-ST3215_RX_PIN = 17
+# THIS BOARD TRANSMITS ON 16 AND RECEIVES ON 17.
+#
+# MEASURED ON THE FITTED CABLE 2026-08-20, from the adapter's own
+# drive strength rather than from an echo:
+#
+#   GPIO17  stays high against the ESP32's internal 45k pull-down, and
+#           when driven from the ESP32 through R9 (100 ohm) it moves
+#           only 250 mV. A 3.3 V source that a 100 ohm series resistor
+#           can only shift by 250 mV has an impedance near 10 ohms:
+#           that is an OUTPUT holding its idle level, so GPIO17 is
+#           wired to the adapter's TX and this board RECEIVES there.
+#
+#   GPIO16  follows the ESP32's internal pull-up AND pull-down with
+#           nothing opposing it - the signature of a high-impedance
+#           INPUT on the far end, so GPIO16 is wired to the adapter's
+#           RX and this board TRANSMITS there.
+#
+# The Bus Servo Adapter (A) labels its 3-pin header from its OWN point
+# of view, which is why "TX to TX" looks correct on the silkscreen and
+# is not: the adapter's TX must reach this board's RX.
+ST3215_TX_PIN = 17
+ST3215_RX_PIN = 16
 
 # 1 Mbps is the ST3215 factory baud rate (memory table address 0x06, code
 # 0). Change it only if the servo itself has been reconfigured.

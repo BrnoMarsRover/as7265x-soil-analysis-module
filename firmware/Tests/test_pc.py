@@ -125,6 +125,17 @@ class FakePort:
     def flush(self):
         pass
 
+    @property
+    def in_waiting(self):
+        """
+        Bytes ready to be read, as pySerial reports them.
+
+        Modelled because the link asks for in_waiting before every
+        read: a fake port without it would let a read(512) that blocks
+        for the whole port timeout on real hardware pass the suite.
+        """
+        return sum(len(chunk) for chunk in self.script)
+
     def read(self, count=1):
         if not self.script:
             return b""

@@ -262,6 +262,19 @@ class SerialLink:
         self.salvaged_frames = 0
         self.last_noise = []
 
+        # THE DAMAGED LINES THEMSELVES, not just how many there were.
+        #
+        # A counter says a frame arrived broken; it cannot say HOW, and
+        # how is the entire diagnosis. Measured on COM4: the damage
+        # seen on this hardware is exactly 64 leading bytes - one
+        # CP210x USB packet - replaced by undecodable rubbish, with the
+        # remaining 300 bytes of the frame byte-perfect. That shape is
+        # only visible if the line is kept, and it is what distinguishes
+        # a host bridge artefact from a firmware that builds bad JSON.
+        #
+        # Capped, because this is a diagnostic aid and not a log file.
+        self.damaged_lines = []
+
         self._request_id = 0
 
     # ------------------------------------------------------------------
@@ -539,6 +552,11 @@ class SerialLink:
                 self.corrupt_frames += 1
                 last_damage = error
 
+                if len(self.damaged_lines) < NOISE_LIMIT:
+                    self.damaged_lines.append(
+                        (error.data or {}).get("line", "")
+                    )
+
                 if attempt + 1 < attempts:
                     self._trace("RX DAMAGED", "asking again")
 
@@ -581,7 +599,24 @@ class SerialLink:
         buffer = ""
 
         while time.monotonic() < deadline:
-            chunk = self.serial.read(512)
+            # ONE BYTE, THEN WHATEVER CAME WITH IT.
+            #
+            # pySerial's read(n) blocks until n bytes have arrived or
+            # the port timeout expires, whichever comes first. Asking
+            # for a fixed 512 therefore made EVERY command pay the
+            # whole port timeout, because no frame this protocol sends
+            # is 512 bytes long: the answer was sitting in the driver
+            # buffer while read() went on waiting for bytes that were
+            # never coming. Measured on COM4, ping tracked the port
+            # timeout exactly - 0.5 s -> 562 ms, 0.25 s -> 283 ms,
+            # 0.1 s -> 126 ms - and had almost nothing to do with how
+            # fast the board answered.
+            #
+            # Asking for one byte keeps the bounded block that the
+            # timeout exists to provide, and in_waiting then takes the
+            # rest of the frame in the same pass.
+            waiting = self.serial.in_waiting
+            chunk = self.serial.read(waiting if waiting > 0 else 1)
 
             if not chunk:
                 continue
