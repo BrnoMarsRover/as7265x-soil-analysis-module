@@ -21,7 +21,12 @@ from somewhere else is a missing file, not a missing COM port.
 py -m pip install -r firmware\PC\requirements.txt
 ```
 
-pyserial and mpremote. Nothing else.
+pyserial for the operator client; mpremote and mpy-cross for
+deployment. Nothing else.
+
+`mpy-cross` MUST match the MicroPython on the board. The board runs
+v1.28.0 and loads `.mpy` version 6.3, which `mpy-cross==1.28.0.post2`
+emits. A mismatch does not warn - the module fails to import.
 
 ---
 
@@ -70,8 +75,9 @@ on its own, and has answered a ping:
 
 ```
 SOURCES       PASS   7 files
+BUILD         PASS   5 modules compiled, 268453 bytes of source -> 66983 bytes on device
 PORT          PASS   COM4
-CLEAN         PASS   removed boot.py, carousel.py, config.py, ...
+CLEAN         PASS   removed boot.py, carousel.mpy, config.mpy, ...
 UPLOAD        PASS   7 files
 MANIFEST      PASS   7 files, nothing else
 CONTENT       PASS   sha256 matches for all 7 files
@@ -105,14 +111,58 @@ device is the manifest and nothing else. It removes **user files only** —
 the MicroPython runtime lives in flash, not in the filesystem, and is
 never touched.
 
+### The firmware is compiled before it is uploaded
+
+The device receives **bytecode**, not source. `config`, `sensor`,
+`servo`, `carousel` and `protocol` are cross-compiled to `.mpy` by
+`mpy-cross`; only `main.py` and `boot.py` go up as source, because the
+MicroPython runtime opens those two by name at startup.
+
+This is not an optimization. MicroPython compiles a `.py` on the device
+at import, and the parse tree is the largest transient allocation the
+board makes. At roughly 7500 lines it no longer fits:
+
+```
+IMPORTS       FAIL   MemoryError: memory allocation failed,
+                     allocating 1196 bytes
+```
+
+Compiling on the device also leaves the heap in pieces, and a response
+of a few kilobytes needs its bytes contiguous. Measured on the board:
+
+```
+deployed as .py     94784 B free, largest single block   8 kB
+deployed as .mpy    70544 B free, largest single block  32 kB
+```
+
+With the sources deployed, every WHITE/UV/IR triad after the first came
+back `RESPONSE_TOO_LARGE` - after spending its full 24 seconds reading
+the sensor.
+
+**Nothing is generated into the repository.** The build directory is
+temporary and per-run, and the `.py` files stay the only source of
+truth. `mpy-cross` output is deterministic, so `verify` rebuilds and
+compares hashes without keeping an artefact.
+
+If the board boots with
+
+```
+MemoryError: memory allocation failed, allocating 4294966961 bytes
+```
+
+a `.mpy` arrived truncated - that is a length field read off the end of
+a short file. `mpremote fs cp` has been observed to do this silently,
+with exit code 0, so `upload` now hashes every file on the device as it
+lands and sends it again if it does not match.
+
 ### The manifest is authoritative
 
 `tools/device.py` uploads exactly the seven files named in
-`ESP32_FILES`. It does not scan the directory: a scratch file left in
-`ESP32/` would otherwise become part of the firmware, and what the
-device runs would depend on the state of somebody's working copy. A
-`.py` file in `ESP32/` that is not in the manifest is reported and not
-uploaded.
+`ESP32_FILES`, built from the seven sources in `ESP32_SOURCES`. It does
+not scan the directory: a scratch file left in `ESP32/` would otherwise
+become part of the firmware, and what the device runs would depend on
+the state of somebody's working copy. A `.py` file in `ESP32/` that is
+not in the manifest is reported and not uploaded.
 
 ### Verifying a deployment
 

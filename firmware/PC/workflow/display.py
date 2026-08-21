@@ -595,6 +595,78 @@ DATABASE_LABELS = {
 }
 
 
+def print_database_results(database_results, metrics=("cosine", "rmse",
+                                                      "pearson_r")):
+    """
+    What each database says, per metric, with its margin.
+
+    ONE ROW PER DATABASE PER METRIC, never a single ranked list. The
+    databases answer different questions - DB1 from spectra measured on
+    this instrument, DB3 from laboratory spectra put through a model of
+    it - so their scores are shown side by side and never averaged into
+    a number that would mean nothing.
+
+    THE MARGIN IS THE POINT. A winner is only worth reading next to the
+    distance to the runner-up: two materials separated by 0.004 cosine
+    is not an identification, and printing only the winner is how a 97%
+    similarity came to look like a confident answer.
+    """
+    if not database_results:
+        print("  No database comparison was made.")
+
+        return
+
+    unavailable = []
+
+    for entry in database_results:
+        name = entry.get("database")
+        status = entry.get("status")
+
+        if status != "READY" or not entry.get("metrics"):
+            unavailable.append(entry)
+
+            continue
+
+        print("{}  {}  {} materials, {} channels".format(
+            name,
+            entry.get("version"),
+            entry.get("candidate_count"),
+            entry.get("channels_compared"),
+        ))
+        print("     normalized with {}".format(
+            entry.get("normalization") or "-"
+        ))
+        print()
+        print("     {:<12} {:<24} {:>10} {:>10}".format(
+            "metric", "winner", "score", "margin"))
+
+        for metric in metrics:
+            summary = (entry.get("metrics") or {}).get(metric)
+
+            if not summary:
+                continue
+
+            print("     {:<12} {:<24} {:>10} {:>10}".format(
+                metric,
+                str(summary.get("winner"))[:24],
+                number(summary.get("winner_score")),
+                number(summary.get("absolute_margin")),
+            ))
+
+        print()
+
+    for entry in unavailable:
+        print("{}  {}".format(entry.get("database"), entry.get("status")))
+
+        reason = entry.get("reason")
+
+        if reason:
+            for line in textwrap.wrap(str(reason), 64):
+                print("     {}".format(line))
+
+        print()
+
+
 def print_cross_database(cross, limit=5):
     """
     What each of the three databases says, separately, and what that adds
@@ -771,11 +843,18 @@ def print_evidence_summary(package):
     if not package:
         return
 
-    quality = package.get("quality") or {}
+    # NOT `quality`. The Science.quality MODULE is imported at the top
+    # of this file, and a local of that name shadowed it: the
+    # quality.summarize() call at the end of this function became
+    # dict.summarize() and raised AttributeError. It only fires when
+    # the QC is imperfect - which is every real measurement that is not
+    # a clean one - so the screen worked in the one case nobody needed
+    # it to.
+    quality_report = package.get("quality") or {}
     reliability = package.get("channel_reliability") or {}
 
-    hardware = (quality.get("hardware") or {}).get("status")
-    normalization = (quality.get("normalization") or {}).get("status")
+    hardware = (quality_report.get("hardware") or {}).get("status")
+    normalization = (quality_report.get("normalization") or {}).get("status")
 
     print("MEASUREMENT")
     print()

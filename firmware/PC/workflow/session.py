@@ -54,6 +54,17 @@ from serial_link import LinkError
 
 SLOT_COUNT = 4
 
+# How many DIFFERENT prepared fractions of one material it takes before
+# "how much of it is there" is a question worth asking of the data.
+#
+# Three points define a slope and a curvature; two define a line through
+# two points, which fits perfectly and predicts nothing. This is a floor
+# on what to attempt, not a promise that three is enough - it is
+# PROVISIONAL, like every other threshold in the decision layer, and the
+# evaluation in research/training/evaluate_mixtures.py is what actually
+# decides whether an estimate holds up.
+MIXTURE_FRACTIONS_FOR_QUANTITY = 3
+
 import json
 import sys
 import textwrap
@@ -329,6 +340,7 @@ class Mission:
 
     def record_observation(self, measurement_id, result, label_type,
                            material=None, family_id=None, mixture=None,
+                           sample_context=None,
                            verification_status="UNKNOWN",
                            verification_source=None, certainty=None,
                            session_id=None, sample_group=None,
@@ -347,16 +359,28 @@ class Mission:
                 self.learning_error or "the learning database is not open",
             )
 
-        package = (result or {}).get("evidence")
+        package = (result or {}).get("evidence") or {}
         decision = (result or {}).get("decision")
-        measurement = (result or {}).get("measurement") or {}
 
-        raw = measurement.get("raw") or {}
+        # THE RAW IS IN THE EVIDENCE PACKAGE, and always was.
+        #
+        # This read `result["measurement"]["raw"]`. An AnalysisRun has
+        # no "measurement" key - the block of that name lives inside the
+        # evidence package and holds the wavelengths and the
+        # illumination list, not the spectra. So `raw` was empty every
+        # single time and this method refused every observation it was
+        # ever offered with "the measurement carries no raw spectra to
+        # store", which reads like a sensor fault and is a typo.
+        #
+        # Nothing could be recorded in the learning history at all.
+        raw = package.get("raw") or {}
 
         if not raw:
             raise LearningError(
                 "RAW_REQUIRED",
-                "the measurement carries no raw spectra to store",
+                "the analysis produced no evidence package, so there "
+                "are no raw spectra to store - a calibration must be "
+                "active before an observation can be recorded",
             )
 
         self.learning.add_observation(
@@ -379,7 +403,9 @@ class Mission:
             legacy_calibration_id=(
                 self.references.calibration_id if self.references else None
             ),
-            sensor_settings=measurement.get("sensor_settings"),
+            sensor_settings=(
+                (package.get("acquisition") or {}).get("sensor_settings")
+            ),
             quality=(package or {}).get("quality"),
             channel_reliability=(package or {}).get("channel_reliability"),
             evidence_schema_version=(package or {}).get("schema_version"),
@@ -399,6 +425,14 @@ class Mission:
             verification_source=verification_source,
             certainty=certainty,
         )
+
+        # How the sample was presented. Written after the label because
+        # a rejected mixture should not leave a context row behind
+        # describing a measurement whose ground truth was refused.
+        if sample_context:
+            self.learning.add_sample_context(
+                measurement_id, **sample_context
+            )
 
         if decision:
             try:
@@ -423,6 +457,42 @@ class Mission:
                 pass
 
         return self.learning.get_observation(measurement_id)
+
+    def mixture_readiness(self):
+        """
+        One line on how far the prepared-mixture library has to go.
+
+        Said after every mixture is saved, because the useful thing to
+        know at the bench is not "saved" but "how many more of these do
+        I need". A quantity model needs the same material at several
+        different fractions; a detection model needs several materials
+        against the same matrix. Neither is close with three.
+        """
+        if self.learning is None:
+            return None
+
+        try:
+            summary = self.learning.mixture_summary()
+
+        except Exception:
+            return None
+
+        if not summary["mixtures"]:
+            return None
+
+        spread = [
+            key for key, entry in summary["by_material"].items()
+            if len(set(entry["fractions"])) >= MIXTURE_FRACTIONS_FOR_QUANTITY
+        ]
+
+        return (
+            "{} prepared mixture(s) on record over {} material(s); {} "
+            "have the {}+ different fractions a quantity estimate would "
+            "need.".format(
+                summary["mixtures"], summary["materials_spiked"],
+                len(spread), MIXTURE_FRACTIONS_FOR_QUANTITY,
+            )
+        )
 
     def calibration_health(self):
         """PASS / MISSING / INVALID for each of the two calibrations."""

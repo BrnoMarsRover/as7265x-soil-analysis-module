@@ -418,4 +418,211 @@ checks.equal(after, before,
              "a sample is swung to the scanner")
 
 
+# ======================================================================
+checks.section("the 18-channel read does not repeat itself")
+#
+# CHANNEL_LAYOUT is ordered by wavelength, which groups the channels six
+# at a time by the device that owns them. Selecting the device before
+# every channel therefore asked for a device that was already selected
+# fifteen times out of eighteen - 56 ms of bus traffic per acquisition,
+# measured on the sensor.
+
+main, service, config, _servo = build()
+fake = service.fake_sensor
+
+fake.device_selects = 0
+fake.channel_reads = 0
+
+spectrum = service.sensor.driver.read_all_channels()
+
+import sensor as sensor_module
+
+checks.equal(len(spectrum), 18, "all 18 channels are read")
+checks.equal(sorted(spectrum), sorted(sensor_module.CHANNELS),
+             "and they are exactly the channels the layout declares")
+checks.equal(fake.device_selects, 3,
+             "one device select per internal device, not one per channel")
+checks.equal(fake.channel_reads, 18 * 4,
+             "and every channel is still read as four register bytes")
+
+
+# ======================================================================
+checks.section("large responses survive a fragmented heap")
+#
+# REGRESSION. json.dumps allocates its result as ONE contiguous block,
+# and MicroPython's collector never moves anything: measured on the
+# board, an acquisition leaves 94784 bytes free with a largest block of
+# 8 kB. The first triad after boot returned and every later one came
+# back RESPONSE_TOO_LARGE after spending its full 24 s reading the
+# sensor - the measurement existed and was discarded for want of a
+# buffer. send_json now splits the payload instead of retrying the
+# allocation that just failed.
+
+main, service, config, fake = build()
+
+import protocol as protocol_module
+
+CHANNELS = ("A", "B", "C", "D", "E", "F", "G", "H", "I",
+            "J", "K", "L", "R", "S", "T", "U", "V", "W")
+
+
+def triad_shaped(repeats):
+    """A payload the shape and size of a real WHITE/UV/IR response."""
+    blocks = {}
+
+    for offset, name in enumerate(("white", "uv", "ir")):
+        blocks[name] = {
+            "illumination": name,
+            "repeats": repeats,
+            "acquisitions": [
+                {c: 1000.0 + offset + index + n * 1.25
+                 for n, c in enumerate(CHANNELS)}
+                for index in range(repeats)
+            ],
+            "data_ready_wait_ms": [123] * repeats,
+        }
+
+    return {"request_id": "1", "ok": True, "cmd": "acquire_triad",
+            "data": {"illuminations": blocks, "repeats": repeats}}
+
+
+payload = triad_shaped(5)
+
+written = []
+sink = protocol_module._ChunkSink(write=written.append, limit=10 ** 9)
+protocol_module._emit_json(payload, sink)
+sink.done()
+
+checks.equal(json.loads("".join(written)), payload,
+             "a response emitted through the sink parses back unchanged")
+checks.equal(len(written), 1,
+             "a healthy heap pays ONE dumps call and is never split - the "
+             "fast path must not regress into piecework")
+
+# The same object, forced down every branch: this is the deep-splitting
+# path a badly fragmented heap actually takes.
+class _NoRoom(dict):
+    """A dict json.dumps cannot serialize whole."""
+
+
+def _explode(obj):
+    if isinstance(obj, dict):
+        return _NoRoom({k: _explode(v) for k, v in obj.items()})
+
+    if isinstance(obj, list):
+        return [_explode(v) for v in obj]
+
+    return obj
+
+
+real_dumps = protocol_module.json.dumps
+depth_calls = []
+
+
+def _dumps_that_runs_out(obj, **kwargs):
+    """Refuse every container, exactly as a heap with no large hole does."""
+    if isinstance(obj, (dict, list, tuple)) and obj:
+        depth_calls.append(1)
+
+        raise MemoryError("no contiguous block")
+
+    return real_dumps(obj, **kwargs)
+
+
+protocol_module.json.dumps = _dumps_that_runs_out
+
+deep = []
+deep_sink = protocol_module._ChunkSink(write=deep.append, limit=256)
+
+try:
+    protocol_module._emit_json(payload, deep_sink)
+    deep_sink.done()
+
+finally:
+    protocol_module.json.dumps = real_dumps
+
+checks.ok(bool(depth_calls),
+          "the fragmented-heap path was really exercised")
+checks.equal(json.loads("".join(deep)), payload,
+             "and a fully split response still parses to the same object")
+checks.ok(len(deep) > 1,
+          "a heap with no large hole yields many small pieces")
+checks.ok(max(len(piece) for piece in deep) <= 256 + 64,
+          "and no piece is much larger than one stdout chunk: largest "
+          "was {}".format(max(len(piece) for piece in deep)))
+
+# End to end through the real exit point: nothing may reach the console
+# until serialization has finished, and what does reach it must be one
+# parseable frame.
+written = []
+real_write_all = protocol_module._write_all
+protocol_module._write_all = lambda text: written.append(text)
+protocol_module.json.dumps = _dumps_that_runs_out
+
+try:
+    protocol_module.send_json(payload)
+
+finally:
+    protocol_module._write_all = real_write_all
+    protocol_module.json.dumps = real_dumps
+
+frame = "".join(written).strip()
+
+checks.equal(json.loads(frame), payload,
+             "send_json delivers the whole response when no large block "
+             "can be allocated")
+checks.ok(written[0] == "\n",
+          "the guard newline still leads the frame")
+checks.ok(written[-1] == "\n",
+          "and the frame is still newline terminated")
+
+# REGRESSION: a sink that runs out of room must not make the emitter
+# serialize the same subtree twice. The first implementation guarded
+# `sink.add(json.dumps(obj))` as one statement, so a MemoryError from
+# the SINK - raised after the text was already stored - was read as "this
+# subtree would not serialize" and the whole subtree was emitted again on
+# top of the copy already held. On the board that turned a tight heap
+# into an exhausted one.
+class _SinkThatFillsUp(protocol_module._ChunkSink):
+    def __init__(self, fail_after):
+        protocol_module._ChunkSink.__init__(self, write=lambda text: None,
+                                            limit=10 ** 9)
+        self.fail_after = fail_after
+        self.adds = 0
+
+    def add(self, text):
+        self.adds += 1
+
+        if self.adds == self.fail_after:
+            raise MemoryError("sink is full")
+
+        protocol_module._ChunkSink.add(self, text)
+
+
+sink = _SinkThatFillsUp(fail_after=1)
+raised = None
+
+try:
+    protocol_module._emit_json(payload, sink)
+
+except MemoryError as error:
+    raised = error
+
+checks.ok(raised is not None,
+          "a sink that cannot store the text reports it, instead of "
+          "silently re-serializing the same object")
+checks.equal(sink.adds, 1,
+             "and the emitter stops rather than emitting a second copy")
+
+# Compact separators: same object, fewer bytes on a 115200 wire.
+wide = json.dumps(payload)
+tight = json.dumps(payload, separators=protocol_module._COMPACT)
+
+checks.equal(json.loads(tight), json.loads(wide),
+             "compact separators do not change the response")
+checks.ok(len(tight) < len(wide),
+          "and make it smaller: {} bytes against {}".format(
+              len(tight), len(wide)))
+
+
 sys.exit(checks.report())

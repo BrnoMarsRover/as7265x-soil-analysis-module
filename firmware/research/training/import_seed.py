@@ -134,6 +134,7 @@ def plan(seed, taxonomy=None, store=None):
             "family_id": identity.family_id,
             "raw": raw,
             "previous_prediction": observation.get("previous_prediction"),
+            "observed_prediction": observation.get("observed_prediction"),
             "already_present": already is not None,
         })
 
@@ -205,6 +206,7 @@ def apply(seed, preview, store, profile_store=None):
 
     previous = seed.get("previous_pipeline") or {}
     written = []
+    skipped = []
 
     for entry in preview["importable"]:
         store.add_observation(
@@ -238,22 +240,49 @@ def apply(seed, preview, store, profile_store=None):
             note=policy.get("why"),
         )
 
-        prediction = entry.get("previous_prediction")
+        # Two pipelines ran over this session and both left a record.
+        # Each goes in under the version of the model that produced it,
+        # never merged: the whole reason to keep an old prediction is to
+        # be able to say what changed.
+        for prediction, version, confidence_key in (
+            (entry.get("previous_prediction"),
+             previous.get("model_version", "LEGACY_ANALYSIS"), "status"),
+            (entry.get("observed_prediction"),
+             (seed.get("observed_pipeline") or {}).get(
+                 "model_version", "OBSERVED_MODEL"), "confidence"),
+        ):
+            if not prediction:
+                continue
 
-        if prediction:
-            store.add_prediction(
-                entry["measurement_id"],
-                previous.get("model_version", "LEGACY_ANALYSIS"),
-                prediction.get("level", "UNKNOWN"),
-                material_key=prediction.get("material_key"),
-                confidence=prediction.get("status"),
-                decision=prediction,
-            )
+            try:
+                store.add_prediction(
+                    entry["measurement_id"],
+                    prediction.get("model_version") or version,
+                    prediction.get("level", "UNKNOWN"),
+                    material_key=prediction.get("material_key"),
+                    family_id=prediction.get("family_id"),
+                    candidates=prediction.get("candidates"),
+                    confidence=prediction.get(confidence_key),
+                    decision=prediction,
+                )
+
+            except LearningError as error:
+                # A prediction already on file for that model version is
+                # not a reason to abandon the import: predictions are
+                # immutable and the existing one wins. Reported, not
+                # silently swallowed.
+                if error.code != "PREDICTION_EXISTS":
+                    raise
+
+                skipped.append(
+                    "{}: {}".format(entry["measurement_id"], error.code)
+                )
 
         written.append(entry["measurement_id"])
 
     return {
         "written": written,
+        "skipped": skipped,
         "acquisition_profile_id": profile["profile_id"],
         "count": len(written),
     }

@@ -6,7 +6,7 @@
   "feature_space": "AS7265X_18",
   "instrument": "AS7265x on the Freya science module",
   "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
-  "generated_at": "2026-08-19T15:49:12.335051+00:00",
+  "generated_at": "2026-08-21T15:17:22.199490+00:00",
   "description": "The historical measurement session: 23 materials measured on this instrument under a single illumination, with one shared Dark and White.",
   "source": {
     "file": "DB1_source.txt",
@@ -198,11 +198,17 @@
     "Activated Carbon": {
       "material_id": "activated_carbon",
       "display_name": "Activated Carbon",
+      "name_en": "Activated Carbon",
+      "name_cs": "Aktivni uhli",
       "canonical_name": "Activated carbon",
       "chemical_formula": "C",
       "material_class": "carbonaceous",
       "aliases": [
-        "Activated charcoal"
+        "Activated charcoal",
+        "Aktivni uhli",
+        "Aktivni Uhli Hydrafin CC",
+        "Aktivni uhli Hydrafin",
+        "Hydrafin CC"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -404,12 +410,19 @@
     "Aluminum Sulfate": {
       "material_id": "aluminum_sulfate",
       "display_name": "Aluminum Sulfate",
+      "name_en": "Aluminum Sulfate",
+      "name_cs": "Siran hlinity (vlockovac)",
       "canonical_name": "Aluminium sulfate",
       "chemical_formula": "Al2(SO4)3",
       "material_class": "sulfate",
       "aliases": [
         "Alum (aluminium sulfate)",
-        "Aluminium sulphate"
+        "Aluminium sulphate",
+        "Siran hlinity (vlockovac)",
+        "Vlockovac- Siran hlinity",
+        "Vlockovac siran hlinity",
+        "Siran hlinity",
+        "Vlockovac"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -611,11 +624,16 @@
     "Ascorbic Acid": {
       "material_id": "ascorbic_acid",
       "display_name": "Ascorbic Acid",
+      "name_en": "Ascorbic Acid",
+      "name_cs": "Kyselina L-askorbova",
       "canonical_name": "Ascorbic acid",
       "chemical_formula": "C6H8O6",
       "material_class": "organic_acid",
       "aliases": [
-        "Vitamin C"
+        "Vitamin C",
+        "Kyselina L-askorbova",
+        "Kyselinaa L-askorbova",
+        "Kyselina askorbova"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -817,13 +835,16 @@
     "Bentonite": {
       "material_id": "bentonite",
       "display_name": "Bentonite",
+      "name_en": "Bentonite",
+      "name_cs": "Bentonit",
       "canonical_name": "Bentonite (montmorillonite-rich)",
       "chemical_formula": "(Na,Ca)0.33(Al,Mg)2Si4O10(OH)2*nH2O",
       "material_class": "phyllosilicate_clay",
       "aliases": [
-        "Bentonit",
         "Montmorillonite clay",
-        "Smectite clay"
+        "Smectite clay",
+        "Bentonit",
+        "Bentonitovy jil"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -1025,12 +1046,18 @@
     "Borax (Sodium Tetraborate)": {
       "material_id": "borax_sodium_tetraborate",
       "display_name": "Borax (Sodium Tetraborate)",
+      "name_en": "Borax (Sodium Tetraborate)",
+      "name_cs": "Borax (tetraboritan sodny)",
       "canonical_name": "Borax",
       "chemical_formula": "Na2B4O7*10H2O",
       "material_class": "borate",
       "aliases": [
         "Sodium tetraborate",
-        "Tincal"
+        "Tincal",
+        "Borax (tetraboritan sodny)",
+        "Borax",
+        "Tetraboritan sodny",
+        "Boritan sodny"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -1232,13 +1259,18 @@
     "Calcium Carbonate (Chalk)": {
       "material_id": "calcium_carbonate_chalk",
       "display_name": "Calcium Carbonate (Chalk)",
+      "name_en": "Calcium Carbonate (Chalk)",
+      "name_cs": "Uhlicitan vapenaty",
       "canonical_name": "Calcite",
       "chemical_formula": "CaCO3",
       "material_class": "carbonate",
       "aliases": [
         "Chalk",
         "Calcium carbonate",
-        "Whiting"
+        "Whiting",
+        "Uhlicitan vapenaty",
+        "Vapenec",
+        "Krida"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -1440,10 +1472,16 @@
     "Citric Acid": {
       "material_id": "citric_acid",
       "display_name": "Citric Acid",
+      "name_en": "Citric Acid",
+      "name_cs": "Kyselina citronova monohydrat",
       "canonical_name": "Citric acid",
       "chemical_formula": "C6H8O7",
       "material_class": "organic_acid",
-      "aliases": [],
+      "aliases": [
+        "Kyselina citronova monohydrat",
+        "Kyselina cytronova monohydrat",
+        "Kyselina citronova"
+      ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
       "acquisition_settings": {
@@ -1646,13 +1684,21 @@
     "Copper(II) Sulfate": {
       "material_id": "copperii_sulfate",
       "display_name": "Copper(II) Sulfate",
+      "name_en": "Copper(II) Sulfate",
+      "name_cs": "Siran mednaty pentahydrat (modra skalice)",
       "canonical_name": "Chalcanthite",
       "chemical_formula": "CuSO4*5H2O",
       "material_class": "sulfate",
       "aliases": [
         "Cupric sulfate",
         "Blue vitriol",
-        "Copper sulphate"
+        "Copper sulphate",
+        "Siran mednaty pentahydrat (modra skalice)",
+        "Siran mednat, pentahydrat",
+        "Siran mednaty pentahydrat",
+        "Siran mednat pentahydrat",
+        "Siran mednaty",
+        "Modra skalice"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -1854,12 +1900,18 @@
     "Epsom Salt (Magnesium Sulfate)": {
       "material_id": "epsom_salt_magnesium_sulfate",
       "display_name": "Epsom Salt (Magnesium Sulfate)",
+      "name_en": "Epsom Salt (Magnesium Sulfate)",
+      "name_cs": "Siran horecnaty (horka sul)",
       "canonical_name": "Epsomite",
       "chemical_formula": "MgSO4*7H2O",
       "material_class": "sulfate",
       "aliases": [
         "Epsom salt",
-        "Magnesium sulfate heptahydrate"
+        "Magnesium sulfate heptahydrate",
+        "Siran horecnaty (horka sul)",
+        "Siran horecnaty potravinarsky",
+        "Siran horecnaty",
+        "Horka sul"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -2061,12 +2113,19 @@
     "Green Clay (Illite)": {
       "material_id": "green_clay_illite",
       "display_name": "Green Clay (Illite)",
+      "name_en": "Green Clay (Illite)",
+      "name_cs": "Jil zeleny (illit)",
       "canonical_name": "Illite",
       "chemical_formula": "K0.65Al2(Al0.65Si3.35O10)(OH)2",
       "material_class": "phyllosilicate_clay",
       "aliases": [
         "Green clay",
-        "Illitic clay"
+        "Illitic clay",
+        "Jil zeleny (illit)",
+        "BIO Jil Zeleny",
+        "Jil zeleny",
+        "Zeleny jil",
+        "Illit"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -2268,13 +2327,20 @@
     "Iron(II) Sulfate": {
       "material_id": "ironii_sulfate",
       "display_name": "Iron(II) Sulfate",
+      "name_en": "Iron(II) Sulfate",
+      "name_cs": "Siran zeleznaty (zelena skalice)",
       "canonical_name": "Melanterite / ferrous sulfate",
       "chemical_formula": "FeSO4*7H2O",
       "material_class": "sulfate",
       "aliases": [
         "Ferrous sulfate",
         "Green vitriol",
-        "Copperas"
+        "Copperas",
+        "Siran zeleznaty (zelena skalice)",
+        "Siran zaleznaty, heptahydrat, zelena skalice",
+        "Siran zeleznaty heptahydrat",
+        "Siran zeleznaty",
+        "Zelena skalice"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -2476,12 +2542,16 @@
     "Iron(II,III) Oxide Black": {
       "material_id": "ironiiiii_oxide_black",
       "display_name": "Iron(II,III) Oxide Black",
+      "name_en": "Iron(II,III) Oxide Black",
+      "name_cs": "Cerny oxid zeleza",
       "canonical_name": "Magnetite (synthetic)",
       "chemical_formula": "Fe3O4",
       "material_class": "iron_oxide",
       "aliases": [
         "Black iron oxide",
-        "Ferrous ferric oxide"
+        "Ferrous ferric oxide",
+        "Cerny oxid zeleza",
+        "Oxid zeleznato-zelezity"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -2685,12 +2755,17 @@
     "Iron(III) Oxide Red": {
       "material_id": "ironiii_oxide_red",
       "display_name": "Iron(III) Oxide Red",
+      "name_en": "Iron(III) Oxide Red",
+      "name_cs": "Cerveny oxid zeleza",
       "canonical_name": "Hematite (synthetic)",
       "chemical_formula": "Fe2O3",
       "material_class": "iron_oxide",
       "aliases": [
         "Ferric oxide",
-        "Red iron oxide"
+        "Red iron oxide",
+        "Cerveny oxid zeleza",
+        "Oxid zelezity",
+        "Cerven"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -2892,13 +2967,18 @@
     "Kaolin (White Clay)": {
       "material_id": "kaolin_white_clay",
       "display_name": "Kaolin (White Clay)",
+      "name_en": "Kaolin (White Clay)",
+      "name_cs": "Kaolin (bily jil)",
       "canonical_name": "Kaolinite",
       "chemical_formula": "Al2Si2O5(OH)4",
       "material_class": "phyllosilicate_clay",
       "aliases": [
         "Kaolin",
         "China clay",
-        "White clay"
+        "White clay",
+        "Kaolin (bily jil)",
+        "Bily jil",
+        "Kaolinit"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -3100,11 +3180,18 @@
     "Magnesium Carbonate": {
       "material_id": "magnesium_carbonate",
       "display_name": "Magnesium Carbonate",
+      "name_en": "Magnesium Carbonate",
+      "name_cs": "Uhlicitan horecnaty (magnezit lehky)",
       "canonical_name": "Magnesite / hydromagnesite",
       "chemical_formula": "MgCO3",
       "material_class": "carbonate",
       "aliases": [
-        "Magnesia alba"
+        "Magnesia alba",
+        "Uhlicitan horecnaty (magnezit lehky)",
+        "Uhlicitan Horecnaty, Magnesit Lehky",
+        "Uhlicitan horecnaty",
+        "Magnezit lehky",
+        "Magnesit lehky"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -3308,11 +3395,18 @@
     "Magnesium Oxide": {
       "material_id": "magnesium_oxide",
       "display_name": "Magnesium Oxide",
+      "name_en": "Magnesium Oxide",
+      "name_cs": "Oxid horecnaty (paleny magnezit)",
       "canonical_name": "Periclase (synthetic)",
       "chemical_formula": "MgO",
       "material_class": "oxide",
       "aliases": [
-        "Magnesia"
+        "Magnesia",
+        "Oxid horecnaty (paleny magnezit)",
+        "Oxid horecnaty- paleni magnezit",
+        "Oxid horecnaty",
+        "Paleny magnezit",
+        "Paleni magnezit"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -3514,11 +3608,16 @@
     "Pink Clay": {
       "material_id": "pink_clay",
       "display_name": "Pink Clay",
+      "name_en": "Pink Clay",
+      "name_cs": "Jil ruzovy",
       "canonical_name": "Pink clay (kaolinite-rich, Fe-bearing)",
       "chemical_formula": null,
       "material_class": "phyllosilicate_clay",
       "aliases": [
-        "Rose clay"
+        "Rose clay",
+        "Jil ruzovy",
+        "BIO Jil Ruzovy",
+        "Ruzovy jil"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -3720,13 +3819,19 @@
     "Potassium Nitrate": {
       "material_id": "potassium_nitrate",
       "display_name": "Potassium Nitrate",
+      "name_en": "Potassium Nitrate",
+      "name_cs": "Dusicnan draselny",
       "canonical_name": "Niter",
       "chemical_formula": "KNO3",
       "material_class": "nitrate",
       "aliases": [
         "Saltpetre",
         "Saltpeter",
-        "Nitre"
+        "Nitre",
+        "Dusicnan draselny",
+        "Dusicnan draselny Techincka",
+        "Dusicnan draselny technicky",
+        "Ledek draselny"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -3928,12 +4033,17 @@
     "Red Clay": {
       "material_id": "red_clay",
       "display_name": "Red Clay",
+      "name_en": "Red Clay",
+      "name_cs": "Jil cerveny",
       "canonical_name": "Red clay (Fe-bearing)",
       "chemical_formula": null,
       "material_class": "phyllosilicate_clay",
       "aliases": [
         "Red illite",
-        "French red clay"
+        "French red clay",
+        "Jil cerveny",
+        "BIO Jil Cerveny",
+        "Cerveny jil"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -4135,12 +4245,18 @@
     "Sodium Bicarbonate": {
       "material_id": "sodium_bicarbonate",
       "display_name": "Sodium Bicarbonate",
+      "name_en": "Sodium Bicarbonate",
+      "name_cs": "Hydrogenuhlicitan sodny (jedla soda)",
       "canonical_name": "Nahcolite",
       "chemical_formula": "NaHCO3",
       "material_class": "carbonate",
       "aliases": [
         "Baking soda",
-        "Sodium hydrogen carbonate"
+        "Sodium hydrogen carbonate",
+        "Hydrogenuhlicitan sodny (jedla soda)",
+        "Hydrogenuhlicitan sodny",
+        "Jedla soda",
+        "Soda bicarbona"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -4342,12 +4458,18 @@
     "Sulfur Powder": {
       "material_id": "sulfur_powder",
       "display_name": "Sulfur Powder",
+      "name_en": "Sulfur Powder",
+      "name_cs": "Sira mleta",
       "canonical_name": "Sulfur",
       "chemical_formula": "S8",
       "material_class": "native_element",
       "aliases": [
         "Brimstone",
-        "Sulphur"
+        "Sulphur",
+        "Sira mleta",
+        "Sira mleta sucha",
+        "Sira",
+        "Siry prasek"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -4549,12 +4671,21 @@
     "Talc": {
       "material_id": "talc",
       "display_name": "Talc",
+      "name_en": "Talc",
+      "name_cs": "Mastek (talek, steatit, klouzek)",
       "canonical_name": "Talc",
       "chemical_formula": "Mg3Si4O10(OH)2",
       "material_class": "phyllosilicate",
       "aliases": [
         "Talcum",
-        "Soapstone powder"
+        "Soapstone powder",
+        "Mastek (talek, steatit, klouzek)",
+        "Mastek KT, talek, steatit, klouzek",
+        "Mastek KT",
+        "Mastek",
+        "Talek",
+        "Steatit",
+        "Klouzek"
       ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
@@ -4758,10 +4889,15 @@
     "Tartaric Acid": {
       "material_id": "tartaric_acid",
       "display_name": "Tartaric Acid",
+      "name_en": "Tartaric Acid",
+      "name_cs": "Kyselina vinna",
       "canonical_name": "Tartaric acid",
       "chemical_formula": "C4H6O6",
       "material_class": "organic_acid",
-      "aliases": [],
+      "aliases": [
+        "Kyselina vinna",
+        "Kyselina Vinna"
+      ],
       "measurement_type": "MEASURED",
       "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
       "acquisition_settings": {

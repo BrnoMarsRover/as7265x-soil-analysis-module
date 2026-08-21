@@ -65,6 +65,41 @@ LABEL_TYPES = (
     LABEL_UNKNOWN_SAMPLE, LABEL_NONE,
 )
 
+# ----------------------------------------------------------------------
+# WHAT A MIXTURE COMPONENT IS
+#
+# A prepared mixture has two kinds of ingredient and they are not
+# interchangeable:
+#
+#   COMPONENT  a library material, weighed in deliberately.
+#              "0.10 of Iron(III) Oxide Red"
+#   MATRIX     what it was mixed INTO. Ordinary soil, sand, the local
+#              regolith simulant - a real substance with a real mass that
+#              is NOT in any library and has no reference spectrum.
+#
+# The matrix has to be first-class rather than "the leftover fraction",
+# because it is most of the sample and most of the signal. A model asked
+# to find 10% hematite in garden soil is being asked to find it against
+# that soil, and an evaluation that does not know what the other 90% was
+# cannot say whether a miss was the model's fault or the matrix's.
+ROLE_COMPONENT = "COMPONENT"
+ROLE_MATRIX = "MATRIX"
+
+COMPONENT_ROLES = (ROLE_COMPONENT, ROLE_MATRIX)
+
+# Prepared fractions are weighed, not estimated, so they should add up.
+# The tolerance is for scale resolution and arithmetic, not for a guess:
+# 5 parts in 1000 is about what a 0.01 g kitchen scale gives on a 20 g
+# sample.
+FRACTION_SUM_TOLERANCE = 0.005
+
+# How the sample was physically presented. These are the variables the
+# operator can change between measurements of the same material, and
+# they are recorded so a difference in the spectrum can be attributed to
+# one of them instead of to the material.
+PACKING_STATES = ("LOOSE", "TAMPED", "PRESSED", "UNKNOWN")
+MOISTURE_STATES = ("OVEN_DRY", "AIR_DRY", "DAMP", "WET", "UNKNOWN")
+
 # How much the label is worth. The order matters: it is the trust ladder.
 VERIFIED = "VERIFIED"
 OPERATOR_ASSERTED = "OPERATOR_ASSERTED"
@@ -98,6 +133,178 @@ class LearningError(Exception):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_mixture(components):
+    """
+    Validate and canonicalise the components of a PREPARED mixture.
+
+    Returns the cleaned list. Raises LearningError naming the specific
+    problem, because every refusal here is preventing a training example
+    that would teach the wrong thing:
+
+        a fraction outside 0-1        is not a fraction
+        fractions that do not add up  means something was not weighed,
+                                      and the model would learn the
+                                      missing mass as belonging to
+                                      whatever WAS listed
+        the same material twice       is two answers to one question
+        a component with no identity  cannot be scored against anything
+
+    ONLY MASS FRACTIONS ARE ACCEPTED, and they are stored under a name
+    that says so. Spectral contribution is what an unmixing algorithm
+    estimates; prepared mass fraction is what the operator weighed. The
+    entire value of a prepared mixture is that those two are independent,
+    so the estimate can be scored against the fact. Storing them in one
+    field would destroy exactly the thing the record exists for.
+    """
+    if not isinstance(components, (list, tuple)) or not components:
+        raise LearningError(
+            "MIXTURE_EMPTY",
+            "A PREPARED_MIXTURE label needs at least one component. A "
+            "mixture nobody can name the parts of is an unknown sample, "
+            "and there is a label for that.",
+        )
+
+    cleaned = []
+    seen = set()
+    total = 0.0
+    weighed = 0
+
+    for index, component in enumerate(components):
+        if not isinstance(component, dict):
+            raise LearningError(
+                "MIXTURE_COMPONENT_MALFORMED",
+                "Component {} is not a record.".format(index + 1),
+            )
+
+        role = component.get("role") or ROLE_COMPONENT
+
+        if role not in COMPONENT_ROLES:
+            raise LearningError(
+                "MIXTURE_ROLE_UNKNOWN",
+                "Component {} has role {!r}; expected one of {}.".format(
+                    index + 1, role, ", ".join(COMPONENT_ROLES)
+                ),
+            )
+
+        material_key = component.get("material_key")
+        matrix_label = component.get("matrix_label")
+
+        if role == ROLE_COMPONENT and not material_key:
+            raise LearningError(
+                "MIXTURE_COMPONENT_UNIDENTIFIED",
+                "Component {} names no material. A component that cannot "
+                "be resolved to a library material cannot be scored "
+                "against anything - record it as the MATRIX instead, "
+                "which is an honest statement that it has no reference "
+                "spectrum.".format(index + 1),
+            )
+
+        if role == ROLE_MATRIX and not (matrix_label or material_key):
+            raise LearningError(
+                "MIXTURE_MATRIX_UNNAMED",
+                "The matrix of component {} has no name. 'Ordinary soil' "
+                "is a perfectly good answer; nothing at all is not, "
+                "because the matrix is most of the sample and most of "
+                "the signal.".format(index + 1),
+            )
+
+        identifier = material_key or "matrix::{}".format(matrix_label)
+
+        if identifier in seen:
+            raise LearningError(
+                "MIXTURE_COMPONENT_REPEATED",
+                "{} appears twice in the mixture. One material, one "
+                "fraction.".format(material_key or matrix_label),
+            )
+
+        seen.add(identifier)
+
+        fraction = component.get("prepared_mass_fraction")
+
+        if fraction is not None:
+            try:
+                fraction = float(fraction)
+
+            except (TypeError, ValueError):
+                raise LearningError(
+                    "MIXTURE_FRACTION_NOT_A_NUMBER",
+                    "The fraction of {} is {!r}, which is not a "
+                    "number.".format(
+                        material_key or matrix_label, fraction
+                    ),
+                )
+
+            if not 0.0 <= fraction <= 1.0:
+                raise LearningError(
+                    "MIXTURE_FRACTION_OUT_OF_RANGE",
+                    "The fraction of {} is {}. A mass fraction lies "
+                    "between 0 and 1; percentages go in as 0.10, not "
+                    "10.".format(material_key or matrix_label, fraction),
+                )
+
+            total += fraction
+            weighed += 1
+
+        mass = component.get("mass_g")
+
+        if mass is not None:
+            try:
+                mass = float(mass)
+
+            except (TypeError, ValueError):
+                raise LearningError(
+                    "MIXTURE_MASS_NOT_A_NUMBER",
+                    "The mass of {} is {!r}, which is not a number."
+                    .format(material_key or matrix_label, mass),
+                )
+
+            if mass < 0.0:
+                raise LearningError(
+                    "MIXTURE_MASS_NEGATIVE",
+                    "The mass of {} is negative.".format(
+                        material_key or matrix_label
+                    ),
+                )
+
+        cleaned.append({
+            "role": role,
+            "material_key": material_key,
+            "material_id": component.get("material_id"),
+            "family_id": component.get("family_id"),
+            "matrix_label": matrix_label,
+            "prepared_mass_fraction": fraction,
+            "mass_g": mass,
+            "note": component.get("note"),
+        })
+
+    # All weighed or none weighed. A mixture where two components have
+    # fractions and the third does not is not a partially-known mixture;
+    # it is a mixture whose composition is unknown, because the two
+    # numbers only mean anything relative to a total nobody recorded.
+    if weighed and weighed != len(cleaned):
+        raise LearningError(
+            "MIXTURE_FRACTIONS_INCOMPLETE",
+            "{} of {} components carry a prepared fraction. Either every "
+            "component is weighed or none is: a fraction is a share of a "
+            "total, and a total with a hole in it is not a total."
+            .format(weighed, len(cleaned)),
+            {"weighed": weighed, "components": len(cleaned)},
+        )
+
+    if weighed and abs(total - 1.0) > FRACTION_SUM_TOLERANCE:
+        raise LearningError(
+            "MIXTURE_FRACTIONS_DO_NOT_SUM",
+            "The prepared fractions add up to {:.4f}, not 1.0. The "
+            "missing {:+.4f} is real mass that was in the cup and in the "
+            "measurement; attributing it to the components that WERE "
+            "listed would make every one of them wrong."
+            .format(total, 1.0 - total),
+            {"total": total, "tolerance": FRACTION_SUM_TOLERANCE},
+        )
+
+    return cleaned
 
 
 def hash_payload(payload):
@@ -165,6 +372,68 @@ CREATE TABLE IF NOT EXISTS ground_truth (
     verification_status TEXT NOT NULL,
     verification_source TEXT,
     certainty           REAL,
+    note                TEXT
+);
+
+-- The components of a PREPARED mixture, one row each.
+--
+-- The same list is also stored as mixture_json on ground_truth, which is
+-- the verbatim label. This table is the QUERYABLE form of it, and it
+-- exists because the questions worth asking are per-component:
+--
+--     every observation containing Iron(III) Oxide Red above 5%
+--     what has ever been mixed into 'garden soil'
+--     how the error on a component varies with its own fraction
+--
+-- None of those can be asked of a JSON blob without loading every row.
+-- Written only by add_ground_truth, from the same validated list, so the
+-- two forms cannot disagree.
+CREATE TABLE IF NOT EXISTS ground_truth_components (
+    measurement_id         TEXT NOT NULL REFERENCES observations
+                               (measurement_id),
+    component_index        INTEGER NOT NULL,
+    role                   TEXT NOT NULL,
+    material_key           TEXT,
+    material_id            TEXT,
+    family_id              TEXT,
+    matrix_label           TEXT,
+    prepared_mass_fraction REAL,
+    mass_g                 REAL,
+    note                   TEXT,
+    PRIMARY KEY (measurement_id, component_index)
+);
+
+CREATE INDEX IF NOT EXISTS gt_components_material
+    ON ground_truth_components (material_key);
+CREATE INDEX IF NOT EXISTS gt_components_fraction
+    ON ground_truth_components (material_key, prepared_mass_fraction);
+
+-- How the sample was physically presented to the sensor.
+--
+-- Sensor settings live in the acquisition profile; this is about the
+-- SAMPLE, and it changes between two measurements that share a profile
+-- exactly. Distance, how much powder was in the cup, how hard it was
+-- tamped and how wet it was all move the spectrum, and without them a
+-- model trying to learn a material learns the operator's habits
+-- instead.
+--
+-- Every field is optional and NULL means NOT RECORDED, never a default.
+-- "Distance unknown" and "distance 30 mm" must stay distinguishable:
+-- two measurements that both say unknown are not thereby known to
+-- match.
+CREATE TABLE IF NOT EXISTS sample_context (
+    measurement_id      TEXT PRIMARY KEY REFERENCES observations
+                            (measurement_id),
+    recorded_at         TEXT NOT NULL,
+    sensor_to_sample_mm REAL,
+    sample_mass_g       REAL,
+    sample_depth_mm     REAL,
+    packing             TEXT,
+    moisture            TEXT,
+    grain_size          TEXT,
+    container           TEXT,
+    ambient_light       TEXT,
+    substrate           TEXT,
     note                TEXT
 );
 
@@ -486,6 +755,21 @@ class DecisionLearningStore:
                 "A MATERIAL_FAMILY label needs the family.",
             )
 
+        if label_type == LABEL_PREPARED_MIXTURE:
+            # Validated BEFORE anything is written, so a malformed
+            # mixture leaves no half-written row behind.
+            mixture = normalize_mixture(mixture)
+
+        elif mixture is not None:
+            raise LearningError(
+                "MIXTURE_ON_NON_MIXTURE_LABEL",
+                "A component list was supplied with a {} label. Composition "
+                "belongs to PREPARED_MIXTURE; attaching it to anything else "
+                "would make a pure material look like a one-component "
+                "mixture in every query that counts them."
+                .format(label_type),
+            )
+
         if label_type in (LABEL_UNKNOWN_SAMPLE, LABEL_NONE):
             # "I do not know what this was" is a legitimate and useful
             # record, but it is not a label and must never be trained on.
@@ -528,6 +812,39 @@ class DecisionLearningStore:
                 ),
             )
 
+            # The queryable form of the same list. Replaced wholesale
+            # rather than merged: a corrected mixture is a different
+            # mixture, and leaving a component of the old one behind
+            # would make the two forms disagree.
+            self.connection.execute(
+                "DELETE FROM ground_truth_components WHERE "
+                "measurement_id = ?",
+                (measurement_id,),
+            )
+
+            for index, component in enumerate(mixture or []):
+                self.connection.execute(
+                    """
+                    INSERT INTO ground_truth_components (
+                        measurement_id, component_index, role,
+                        material_key, material_id, family_id,
+                        matrix_label, prepared_mass_fraction, mass_g, note
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        measurement_id,
+                        index,
+                        component["role"],
+                        component["material_key"],
+                        component["material_id"],
+                        component["family_id"],
+                        component["matrix_label"],
+                        component["prepared_mass_fraction"],
+                        component["mass_g"],
+                        component["note"],
+                    ),
+                )
+
         return self.get_ground_truth(measurement_id)
 
     def get_ground_truth(self, measurement_id):
@@ -544,6 +861,332 @@ class DecisionLearningStore:
         record["mixture"] = json.loads(mixture) if mixture else None
 
         return record
+
+    # ------------------------------------------------------------------
+    # mixtures
+    # ------------------------------------------------------------------
+
+    def components(self, measurement_id):
+        """The components of one prepared mixture, in preparation order."""
+        return [
+            dict(row) for row in self.connection.execute(
+                "SELECT * FROM ground_truth_components "
+                "WHERE measurement_id = ? ORDER BY component_index",
+                (measurement_id,),
+            )
+        ]
+
+    def observations_containing(self, material_key, min_fraction=None,
+                                levels=None):
+        """
+        Every trusted observation whose sample CONTAINED this material.
+
+        The query the mixture work exists for: "show me everything with
+        hematite in it, and how much was in each". A pure material counts
+        as containing itself at fraction 1.0, so asking for hematite
+        returns the pure jar alongside the 10% spike - which is what a
+        detection model needs, because the pure case is the easy end of
+        the same curve.
+
+        `min_fraction` filters on the PREPARED fraction, never on an
+        estimated one.
+        """
+        levels = self._trusted(levels)
+        placeholders = ",".join("?" for _ in levels)
+
+        query = (
+            "SELECT o.*, g.label_type, g.verification_status, "
+            "       g.verification_source, g.certainty, "
+            "       c.role, c.prepared_mass_fraction, c.mass_g, "
+            "       c.matrix_label "
+            "FROM observations o "
+            "JOIN ground_truth g ON g.measurement_id = o.measurement_id "
+            "JOIN ground_truth_components c "
+            "     ON c.measurement_id = o.measurement_id "
+            "WHERE g.verification_status IN ({}) "
+            "  AND c.material_key = ? "
+        ).format(placeholders)
+
+        params = list(levels) + [material_key]
+
+        if min_fraction is not None:
+            query += "  AND c.prepared_mass_fraction >= ? "
+            params.append(float(min_fraction))
+
+        query += " UNION ALL "
+
+        # The pure jar. Same material, fraction 1.0 by definition, and
+        # it has no component rows because it is not a mixture.
+        pure = (
+            "SELECT o.*, g.label_type, g.verification_status, "
+            "       g.verification_source, g.certainty, "
+            "       ? AS role, 1.0 AS prepared_mass_fraction, "
+            "       NULL AS mass_g, NULL AS matrix_label "
+            "FROM observations o "
+            "JOIN ground_truth g ON g.measurement_id = o.measurement_id "
+            "WHERE g.verification_status IN ({}) "
+            "  AND g.label_type = ? "
+            "  AND g.material_key = ? "
+        ).format(placeholders)
+
+        query += pure
+        params.extend(
+            [ROLE_COMPONENT] + list(levels)
+            + [LABEL_EXACT_MATERIAL, material_key]
+        )
+
+        query += " ORDER BY prepared_mass_fraction DESC, measurement_id"
+
+        return [
+            self._observation_from(row)
+            for row in self.connection.execute(query, params)
+        ]
+
+    def mixture_training_set(self, levels=None, require_fractions=True):
+        """
+        Prepared mixtures with their composition, ready to score against.
+
+        This is the validation set for any unmixing model: the spectrum
+        on one side, what was actually weighed into the cup on the other.
+        `require_fractions` drops mixtures recorded without proportions -
+        they say what was IN the sample but not how much, so they can
+        score detection and not quantity.
+        """
+        levels = self._trusted(levels)
+        placeholders = ",".join("?" for _ in levels)
+
+        rows = self.connection.execute(
+            "SELECT o.*, g.verification_status, g.verification_source, "
+            "       g.certainty, g.note AS label_note "
+            "FROM observations o "
+            "JOIN ground_truth g ON g.measurement_id = o.measurement_id "
+            "WHERE g.verification_status IN ({}) "
+            "  AND g.label_type = ? "
+            "ORDER BY o.created_at, o.measurement_id".format(placeholders),
+            list(levels) + [LABEL_PREPARED_MIXTURE],
+        ).fetchall()
+
+        records = []
+
+        for row in rows:
+            record = self._observation_from(row)
+            record["components"] = self.components(record["measurement_id"])
+            record["sample_context"] = self.get_sample_context(
+                record["measurement_id"]
+            )
+
+            if require_fractions and any(
+                component["prepared_mass_fraction"] is None
+                for component in record["components"]
+            ):
+                continue
+
+            records.append(record)
+
+        return records
+
+    def mixture_summary(self):
+        """
+        What the library of prepared mixtures currently covers.
+
+        Reported so the operator can see the gap between what has been
+        mixed and what would be needed to validate anything: how many
+        mixtures, over which materials, at which fractions, against which
+        matrices.
+        """
+        rows = self.connection.execute(
+            "SELECT c.material_key, c.role, c.matrix_label, "
+            "       c.prepared_mass_fraction, c.measurement_id "
+            "FROM ground_truth_components c "
+            "JOIN ground_truth g ON g.measurement_id = c.measurement_id "
+            "WHERE g.verification_status IN (?,?)",
+            TRAINABLE_LEVELS,
+        ).fetchall()
+
+        by_material = {}
+        matrices = {}
+        mixtures = set()
+
+        for row in rows:
+            mixtures.add(row["measurement_id"])
+
+            if row["role"] == ROLE_MATRIX:
+                label = row["matrix_label"] or row["material_key"] or "?"
+                matrices[label] = matrices.get(label, 0) + 1
+
+                continue
+
+            entry = by_material.setdefault(
+                row["material_key"], {"n": 0, "fractions": []}
+            )
+            entry["n"] += 1
+
+            if row["prepared_mass_fraction"] is not None:
+                entry["fractions"].append(row["prepared_mass_fraction"])
+
+        for entry in by_material.values():
+            fractions = sorted(entry["fractions"])
+            entry["fractions"] = fractions
+            entry["lowest_fraction"] = fractions[0] if fractions else None
+            entry["highest_fraction"] = fractions[-1] if fractions else None
+
+        return {
+            "mixtures": len(mixtures),
+            "materials_spiked": len(by_material),
+            "by_material": by_material,
+            "matrices": matrices,
+        }
+
+    @staticmethod
+    def _trusted(levels):
+        """The trust ladder check, shared by every training-set query."""
+        levels = tuple(levels or TRUSTED_LEVELS)
+        rejected = [
+            level for level in levels if level not in TRAINABLE_LEVELS
+        ]
+
+        if rejected:
+            raise LearningError(
+                "UNTRUSTED_LEVEL_REQUESTED",
+                "{} cannot be used as a training label. Only {} may be, "
+                "and only VERIFIED is used unless asked for.".format(
+                    ", ".join(rejected), " and ".join(TRAINABLE_LEVELS)
+                ),
+                {"requested": list(levels)},
+            )
+
+        return levels
+
+    # ------------------------------------------------------------------
+    # how the sample was presented
+    # ------------------------------------------------------------------
+
+    def add_sample_context(self, measurement_id, sensor_to_sample_mm=None,
+                           sample_mass_g=None, sample_depth_mm=None,
+                           packing=None, moisture=None, grain_size=None,
+                           container=None, ambient_light=None,
+                           substrate=None, note=None, recorded_at=None,
+                           replace=False):
+        """
+        Record how the sample physically sat in front of the sensor.
+
+        Refuses to overwrite silently, like a label does. Distance and
+        packing are things the operator OBSERVED at the time; a second
+        answer written later is a thing the operator REMEMBERS, and the
+        difference between those matters enough to make it deliberate.
+
+        Every field is optional, and omitting one stores NULL - which
+        means "not recorded" and never a default. A model that treats an
+        unrecorded distance as 30 mm learns a relationship to a number
+        nobody measured.
+        """
+        if self.get_observation(measurement_id) is None:
+            raise LearningError(
+                "OBSERVATION_NOT_FOUND",
+                "Cannot record context for {}: no such observation."
+                .format(measurement_id),
+            )
+
+        if packing is not None and packing not in PACKING_STATES:
+            raise LearningError(
+                "BAD_PACKING_STATE",
+                "packing must be one of {}.".format(
+                    ", ".join(PACKING_STATES)
+                ),
+            )
+
+        if moisture is not None and moisture not in MOISTURE_STATES:
+            raise LearningError(
+                "BAD_MOISTURE_STATE",
+                "moisture must be one of {}.".format(
+                    ", ".join(MOISTURE_STATES)
+                ),
+            )
+
+        for name, value in (("sensor_to_sample_mm", sensor_to_sample_mm),
+                            ("sample_mass_g", sample_mass_g),
+                            ("sample_depth_mm", sample_depth_mm)):
+            if value is not None and float(value) < 0.0:
+                raise LearningError(
+                    "NEGATIVE_MEASUREMENT",
+                    "{} cannot be negative.".format(name),
+                )
+
+        existing = self.get_sample_context(measurement_id)
+
+        if existing is not None and not replace:
+            raise LearningError(
+                "SAMPLE_CONTEXT_EXISTS",
+                "{} already has a recorded sample context. Pass "
+                "replace=True to correct it deliberately."
+                .format(measurement_id),
+            )
+
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO sample_context (
+                    measurement_id, recorded_at, sensor_to_sample_mm,
+                    sample_mass_g, sample_depth_mm, packing, moisture,
+                    grain_size, container, ambient_light, substrate, note
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    measurement_id,
+                    recorded_at or utc_now(),
+                    sensor_to_sample_mm,
+                    sample_mass_g,
+                    sample_depth_mm,
+                    packing,
+                    moisture,
+                    grain_size,
+                    container,
+                    ambient_light,
+                    substrate,
+                    note,
+                ),
+            )
+
+        return self.get_sample_context(measurement_id)
+
+    def get_sample_context(self, measurement_id):
+        row = self.connection.execute(
+            "SELECT * FROM sample_context WHERE measurement_id = ?",
+            (measurement_id,),
+        ).fetchone()
+
+        return dict(row) if row is not None else None
+
+    def context_coverage(self):
+        """
+        How much of the history carries each context field.
+
+        A field recorded on three observations out of forty cannot
+        support learning anything about it, and saying so is more useful
+        than letting a training run discover it as a null-heavy column.
+        """
+        total = self.count_observations()
+        fields = (
+            "sensor_to_sample_mm", "sample_mass_g", "sample_depth_mm",
+            "packing", "moisture", "grain_size", "container",
+            "ambient_light", "substrate",
+        )
+
+        coverage = {}
+
+        for field in fields:
+            coverage[field] = self.connection.execute(
+                "SELECT COUNT(*) FROM sample_context "
+                "WHERE {} IS NOT NULL".format(field)
+            ).fetchone()[0]
+
+        return {
+            "observations": total,
+            "with_any_context": self.connection.execute(
+                "SELECT COUNT(*) FROM sample_context"
+            ).fetchone()[0],
+            "by_field": coverage,
+        }
 
     # ------------------------------------------------------------------
     # predictions
@@ -666,20 +1309,7 @@ class DecisionLearningStore:
         them would be exactly the falsification this database exists to
         prevent.
         """
-        levels = tuple(levels or TRUSTED_LEVELS)
-
-        rejected = [level for level in levels if level not in TRAINABLE_LEVELS]
-
-        if rejected:
-            raise LearningError(
-                "UNTRUSTED_LEVEL_REQUESTED",
-                "{} cannot be used as a training label. Only {} may be, "
-                "and only VERIFIED is used unless asked for.".format(
-                    ", ".join(rejected), " and ".join(TRAINABLE_LEVELS)
-                ),
-                {"requested": list(levels)},
-            )
-
+        levels = self._trusted(levels)
         label_types = tuple(label_types or (LABEL_EXACT_MATERIAL,))
 
         placeholders = ",".join("?" for _ in levels)
@@ -880,6 +1510,8 @@ class DecisionLearningStore:
             "verified_materials": {
                 row["material_key"]: row["n"] for row in materials
             },
+            "mixtures": self.mixture_summary(),
+            "sample_context": self.context_coverage(),
             "training_runs": len(self.training_runs()),
             "snapshots": self.snapshots(),
         }

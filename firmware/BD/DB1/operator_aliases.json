@@ -1,46 +1,132 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Bench names the operator uses for materials already in the libraries. An alias is a NAME, never a spectrum: nothing here changes DB1, DB2 or DB3, and an alias that does not resolve to an existing material is refused rather than creating one.",
-  "language_note": "The labels are as they appear on the physical containers, mostly Czech.",
-  "added_by": "operator, 2026-08-18, from the containers used in the 2026-08-17 session",
+  "language_note": "The labels are as they appear on the physical containers, mostly Czech. Both the accented spelling and the ASCII spelling are listed, because the operator's console does not reliably accept diacritics. Science.taxonomy also folds accents on lookup, so a spelling missing from this table still resolves if it differs only by accents.",
+  "added_by": "operator, 2026-08-18, extended 2026-08-21 with the containers of the 2026-08-17 full-spectral session",
+  "note_on_duplication": "Most of these names also live in research/material_identity.py and reach the libraries through DB1.json and DB2.json. They are repeated here on purpose: this file is editable at the bench without rebuilding a database, which is what it is for.",
 
   "aliases": {
     "Aktivni Uhli Hydrafin CC": "Activated Carbon",
     "Aktivni uhli": "Activated Carbon",
+    "Aktivní uhlí": "Activated Carbon",
+    "Hydrafin CC": "Activated Carbon",
 
     "Siran mednaty pentahydrat": "Copper(II) Sulfate",
     "Siran mednat pentahydrat": "Copper(II) Sulfate",
+    "Siran mednat, pentahydrat": "Copper(II) Sulfate",
+    "Síran měďnatý pentahydrát": "Copper(II) Sulfate",
     "Modra skalice": "Copper(II) Sulfate",
+    "Modrá skalice": "Copper(II) Sulfate",
 
     "Vlockovac siran hlinity": "Aluminum Sulfate",
+    "Vlockovac- Siran hlinity": "Aluminum Sulfate",
+    "Vločkovač síran hlinitý": "Aluminum Sulfate",
     "Siran hlinity": "Aluminum Sulfate",
+    "Vlockovac": "Aluminum Sulfate",
 
     "Siran horecnaty potravinarsky": "Epsom Salt (Magnesium Sulfate)",
+    "Síran hořečnatý potravinářský": "Epsom Salt (Magnesium Sulfate)",
     "Siran horecnaty": "Epsom Salt (Magnesium Sulfate)",
     "Horka sul": "Epsom Salt (Magnesium Sulfate)",
+    "Hořká sůl": "Epsom Salt (Magnesium Sulfate)",
 
     "Kyselina citronova monohydrat": "Citric Acid",
     "Kyselina cytronova monohydrat": "Citric Acid",
+    "Kyselina citronová monohydrát": "Citric Acid",
     "Kyselina citronova": "Citric Acid",
 
     "Oxid horecnaty": "Magnesium Oxide",
+    "Oxid horecnaty- paleni magnezit": "Magnesium Oxide",
+    "Oxid hořečnatý": "Magnesium Oxide",
     "Paleny magnezit": "Magnesium Oxide",
+    "Pálený magnezit": "Magnesium Oxide",
 
     "Bentonit": "Bentonite",
+    "Bentonitovy jil": "Bentonite",
 
     "Uhlicitan horecnaty": "Magnesium Carbonate",
+    "Uhlicitan Horecnaty, Magnesit Lehky": "Magnesium Carbonate",
+    "Uhličitan hořečnatý": "Magnesium Carbonate",
     "Magnezit lehky": "Magnesium Carbonate",
+    "Magnesit lehky": "Magnesium Carbonate",
+    "Magnezit lehký": "Magnesium Carbonate",
 
     "Siran zeleznaty heptahydrat": "Iron(II) Sulfate",
+    "Siran zaleznaty, heptahydrat, zelena skalice": "Iron(II) Sulfate",
+    "Síran železnatý heptahydrát": "Iron(II) Sulfate",
     "Zelena skalice": "Iron(II) Sulfate",
+    "Zelená skalice": "Iron(II) Sulfate",
 
     "Uhlicitan vapenaty": "Calcium Carbonate (Chalk)",
+    "Uhličitan vápenatý": "Calcium Carbonate (Chalk)",
     "Vapenec": "Calcium Carbonate (Chalk)",
+    "Vápenec": "Calcium Carbonate (Chalk)",
+    "Krida": "Calcium Carbonate (Chalk)",
 
     "Mastek": "Talc",
     "Mastek KT": "Talc",
+    "Mastek KT, talek, steatit, klouzek": "Talc",
     "Talek": "Talc",
     "Steatit": "Talc",
-    "Klouzek": "Talc"
+    "Klouzek": "Talc",
+
+    "BIO Jil Zeleny": "Green Clay (Illite)",
+    "Jil zeleny": "Green Clay (Illite)",
+    "Jíl zelený": "Green Clay (Illite)",
+    "Zeleny jil": "Green Clay (Illite)",
+    "Illit": "Green Clay (Illite)",
+
+    "BIO Jil Cerveny": "Red Clay",
+    "Jil cerveny": "Red Clay",
+    "Jíl červený": "Red Clay",
+    "Cerveny jil": "Red Clay",
+
+    "BIO Jil Ruzovy": "Pink Clay",
+    "Jil ruzovy": "Pink Clay",
+    "Jíl růžový": "Pink Clay",
+    "Ruzovy jil": "Pink Clay",
+
+    "Kaolin": "Kaolin (White Clay)",
+    "Bily jil": "Kaolin (White Clay)",
+    "Bílý jíl": "Kaolin (White Clay)",
+    "Kaolinit": "Kaolin (White Clay)",
+
+    "Kyselina Vinna": "Tartaric Acid",
+    "Kyselina vinna": "Tartaric Acid",
+    "Kyselina vinná": "Tartaric Acid",
+
+    "Kyselinaa L-askorbova": "Ascorbic Acid",
+    "Kyselina L-askorbova": "Ascorbic Acid",
+    "Kyselina L-askorbová": "Ascorbic Acid",
+    "Kyselina askorbova": "Ascorbic Acid",
+
+    "Dusicnan draselny Techincka": "Potassium Nitrate",
+    "Dusicnan draselny technicky": "Potassium Nitrate",
+    "Dusicnan draselny": "Potassium Nitrate",
+    "Dusičnan draselný": "Potassium Nitrate",
+    "Ledek draselny": "Potassium Nitrate",
+
+    "Borax": "Borax (Sodium Tetraborate)",
+    "Tetraboritan sodny": "Borax (Sodium Tetraborate)",
+    "Tetraboritan sodný": "Borax (Sodium Tetraborate)",
+
+    "Sira mleta sucha": "Sulfur Powder",
+    "Sira mleta": "Sulfur Powder",
+    "Síra mletá": "Sulfur Powder",
+    "Sira": "Sulfur Powder",
+
+    "Cerny oxid zeleza": "Iron(II,III) Oxide Black",
+    "Černý oxid železa": "Iron(II,III) Oxide Black",
+    "Oxid zeleznato-zelezity": "Iron(II,III) Oxide Black",
+
+    "Cerveny oxid zeleza": "Iron(III) Oxide Red",
+    "Červený oxid železa": "Iron(III) Oxide Red",
+    "Oxid zelezity": "Iron(III) Oxide Red",
+
+    "Hydrogenuhlicitan sodny": "Sodium Bicarbonate",
+    "Hydrogenuhličitan sodný": "Sodium Bicarbonate",
+    "Jedla soda": "Sodium Bicarbonate",
+    "Jedlá soda": "Sodium Bicarbonate",
+    "Soda bicarbona": "Sodium Bicarbonate"
   }
 }

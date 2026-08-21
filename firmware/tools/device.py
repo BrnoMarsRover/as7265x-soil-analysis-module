@@ -43,6 +43,7 @@ import argparse
 import hashlib
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -67,7 +68,7 @@ PC_DIR = FIRMWARE_DIR / "PC"
 # Order is load order for the import check, so a module is only
 # imported after everything it imports.
 
-ESP32_FILES = (
+ESP32_SOURCES = (
     "config.py",
     "sensor.py",
     "servo.py",
@@ -76,6 +77,46 @@ ESP32_FILES = (
     "main.py",
     "boot.py",
 )
+
+# ======================================================================
+# WHY THE FIRMWARE IS COMPILED BEFORE IT IS UPLOADED
+# ======================================================================
+# MicroPython compiles a .py file to bytecode ON THE DEVICE, at import,
+# and the parse tree it builds to do that is the largest transient
+# allocation the board ever makes. These modules are ~7500 lines, and
+# the board could no longer afford it:
+#
+#     deploying the sources        IMPORTS FAIL   MemoryError,
+#                                  allocating 1196 bytes
+#
+# That is not a warning about the future. The firmware would not start.
+#
+# It also explains a fault that looked nothing like a build problem.
+# Compiling on the device leaves the heap in pieces, and a response of a
+# few kilobytes needs its bytes CONTIGUOUS: measured on the board, 86576
+# bytes free and not one hole of 1457. Every WHITE/UV/IR triad after the
+# first came back RESPONSE_TOO_LARGE, having spent its full 24 seconds
+# reading the sensor first.
+#
+#     deployed as .py     largest free block    8 kB
+#     deployed as .mpy    largest free block   32 kB
+#
+# So the five large modules are compiled here, by mpy-cross, and the
+# device receives bytecode it can load without a compiler. The SOURCE
+# stays the source of truth - nothing is generated into the repository
+# and nothing is edited in bytecode form.
+#
+# main.py and boot.py stay as source. MicroPython looks for those two by
+# name at startup, they are 116 and 16 lines, and keeping them readable
+# on the device is worth more than the few hundred bytes.
+PRECOMPILED = ("config", "sensor", "servo", "carousel", "protocol")
+
+SOURCE_ON_DEVICE = ("main.py", "boot.py")
+
+# What the device filesystem holds after a clean deployment.
+ESP32_FILES = tuple(
+    name + ".mpy" for name in PRECOMPILED
+) + SOURCE_ON_DEVICE
 
 # Modules the import check exercises, in dependency order. boot.py is
 # excluded because importing it does nothing by design, and main.py
@@ -89,6 +130,9 @@ IMPORT_CHECK = ("config", "sensor", "servo", "carousel", "protocol")
 # ======================================================================
 
 MPREMOTE = [sys.executable, "-m", "mpremote"]
+
+# Temporary build directory, created on first use by build_firmware().
+BUILD_DIR = None
 
 
 class DeviceError(Exception):
@@ -246,9 +290,76 @@ class Report:
 # steps
 # ======================================================================
 
+def build_firmware(report):
+    """
+    Compile the large modules to bytecode and return {device name: path}.
+
+    The build directory is temporary and per-run. Nothing is generated
+    into the repository: a checked-in .mpy is a second copy of the
+    firmware that can disagree with the source, and the whole point of
+    the content check below is that there is exactly one answer to
+    "what is on the device".
+
+    mpy-cross output is deterministic for a given source and version -
+    verified by compiling protocol.py twice and comparing SHA256 - so
+    `verify` can rebuild and compare hashes against the device without
+    keeping any artefact around.
+    """
+    global BUILD_DIR
+
+    if BUILD_DIR is None:
+        BUILD_DIR = Path(tempfile.mkdtemp(prefix="freya-build-"))
+
+    built = {}
+
+    for name in PRECOMPILED:
+        source = ESP32_DIR / (name + ".py")
+        target = BUILD_DIR / (name + ".mpy")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "mpy_cross", "-o", str(target),
+             str(source)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+        if result.returncode != 0 or not target.is_file():
+            message = (result.stderr or result.stdout).strip()[-300:]
+
+            if "No module named" in message:
+                message = (
+                    "mpy-cross is not installed. It must match the "
+                    "firmware on the board (MicroPython v1.28.0): "
+                    "py -m pip install mpy-cross==1.28.0.post2"
+                )
+
+            report.step("BUILD", False,
+                        "{}: {}".format(source.name, message))
+
+            return None
+
+        built[name + ".mpy"] = target
+
+    for name in SOURCE_ON_DEVICE:
+        built[name] = ESP32_DIR / name
+
+    total = sum(path.stat().st_size for path in built.values())
+    source_total = sum(
+        (ESP32_DIR / (name + ".py")).stat().st_size for name in PRECOMPILED
+    )
+
+    report.step(
+        "BUILD", True,
+        "{} modules compiled, {} bytes of source -> {} bytes on device".format(
+            len(PRECOMPILED), source_total, total,
+        ),
+    )
+
+    return built
+
+
 def check_manifest_sources(report):
     """Every manifest file exists locally, and nothing stray sits beside it."""
-    missing = [n for n in ESP32_FILES if not (ESP32_DIR / n).is_file()]
+    missing = [n for n in ESP32_SOURCES if not (ESP32_DIR / n).is_file()]
 
     if missing:
         return report.step(
@@ -257,20 +368,21 @@ def check_manifest_sources(report):
         )
 
     on_disk = {p.name for p in ESP32_DIR.glob("*.py")}
-    extra = sorted(on_disk - set(ESP32_FILES))
+    extra = sorted(on_disk - set(ESP32_SOURCES))
 
     if extra:
         # Not fatal - it just will not be uploaded - but silence here
         # is how a file everybody assumes is running turns out not to
         # be on the device at all.
-        report.step("SOURCES", True, "{} files".format(len(ESP32_FILES)))
+        report.step("SOURCES", True, "{} files".format(len(ESP32_SOURCES)))
         report.note(
             "not in the manifest, so NOT uploaded: " + ", ".join(extra)
         )
 
         return True
 
-    return report.step("SOURCES", True, "{} files".format(len(ESP32_FILES)))
+    return report.step("SOURCES", True,
+                       "{} files".format(len(ESP32_SOURCES)))
 
 
 def check_port(port, report):
@@ -347,23 +459,81 @@ def clean_device(port, report):
     )
 
 
-def upload(port, report):
-    """Copy every manifest file to the device root."""
+UPLOAD_ATTEMPTS = 3
+
+
+def upload(port, report, built):
+    """
+    Copy every manifest file to the device root, and prove each arrived.
+
+    A COPY THAT RETURNS ZERO IS NOT A COPY THAT ARRIVED. Observed on
+    this bench: `mpremote fs cp` reported success for servo.mpy and put
+    22507 of its 22532 bytes on the device - 25 bytes short, exit code
+    0, no warning anywhere. Bytecode truncated that way does not fail
+    politely; the board came up with
+
+        MemoryError: memory allocation failed, allocating 4294966961 bytes
+
+    which is a length field read out of the end of a file that stopped
+    early, and the firmware would not boot at all.
+
+    So every file is hashed on the device as soon as it lands, and a
+    file that does not match is sent again. The whole-deployment
+    CONTENT check still runs afterwards - this is a retry, not a
+    replacement for verification.
+    """
+    resent = []
+
     for name in ESP32_FILES:
-        source = ESP32_DIR / name
+        source = built[name]
+        expected = local_sha256(source)
 
-        result = run_mpremote(
-            port, "fs", "cp", "-f", str(source), ":" + name,
-            check=False, timeout=180,
-        )
-
-        if result.returncode != 0:
-            return report.step(
-                "UPLOAD", False,
-                "{}: {}".format(
-                    name, (result.stderr or result.stdout).strip()[-200:]
-                ),
+        for attempt in range(UPLOAD_ATTEMPTS):
+            result = run_mpremote(
+                port, "fs", "cp", "-f", str(source), ":" + name,
+                check=False, timeout=180,
             )
+
+            if result.returncode != 0:
+                if attempt + 1 < UPLOAD_ATTEMPTS:
+                    resent.append(name)
+
+                    continue
+
+                return report.step(
+                    "UPLOAD", False,
+                    "{}: {}".format(
+                        name, (result.stderr or result.stdout).strip()[-200:]
+                    ),
+                )
+
+            landed = device_sha256(port, name)
+
+            if landed is None or landed == expected:
+                # None means this build cannot hash on the device; the
+                # CONTENT step reports that separately.
+                break
+
+            if attempt + 1 >= UPLOAD_ATTEMPTS:
+                return report.step(
+                    "UPLOAD", False,
+                    "{} arrived damaged {} times running".format(
+                        name, UPLOAD_ATTEMPTS
+                    ),
+                )
+
+            resent.append(name)
+
+    if resent:
+        report.step(
+            "UPLOAD", True,
+            "{} files, {} resent after a damaged copy".format(
+                len(ESP32_FILES), len(resent)
+            ),
+        )
+        report.note("resent: " + ", ".join(sorted(set(resent))))
+
+        return True
 
     return report.step(
         "UPLOAD", True, "{} files".format(len(ESP32_FILES))
@@ -409,7 +579,7 @@ def check_remote_manifest(port, report, strict=True):
                        "{} files, nothing else".format(len(ESP32_FILES)))
 
 
-def check_content(port, report):
+def check_content(port, report, built):
     """
     The bytes on the device are the bytes in the repository.
 
@@ -428,7 +598,7 @@ def check_content(port, report):
 
             continue
 
-        if remote != local_sha256(ESP32_DIR / name):
+        if remote != local_sha256(built[name]):
             mismatched.append(name)
 
     if mismatched:
@@ -617,8 +787,13 @@ def command_status(args):
         print("   {:<20}{}  {}".format(name + marker, "", known))
 
     print()
+    built = build_firmware(report)
+
+    if built is None:
+        return 1
+
     check_remote_manifest(args.port, report, strict=False)
-    check_content(args.port, report)
+    check_content(args.port, report, built)
 
     return 1 if report.failed else 0
 
@@ -650,6 +825,11 @@ def command_deploy(args):
     if not check_manifest_sources(report):
         return 1
 
+    built = build_firmware(report)
+
+    if built is None:
+        return 1
+
     if not check_port(args.port, report):
         return 1
 
@@ -668,7 +848,7 @@ def command_deploy(args):
             if not clean_device(args.port, report):
                 return 1
 
-        if not upload(args.port, report):
+        if not upload(args.port, report, built):
             return 1
 
     except KeyboardInterrupt:
@@ -690,7 +870,7 @@ def command_deploy(args):
     if not check_remote_manifest(args.port, report, strict=args.clean):
         return 1
 
-    if not check_content(args.port, report):
+    if not check_content(args.port, report, built):
         return 1
 
     if not check_imports(args.port, report):
@@ -723,8 +903,13 @@ def command_verify(args):
     if not check_port(args.port, report):
         return 1
 
+    built = build_firmware(report)
+
+    if built is None:
+        return 1
+
     check_remote_manifest(args.port, report, strict=True)
-    check_content(args.port, report)
+    check_content(args.port, report, built)
     check_imports(args.port, report)
 
     return 1 if report.failed else 0

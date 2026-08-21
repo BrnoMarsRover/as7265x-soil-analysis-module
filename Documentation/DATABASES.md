@@ -5,7 +5,8 @@ Three databases, one file each, in `firmware/BD/`.
 ```text
 DB1.json                  measured here, 18 bands, 23 materials   READY
 DB1_source.txt            the verbatim record DB1 is built from
-DB2.json                  measured here, 54 features               EMPTY
+DB2.json                  measured here, 54 features, 22 materials  READY
+DB2_source.txt            the verbatim record DB2 is built from
 DB3.json                  external spectra, projected, 84 spectra   READY
 calibration_legacy.json   the White/Dark DB1 was measured against
 calibrations.json         every calibration ever made, and which is active
@@ -111,22 +112,66 @@ change exceeds measurement noise.
 
 ---
 
-## DB2 — measured, 54 features · EMPTY
+## DB2 — measured, 54 features
 
 18 spectral bands × 3 illumination conditions = 54 features per material.
 Feature ids are illumination-qualified: `white:A` … `ir:W`.
 
-**Why it is empty, and why that cannot be fixed in software.** DB1 holds
-18 raw Sample values per material under a single unrecorded illumination.
-The 36 missing UV and IR features were never measured. Changing the White
-reference cannot create them, and no code path exists that would try.
+**22 of DB1's 23 materials**, measured on 2026-08-17 under one full
+spectral calibration (`FREYA_FULL_SPECTRAL_CAL_20260817_173914`) without
+moving the sensor between materials. Sodium Bicarbonate was not measured
+and is **absent** from DB2 rather than present and zero.
 
-Complete and tested: schema, feature-space definition, loader, validator,
-status reporting, compatibility rules, and the guard that refuses to
-compare an 18-band measurement against this 54-feature space.
+Per material, per feature, DB2 stores the raw counts, the dark, the
+reference measured **under that same lamp**, the reflectance the
+instrument printed, and the reflectance recomputed from the raw:
 
-Blocked on: a full spectral calibration on the instrument, then physical
-remeasurement of each material under WHITE, UV and IR.
+```json
+"ir:W": {
+  "illumination": "ir", "channel": "W", "wavelength_nm": 940,
+  "raw_sample": 29.7777, "dark_reference": 0.0,
+  "white_reference": 888.9196, "reference_span": 888.9196,
+  "reflectance_as_supplied": 0.0335,
+  "reflectance_recomputed": 0.033499, "reflectance_residual": 1.0e-06,
+  "flags": []
+}
+```
+
+Rebuild: `py firmware/research/build_db2.py`
+Audit without writing: `py firmware/research/build_db2.py --audit-only`
+
+**The audit is the point.** All 1188 reflectances (22 × 54) are
+recomputed from the raw counts and compared against what the instrument
+printed. The largest disagreement is 5.0e-05 — exactly the rounding of a
+4-decimal display, on every single value.
+
+### What the audit flags, and why none of it is repaired
+
+**Reflectance is not clipped.** `R > 1` means the material returned more
+light than the white target under that lamp; `R < 0` means the sample
+read below the dark offset on a channel where that offset is large
+(C460 reads 77.9 counts dark, D485 reads 35.7). Both are real
+consequences of a reference that does not describe that material's
+geometry, and both are preserved and flagged per feature.
+
+**UV is weak on 8 channels.** The calibration itself was accepted with
+that warning, and the audit reproduces it independently: under UV the
+reference rises less than 5 counts above the dark on 8 of 18 channels.
+Reflectance there is quantised and should not be read as a precise
+number. `REFERENCE_RANGE_MARGINAL` marks each one.
+
+### Why it could not have been derived from DB1
+
+DB1 holds 18 raw Sample values per material under a single *unrecorded*
+illumination. The 36 UV and IR features per material were never measured.
+Changing the White reference cannot create them, and no code path exists
+that would try. DB2 required physically remeasuring every container.
+
+The guard that refuses to compare an 18-band measurement against this
+54-feature space is unchanged and still enforced by
+`BD/channels.py::require_compatible`. A 54-feature measurement may be
+*narrowed* to its 18 WHITE bands — that is real, not invented — and the
+registry reports it as `PROJECTED_TO_18` so a result always says so.
 
 ---
 

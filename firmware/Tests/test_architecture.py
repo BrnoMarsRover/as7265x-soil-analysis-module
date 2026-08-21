@@ -378,7 +378,7 @@ sys.path.insert(0, str(DOMAINS["tools"]))
 import device  # noqa: E402
 
 checks.equal(
-    sorted(device.ESP32_FILES),
+    sorted(device.ESP32_SOURCES),
     esp32_files,
     "the manifest lists exactly the files in ESP32/",
 )
@@ -389,6 +389,35 @@ checks.ok(
 checks.ok(
     all(name in device.ESP32_FILES for name in ("boot.py", "main.py")),
     "boot.py and main.py are deployed",
+)
+
+# The device receives bytecode for the large modules, because compiling
+# them on the board runs it out of memory - see device.py. The two lists
+# must stay derived from one another: a module added to ESP32/ and not
+# to PRECOMPILED would silently go back to being compiled on the device.
+checks.equal(
+    sorted(device.ESP32_FILES),
+    sorted([name + ".mpy" for name in device.PRECOMPILED]
+           + list(device.SOURCE_ON_DEVICE)),
+    "what lands on the device is exactly the compiled modules plus the "
+    "two the runtime opens by name",
+)
+checks.equal(
+    sorted([name + ".py" for name in device.PRECOMPILED]
+           + list(device.SOURCE_ON_DEVICE)),
+    esp32_files,
+    "every source in ESP32/ is either precompiled or deployed as source "
+    "- none is left out of the deployment",
+)
+checks.ok(
+    all(name + ".py" in device.ESP32_SOURCES
+        for name in device.PRECOMPILED),
+    "every precompiled module has a source file behind it",
+)
+checks.equal(
+    sorted(device.PRECOMPILED),
+    sorted(device.IMPORT_CHECK),
+    "the import check covers exactly the precompiled modules",
 )
 checks.ok(
     "main" not in device.IMPORT_CHECK,

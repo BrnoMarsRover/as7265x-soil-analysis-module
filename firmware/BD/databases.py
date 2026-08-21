@@ -17,7 +17,15 @@ Layer rule: BD must never import Science.
 import json
 
 from BD import config
-from BD.channels import CHANNELS, copy_channels, validate_spectrum
+from BD.channels import (
+    AS7265X_18,
+    AS7265X_54_MULTIILLUM,
+    CHANNELS,
+    ILLUMINATIONS,
+    copy_channels,
+    feature_ids,
+    validate_spectrum,
+)
 
 
 class DatabaseError(Exception):
@@ -158,17 +166,53 @@ class References:
 # reference materials
 # ----------------------------------------------------------------------
 
+_METADATA_KEYS = (
+    "canonical_name", "aliases", "chemical_formula", "material_class",
+    "measurement_type", "calibration_id", "quality_flags",
+    "acquisition_settings", "display_name", "name_en", "name_cs",
+    "operator_label", "material_id",
+)
+
+
+def _cell_reflectance(cell):
+    """
+    The comparable reflectance of one stored cell.
+
+    as_supplied is the number the instrument printed; recomputed is
+    derived from the raw counts beside it. The supplied value wins, so
+    the library means exactly what it meant when it was measured — the
+    recomputed one exists to prove the two agree, not to replace it.
+    """
+    if not isinstance(cell, dict):
+        return None
+
+    value = cell.get("reflectance_as_supplied")
+
+    if value is None:
+        value = cell.get("reflectance")
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+
+    return value
+
+
 def _material_spectrum(entry):
     """
     The comparable spectrum of one library entry, plus its provenance.
 
-    Three shapes are accepted, so one loader serves all three databases
+    Four shapes are accepted, so one loader serves all three databases
     and the old flat form still reads.
 
-    DB1/DB2 — full record, raw measurements preserved per channel:
+    DB1 — full record, raw measurements preserved per channel:
 
         {"channels": {"A": {"reflectance_as_supplied": 0.1, ...}, ...},
          "canonical_name": ..., "material_class": ...}
+
+    DB2 — the same, but 54 features keyed <illumination>:<channel>:
+
+        {"features": {"white:A": {"reflectance_as_supplied": 0.1, ...},
+                      "uv:A": {...}, "ir:A": {...}, ...}}
 
     Aggregated form, which a repeat-measured library produces:
 
@@ -180,37 +224,33 @@ def _material_spectrum(entry):
 
     Only the comparable reflectance vector is returned for matching; the
     rest is carried as metadata. Nothing is fabricated — an entry with no
-    usable spectrum is reported as incomplete rather than filled in.
+    usable spectrum is reported as incomplete rather than filled in, and
+    a feature whose reflectance is undefined (the reference equalled the
+    dark there) is LEFT OUT rather than defaulted to zero. A missing
+    feature is visible to the comparison; a fabricated 0.0 is not.
     """
     if not isinstance(entry, dict):
         return None, {}
 
-    # DB1/DB2 full record.
-    if "channels" in entry and isinstance(entry["channels"], dict):
+    # DB1 full record (18 channels) and DB2 full record (54 features)
+    # differ only in what the cells are keyed by, so one branch reads
+    # both and the key set decides the feature space.
+    for container in ("channels", "features"):
+        cells = entry.get(container)
+
+        if not isinstance(cells, dict):
+            continue
+
         spectrum = {}
 
-        for channel, cell in entry["channels"].items():
-            if not isinstance(cell, dict):
-                continue
-
-            # as_supplied is the historical number; recomputed is derived
-            # from the raw measurements. Prefer the historical value so
-            # the library means exactly what it meant when measured.
-            value = cell.get("reflectance_as_supplied")
-
-            if value is None:
-                value = cell.get("reflectance")
+        for feature, cell in cells.items():
+            value = _cell_reflectance(cell)
 
             if value is not None:
-                spectrum[channel] = value
+                spectrum[feature] = value
 
         metadata = {
-            key: entry[key] for key in (
-                "canonical_name", "aliases", "chemical_formula",
-                "material_class", "measurement_type", "calibration_id",
-                "quality_flags", "acquisition_settings",
-            )
-            if key in entry
+            key: entry[key] for key in _METADATA_KEYS if key in entry
         }
 
         return (spectrum or None), metadata
@@ -241,8 +281,10 @@ class MaterialDatabase:
     # produced it and scores are never silently pooled across them.
     layer = "DB1"
     protected = True
+    feature_space = AS7265X_18
 
-    def __init__(self, path=None, layer=None, protected=None):
+    def __init__(self, path=None, layer=None, protected=None,
+                 feature_space=None):
         self.path = path or config.DB1_FILE
 
         if layer is not None:
@@ -250,6 +292,9 @@ class MaterialDatabase:
 
         if protected is not None:
             self.protected = protected
+
+        if feature_space is not None:
+            self.feature_space = feature_space
 
         document = _load_json(self.path, str(self.path))
 
@@ -290,11 +335,20 @@ class MaterialDatabase:
                 "{} holds no usable reference spectra.".format(self.path),
             )
 
-        # The library was normalized against ONE White/Dark pair, and
-        # comparing it against anything else changes what every stored
-        # number means. Recorded here so a result can always say which
-        # calibration its comparison was valid under.
-        self.calibration_id = config.LEGACY_CALIBRATION_ID
+        # Every stored number means "reflectance against THIS reference",
+        # and comparing the library against a different one changes what
+        # all of them mean. Recorded here so a result can always say
+        # which calibration its comparison was valid under.
+        #
+        # DB1 was normalized against the immutable legacy White/Dark and
+        # says nothing about it, so the legacy id is the correct answer
+        # for it. DB2 was measured under a full calibration and names it
+        # in the document; taking the legacy id there would label 54
+        # features with the id of a calibration that never touched them.
+        self.calibration_id = (
+            self.document_metadata.get("calibration_id")
+            or config.LEGACY_CALIBRATION_ID
+        )
 
     def count(self):
         return len(self.materials)
@@ -304,16 +358,23 @@ class MaterialDatabase:
 
     def incomplete_materials(self):
         """
-        Materials whose spectrum is not a full, numeric 18 channels.
+        Materials whose spectrum is not a full, numeric set of features.
 
         Reported rather than silently repaired: a reference entry with
         holes in it is a data problem for a human to look at, not
-        something this module should paper over.
+        something this module should paper over. What counts as complete
+        depends on the feature space — 18 channels for DB1 and DB3, 54
+        (illumination, channel) pairs for DB2.
         """
         report = {}
+        expected = feature_ids(self.feature_space)
 
         for name, spectrum in self.materials.items():
-            missing = validate_spectrum(spectrum)
+            missing = [
+                feature for feature in expected
+                if not isinstance(spectrum.get(feature), (int, float))
+                or isinstance(spectrum.get(feature), bool)
+            ]
 
             if missing:
                 report[name] = missing
@@ -321,15 +382,24 @@ class MaterialDatabase:
         return report
 
     def status(self):
+        multi = self.feature_space == AS7265X_54_MULTIILLUM
+
         return {
             "layer": self.layer,
             "file": str(self.path),
             "material_count": self.count(),
             "calibration_id": self.calibration_id,
-            "illumination": "white",
+            "feature_space": self.feature_space,
+            "illumination": (
+                list(ILLUMINATIONS) if multi else "white"
+            ),
             "read_only": True,
             "protected": self.protected,
-            "note": "18 white-illumination reference features per "
-                    "material. UV and IR are recorded on new samples but "
-                    "have no reference data to compare against yet.",
+            "note": (
+                "54 reference features per material: 18 bands under each "
+                "of WHITE, UV and IR, every one measured on this "
+                "instrument."
+                if multi else
+                "18 white-illumination reference features per material."
+            ),
         }

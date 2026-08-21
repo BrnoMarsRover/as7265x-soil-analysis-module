@@ -154,20 +154,36 @@ probed.
 
 ## 4. What is not finished
 
-**DB2 is empty.** It is the current 54-feature measured library and has
-zero materials. It cannot be derived from DB1 — DB1 holds 18 raw values
-per material under a single illumination, and the 36 missing UV and IR
-features were never measured. Populating DB2 means physically
-remeasuring the materials under WHITE, UV and IR. The registry reports
-it as `EMPTY` and the other two databases carry on without it.
+**DB2 is populated but one material short.** 22 of DB1's 23 materials
+were measured under WHITE, UV and IR on 2026-08-17 and are in DB2 with
+54 features each. Sodium Bicarbonate was not measured and is absent
+rather than zero. Rebuild with `py firmware/research/build_db2.py`.
+
+**UV is weak on 8 of 18 channels.** The calibration was accepted with
+that warning and the DB2 audit reproduces it independently: under UV the
+white reference rises less than 5 counts above the dark there, so those
+reflectances are quantised. This is why several materials come back
+`NORMALIZATION_UNUSABLE` with 27 of 54 features unusable as reflectance
+while all 54 are valid as raw counts. Fixing it means more UV current or
+a longer integration, not more software.
 
 **The Decision Model is a cold start.** `FREYA_DECISION_V001` is
 deterministic — fused evidence, measured margins, class distance where
 it exists, declared database priors — and every threshold it uses is
-labelled `PROVISIONAL_UNVALIDATED`. There are twelve verified
-observations, one per material, which is not enough to train anything.
-The model registry already knows how to refuse to activate a
-replacement that is not better.
+labelled `PROVISIONAL_UNVALIDATED`. There are 22 verified observations,
+one per material, which is not enough to train anything: with a single
+measurement per class no class has a measurable scatter. Scored against
+those 22 it named 3 correctly and refused to name the rest. The model
+registry already knows how to refuse to activate a replacement that is
+not better.
+
+**No prepared mixture has been measured yet.** The record for one now
+exists end to end — multiple weighed components, a named matrix such as
+ordinary soil, and the sample's distance, mass, packing and moisture —
+and `research/training/evaluate_mixtures.py` scores unmixing against it.
+Until mixtures are actually measured, no statement about "how much of
+X is in this sample" is available from this instrument, and the report
+says so rather than estimating one.
 
 **The legacy sample reads INVALID_MEASUREMENT.** `s456` was measured
 under the old conditions, and normalizing it against today's active

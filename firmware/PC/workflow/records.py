@@ -65,7 +65,306 @@ from BD import config as bd_config
 from Science import pipeline
 from serial_link import utc_timestamp
 
-from BD.samples import METADATA_FIELDS, STATE_MEASURED
+from BD.samples import (
+    METADATA_FIELDS,
+    STATE_MEASURED,
+    validate_sample_id,
+)
+
+
+def save_acquisition_as_sample(mission, data, result):
+    """
+    Turn a bench acquisition into a real Sample record.
+
+    RAW FIRST, exactly as menu_measure does it: the acquisition is
+    stored before Science is asked anything, so a failure in the
+    analysis costs an analysis and not the experiment. §58.
+
+    THE ANALYSIS IS RUN AGAIN against the STORED measurement rather than
+    the test's copy being filed under a new name. The test analysed a
+    record whose measurement_id was "SENSOR_TEST" and whose sample_id
+    was None; storing that result would put an AnalysisRun in the
+    archive naming a measurement that does not exist. Re-running is pure
+    arithmetic on the same numbers and costs no hardware time.
+
+    Returns (sample_id, measurement_id), or (None, None) if nothing was
+    saved.
+    """
+    blocks = (data or {}).get("illuminations") or {}
+
+    if not blocks:
+        print()
+        print("This acquisition carries no spectra, so there is nothing")
+        print("to save.")
+
+        return None, None
+
+    print()
+    print("SAVE AS A SAMPLE")
+    print()
+    print("This measurement was taken at the bench, so it belongs to no")
+    print("carousel slot. The Sample is created with no slot and is")
+    print("marked as a sensor-test acquisition in its metadata.")
+    print()
+
+    raw_id = ask("Sample ID (blank = cancel)")
+
+    if not raw_id:
+        print("Cancelled; nothing was saved.")
+
+        return None, None
+
+    try:
+        sample_id = validate_sample_id(raw_id)
+
+    except StorageError as error:
+        print(error.message)
+
+        return None, None
+
+    # An existing ID is a handle to physical material. Adding a bench
+    # measurement to somebody else's Sample would attach this spectrum
+    # to the wrong specimen, which is the one mistake §59 says must
+    # never happen.
+    if mission.store.has_sample(sample_id):
+        print()
+        print("Sample {} already exists.".format(sample_id))
+
+        if not confirm("Add this measurement to that existing Sample?"):
+            print("Nothing was saved.")
+
+            return None, None
+
+    else:
+        metadata = ask_metadata() or {}
+
+        # `note`, not a key of our own. BD.blank_metadata keeps only the
+        # six declared METADATA_FIELDS and silently drops anything else,
+        # so an "origin" key would have recorded nothing at all while
+        # this code claimed it had. Only filled when the operator left
+        # the field empty - what they typed is never overwritten.
+        if not metadata.get("note"):
+            metadata["note"] = "bench sensor test, no carousel slot"
+
+        try:
+            mission.store.create(sample_id, None, utc_timestamp(), metadata)
+
+        except StorageError as error:
+            print()
+            print("NOT SAVED: {}".format(error.message))
+
+            return None, None
+
+        print()
+        print("Sample {} created with no carousel slot.".format(sample_id))
+
+    # ---- BD: PERSIST RAW, before Science is asked anything ------------
+    fields = mission.measurement_from_acquisition(data, sample_id)
+
+    try:
+        measurement = mission.store.add_measurement(sample_id, **fields)
+
+    except StorageError as error:
+        print()
+        print("!! COULD NOT SAVE THE MEASUREMENT: {}".format(error.message))
+        print("   Nothing downstream was attempted.")
+
+        return None, None
+
+    measurement_id = measurement["measurement_id"]
+
+    print()
+    print("Saving RAW to BD............... PASS  ({} / {})".format(
+        sample_id, measurement_id))
+
+    # ---- Science: analyse what is now safely stored -------------------
+    run = mission.analyse_measurement(measurement)
+    analysis_status = run.get("analysis_status")
+    run_id = None
+
+    try:
+        stored_run = mission.store.add_analysis_run(
+            sample_id, measurement_id, run
+        )
+        run_id = stored_run["analysis_run_id"]
+
+    except StorageError as error:
+        print("!! Could not save the analysis: {}".format(error.message))
+        print("   RAW is stored and can be re-analysed.")
+
+    if analysis_status == "FAILED":
+        print()
+        print("!! ANALYSIS FAILED: {}".format(
+            (run.get("error") or {}).get("message", "no reason given")))
+        print("   RAW IS SAFE and can be analysed again.")
+
+    decision = run.get("decision")
+
+    if decision:
+        try:
+            mission.store.set_conclusion(sample_id, {
+                "interpretation": decision.get("material")
+                or decision.get("family"),
+                "level": decision.get("level"),
+                "status": decision.get("level"),
+                "confidence": decision.get("confidence"),
+                "from_measurement": measurement_id,
+                "from_analysis_run": run_id,
+                "decision_model_version": (
+                    run.get("versions") or {}
+                ).get("decision_model"),
+            })
+
+        except StorageError as error:
+            print("!! Could not update the conclusion: {}".format(
+                error.message))
+
+    print()
+    print("Sample:         {}".format(sample_id))
+    print("Measurement:    {}".format(measurement_id))
+    print("AnalysisRun:    {}".format(run_id or "NOT SAVED"))
+    print("RAW saved:      YES")
+    print("Analysis:       {}".format(analysis_status))
+
+    return sample_id, measurement_id
+
+
+def offer_measurement_disposition(mission, data, result,
+                                  measurement_id=None):
+    """
+    What becomes of a bench measurement: learning, archive, or nothing.
+
+    The sensor test used to end by offering the learning history and
+    nothing else, so a measurement worth keeping as a Sample had to be
+    taken again through the mission workflow - and the operator was
+    asked about ground truth every single time, including for the
+    throwaway runs that make up most sensor testing.
+
+    Three outcomes, asked once and plainly. The menu repeats so one
+    measurement can go to both stores, and EXIT is always available and
+    always means nothing further is written.
+    """
+    if measurement_id is None:
+        measurement_id = "TEST_{}".format(
+            utc_timestamp().replace(":", "").replace("-", "")[:15]
+        )
+
+    saved_to_learning = False
+    saved_sample = None
+
+    while True:
+        print()
+        print(RULE)
+        print()
+        print("THIS MEASUREMENT IS NOT SAVED YET")
+        print()
+
+        if mission.learning is None:
+            print("[1] Save to the learning history      UNAVAILABLE")
+            print("    {}".format(
+                mission.learning_error or "the learning database is not open"
+            ))
+        elif saved_to_learning:
+            print("[1] Save to the learning history      ALREADY SAVED")
+            print("    Stored as {}.".format(measurement_id))
+        else:
+            print("[1] Save to the learning history (seed observation)")
+            print("    Records what the sample ACTUALLY is, for the")
+            print("    Decision Model. Training happens offline.")
+
+        print()
+
+        if saved_sample:
+            print("[2] Save as a Sample in the archive   ALREADY SAVED")
+            print("    Stored as {}.".format(saved_sample))
+        else:
+            print("[2] Save as a Sample in the archive")
+            print("    Creates a Sample record: RAW first, then the")
+            print("    analysis beside it.")
+
+        print()
+        print("[3] Exit without saving anything")
+        print()
+
+        selection = choose("Select")
+
+        if selection == "3" or not selection:
+            if not saved_to_learning and not saved_sample:
+                print()
+                print("NOTHING SAVED.")
+
+            return saved_sample, saved_to_learning
+
+        if selection == "1":
+            if mission.learning is None:
+                print()
+                print("The learning database is not available.")
+
+                continue
+
+            if saved_to_learning:
+                print()
+                print("Already saved to the learning history.")
+
+                continue
+
+            if not (result or {}).get("evidence"):
+                print()
+                print("No evidence package was built - there is no active")
+                print("calibration - so the observation would be stored")
+                print("with its RAW spectra and no derived features.")
+
+                if not confirm("Save it anyway?"):
+                    continue
+
+            record = capture_ground_truth(
+                mission, measurement_id, result, save_prompt=False
+            )
+
+            saved_to_learning = record is not None
+
+            continue
+
+        if selection == "2":
+            if saved_sample:
+                print()
+                print("Already saved as {}.".format(saved_sample))
+
+                continue
+
+            sample_id, stored_id = save_acquisition_as_sample(
+                mission, data, result
+            )
+
+            if sample_id is not None:
+                saved_sample = sample_id
+
+                # The archive and the learning history should name the
+                # SAME measurement. Once RAW is stored under a real
+                # measurement_id, that is the id worth learning from.
+                if not saved_to_learning and stored_id:
+                    measurement_id = stored_id
+
+                elif saved_to_learning and stored_id != measurement_id:
+                    # ORDER MATTERS AND THE OPERATOR SHOULD KNOW.
+                    # An observation already written cannot be renamed,
+                    # so saving to the learning history FIRST and to the
+                    # archive second leaves two records of one physical
+                    # measurement under two ids, with nothing joining
+                    # them. Saying so is better than a silent orphan.
+                    print()
+                    print("Note: the learning history already holds this")
+                    print("measurement as {}, and the archive now holds".format(
+                        measurement_id))
+                    print("it as {}. They are the same acquisition but".format(
+                        stored_id))
+                    print("carry different ids - save to the archive first")
+                    print("next time and both will use the archive's.")
+
+            continue
+
+        print()
+        print("Unknown option.")
 
 
 def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
@@ -96,6 +395,8 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
     print("  [1] Yes - exact material known")
     print("  [2] Material family known")
     print("  [3] Known prepared mixture")
+    print("      Several materials you weighed and mixed yourself, with")
+    print("      their proportions - including what you mixed them INTO.")
     print("  [4] Unknown sample")
     print("  [5] Save the measurement without a label")
     print()
@@ -147,6 +448,16 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
 
     status, source, certainty = ask_verification(answer)
 
+    # Asked for every label, including "unknown sample". An unlabelled
+    # field measurement whose distance and packing ARE recorded still
+    # supports learning how those change a spectrum - and a mixture with
+    # no presentation recorded cannot be compared with the next one.
+    context = None
+
+    if confirm("Record how the sample was presented (distance, mass, "
+               "packing)?"):
+        context = ask_sample_context(mission)
+
     try:
         record = mission.record_observation(
             measurement_id, result,
@@ -154,6 +465,7 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
             material=material,
             family_id=family,
             mixture=mixture,
+            sample_context=context,
             verification_status=status,
             verification_source=source,
             certainty=certainty,
@@ -168,6 +480,19 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
     print()
     print("Saved to the learning history as {}.".format(measurement_id))
     print("The reference databases were not modified.")
+
+    if mixture:
+        print()
+        print("Recorded as a prepared mixture of {} part(s). The stored")
+        print("proportions are what you WEIGHED; nothing in the runtime")
+        print("pipeline reads them. They are what an unmixing model will")
+        print("be scored against when there are enough of them.".format())
+
+        summary = mission.mixture_readiness()
+
+        if summary:
+            print()
+            print("  {}".format(summary))
 
     return record
 
@@ -241,47 +566,269 @@ def ask_family(mission):
 
 def ask_mixture(mission):
     """
-    Components of a PREPARED mixture, with their prepared fractions.
+    Components of a PREPARED mixture, with their prepared proportions.
 
     Only for a mixture the operator actually MADE and knows the
     composition of. A mixture guessed from a spectrum is not ground
     truth, and there is deliberately no way to enter one - which is the
     same reason production Science estimates no composition at all.
 
-    What this records is a physical fact about a sample somebody mixed.
-    It is stored as a training record and nothing in the runtime
-    pipeline consumes it; it exists so that an unmixing model, if one
-    is ever validated, has real prepared mixtures to be validated
-    against.
+    TWO KINDS OF INGREDIENT, AND THE DIFFERENCE MATTERS
+
+        component   a library material, weighed in deliberately.
+                    "10 % Iron(III) Oxide Red"
+        matrix      what it was mixed INTO - ordinary soil, sand, the
+                    local regolith. A real substance with a real mass
+                    and no reference spectrum anywhere.
+
+    The matrix is asked for separately rather than being inferred from
+    "whatever is left", because it is usually most of the sample and
+    most of the signal. A model asked to find 10 % hematite in garden
+    soil is being asked to find it AGAINST that soil, and an evaluation
+    that does not know what the other 90 % was cannot say whether a miss
+    was the model's fault or the matrix's.
+
+    PERCENT IN, FRACTION STORED. The operator mixes by percent and the
+    store keeps mass fractions; converting here means the 0.10-vs-10
+    mistake is made in one place and caught immediately, rather than
+    becoming a training example that says a sample was 1000 % hematite.
     """
     components = []
 
     print()
-    print("Enter each component of the PREPARED mixture. Blank to finish.")
+    print("PREPARED MIXTURE")
+    print()
+    print("Enter each library material you weighed in, then the matrix")
+    print("it was mixed into. Percentages, by mass. Blank name finishes.")
+    print()
 
     while True:
+        _print_mixture_table(components)
+
         identity = ask_material(mission)
 
         if identity is None:
             break
 
-        fraction = ask_float(
-            "Prepared mass fraction of {} (0-1)".format(
-                identity.display_name
-            ),
-            0.0, 1.0,
+        if any(part.get("material_key") == identity.key
+               for part in components):
+            print()
+            print("{} is already in the mixture. One material, one "
+                  "proportion.".format(identity.display_name))
+
+            continue
+
+        percent = ask_float(
+            "Percent of {} by mass (0-100)".format(identity.display_name),
+            0.0, 100.0,
         )
 
-        if fraction is None:
-            break
+        if percent is None:
+            print("Component dropped.")
+
+            continue
 
         components.append({
+            "role": "COMPONENT",
             "material_key": identity.key,
             "material_id": identity.material_id,
-            "prepared_mass_fraction": fraction,
+            "family_id": identity.family_id,
+            "prepared_mass_fraction": percent / 100.0,
         })
 
-    return components or None
+    if not components:
+        return None
+
+    # -- the matrix ----------------------------------------------------
+    weighed = sum(
+        part["prepared_mass_fraction"] for part in components
+    )
+    remainder = 1.0 - weighed
+
+    print()
+
+    if remainder > 1e-9:
+        print("The named components account for {:.1f} %. What is the "
+              "remaining {:.1f} %?".format(weighed * 100.0,
+                                           remainder * 100.0))
+        print()
+        print("If it is ordinary soil, sand or anything else that is not")
+        print("in the libraries, name it here. That is the matrix, and")
+        print("what it was is part of the measurement.")
+        print()
+
+        label = ask("Matrix (blank = the mixture is only what is listed)")
+
+        if label:
+            components.append({
+                "role": "MATRIX",
+                "material_key": None,
+                "matrix_label": label,
+                "prepared_mass_fraction": remainder,
+            })
+
+    # -- confirm before it becomes a training example ------------------
+    print()
+    _print_mixture_table(components)
+
+    total = sum(
+        part.get("prepared_mass_fraction") or 0.0 for part in components
+    )
+
+    if abs(total - 1.0) > 0.005:
+        print("These add up to {:.2f} %, not 100 %.".format(total * 100.0))
+        print()
+        print("The missing mass was in the cup and in the measurement.")
+        print("Attributing it to the components that WERE listed would")
+        print("make every one of them wrong, so this cannot be saved as")
+        print("it stands.")
+        print()
+
+        if not confirm("Re-enter the mixture?"):
+            return None
+
+        return ask_mixture(mission)
+
+    if not confirm("Is that what you mixed?"):
+        print("Cancelled; nothing was saved.")
+
+        return None
+
+    return components
+
+
+def _print_mixture_table(components):
+    if not components:
+        return
+
+    print()
+    print("  {:<34} {:<10} {:>9}".format("component", "role", "percent"))
+
+    for part in components:
+        name = part.get("material_key") or part.get("matrix_label") or "?"
+        fraction = part.get("prepared_mass_fraction")
+
+        print("  {:<34} {:<10} {:>8.2f}%".format(
+            name[:34],
+            part.get("role", "COMPONENT").lower(),
+            (fraction or 0.0) * 100.0,
+        ))
+
+    total = sum(
+        part.get("prepared_mass_fraction") or 0.0 for part in components
+    )
+
+    print("  {:<34} {:<10} {:>8.2f}%".format("", "total", total * 100.0))
+    print()
+
+
+def ask_sample_context(mission):
+    """
+    How the sample physically sat in front of the sensor.
+
+    THE VARIABLES THE OPERATOR CHANGES AND THE PROFILE DOES NOT.
+    An acquisition profile records gain, integration time and lamp
+    current - the instrument's settings. It does not record that this
+    cup held 5 g of loose damp powder at 40 mm and the last one held
+    20 g tamped dry at 25 mm, and those move the spectrum at least as
+    much as the material does.
+
+    Without them a model trying to learn a material learns the
+    operator's habits instead, and the first time the habits change it
+    is wrong about everything.
+
+    EVERY ANSWER IS OPTIONAL AND BLANK MEANS NOT RECORDED. Never a
+    default: two measurements that both say "distance unknown" are not
+    thereby known to have been taken at the same distance, and a model
+    that fills an unrecorded distance with 30 mm learns a relationship
+    to a number nobody measured.
+    """
+    print()
+    print("SAMPLE PRESENTATION")
+    print()
+    print("How the sample sat in front of the sensor. Every answer is")
+    print("optional; blank records NOT RECORDED, which is honest and")
+    print("useful. A guessed number is neither.")
+
+    context = {}
+
+    print()
+    distance = ask_float("Sensor-to-sample distance in mm", 0.0, 1000.0)
+
+    if distance is not None:
+        context["sensor_to_sample_mm"] = distance
+
+    mass = ask_float("Sample mass in g", 0.0, 10000.0)
+
+    if mass is not None:
+        context["sample_mass_g"] = mass
+
+    depth = ask_float("Sample depth in the cup, mm", 0.0, 500.0)
+
+    if depth is not None:
+        context["sample_depth_mm"] = depth
+
+    packing = _ask_state(
+        "How was it packed?",
+        ("LOOSE", "TAMPED", "PRESSED"),
+        ("poured in, not compacted",
+         "pressed down by hand",
+         "compacted deliberately"),
+    )
+
+    if packing:
+        context["packing"] = packing
+
+    moisture = _ask_state(
+        "How wet was it?",
+        ("OVEN_DRY", "AIR_DRY", "DAMP", "WET"),
+        ("dried in an oven",
+         "as it comes out of the container",
+         "visibly moist, holds together",
+         "free water present"),
+    )
+
+    if moisture:
+        context["moisture"] = moisture
+
+    grain = ask("Grain size or preparation (blank = not recorded)")
+
+    if grain:
+        context["grain_size"] = grain
+
+    container = ask("Sample container (blank = not recorded)")
+
+    if container:
+        context["container"] = container
+
+    note = ask("Anything else worth recording (blank = nothing)")
+
+    if note:
+        context["note"] = note
+
+    return context or None
+
+
+def _ask_state(question, states, descriptions):
+    """One controlled-vocabulary answer, or None for not recorded."""
+    print()
+    print(question)
+    print()
+
+    for index, (state, description) in enumerate(
+        zip(states, descriptions), start=1
+    ):
+        print("  [{}] {:<10} {}".format(index, state, description))
+
+    print("  [Enter] not recorded")
+    print()
+
+    choice = choose("Select")
+
+    if choice.isdigit() and 1 <= int(choice) <= len(states):
+        return states[int(choice) - 1]
+
+    return None
 
 
 def ask_verification(answer):
@@ -347,6 +894,80 @@ def menu_learning_history(mission):
 
     else:
         print("  none yet")
+
+    # ------------------------------------------------------------------
+    # PREPARED MIXTURES
+    #
+    # Shown as a gap report rather than a total, because "4 mixtures" on
+    # its own reads like progress and the useful question at the bench is
+    # what is still missing before any of it can be validated.
+    # ------------------------------------------------------------------
+    mixtures = status.get("mixtures") or {}
+
+    print()
+    print("PREPARED MIXTURES  (what was weighed, for learning proportions)")
+    print()
+
+    if mixtures.get("mixtures"):
+        print("  {} mixture(s) over {} material(s)".format(
+            mixtures["mixtures"], mixtures["materials_spiked"]))
+        print()
+        print("  {:<34} {:>5} {:>10} {:>10}".format(
+            "material", "n", "lowest", "highest"))
+
+        for material, entry in sorted(mixtures["by_material"].items()):
+            print("  {:<34} {:>5} {:>9.1f}% {:>9.1f}%".format(
+                material[:34], entry["n"],
+                (entry["lowest_fraction"] or 0.0) * 100.0,
+                (entry["highest_fraction"] or 0.0) * 100.0,
+            ))
+
+        if mixtures.get("matrices"):
+            print()
+            print("  mixed into: {}".format(", ".join(
+                "{} (x{})".format(name, count)
+                for name, count in sorted(mixtures["matrices"].items())
+            )))
+
+        print()
+        print("  Score them with:")
+        print("    py firmware/research/training/evaluate_mixtures.py")
+
+    else:
+        print("  none yet")
+        print()
+        print("  A prepared mixture is the only thing that can ever turn a")
+        print("  spectral contribution into a percentage. Mix a known mass")
+        print("  of a library material into a known mass of soil, measure")
+        print("  it, and save it as a KNOWN PREPARED MIXTURE.")
+
+    # ------------------------------------------------------------------
+    # SAMPLE PRESENTATION
+    # ------------------------------------------------------------------
+    context = status.get("sample_context") or {}
+
+    print()
+    print("SAMPLE PRESENTATION  (distance, mass, packing)")
+    print()
+    print("  recorded on {} of {} observation(s)".format(
+        context.get("with_any_context", 0),
+        context.get("observations", 0),
+    ))
+
+    by_field = context.get("by_field") or {}
+
+    if any(by_field.values()):
+        print()
+
+        for field, count in sorted(by_field.items()):
+            if count:
+                print("    {:<24} {}".format(field, count))
+
+    else:
+        print()
+        print("  Nothing yet. Until distance and packing are recorded, a")
+        print("  difference between two measurements of one material")
+        print("  cannot be attributed to either of them.")
 
     print()
     print("CONFUSION HISTORY  (verified truth vs what a model said)")

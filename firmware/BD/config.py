@@ -143,7 +143,7 @@ ACQUISITION_PROFILE_SCHEMA_VERSION = 1
 
 TRAINING_DIR = BD_DIR / "training"
 DECISION_LEARNING_DB = TRAINING_DIR / "decision_learning.sqlite3"
-DECISION_LEARNING_SCHEMA_VERSION = 1
+DECISION_LEARNING_SCHEMA_VERSION = 2
 
 # The verbatim, human-readable seed the database is built from. Kept
 # beside the binary so the history stays auditable and rebuildable.

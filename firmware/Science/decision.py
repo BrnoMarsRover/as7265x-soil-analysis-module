@@ -151,6 +151,7 @@ class DecisionEngine:
         decision["secondary_interpretations"] = self._secondary(
             evidence, unknown, mixture, fusion
         )
+        decision["mixture"] = self._mixture_report(mixture)
         decision["confidence"] = self._confidence(
             decision, separation, unknown, fusion
         )
@@ -443,6 +444,66 @@ class DecisionEngine:
             secondary.append(MIXTURE_PLAUSIBLE)
 
         return secondary
+
+    @staticmethod
+    def _mixture_report(mixture):
+        """
+        The multi-component finding, carried beside the decision.
+
+        A decision has ONE level and that level names at most one
+        material. When a sample is a spike of something in ordinary
+        soil, the honest single-material answer is "the soil" - and it
+        throws away the only part the operator cared about.
+
+        So the components travel separately, with three things attached
+        to every one of them:
+
+            spectral_contribution   what the fit used
+            is_mass_fraction        False. Always, currently.
+            quantity_model          which validated model converted it,
+                                    or None
+
+        `is_mass_fraction` is a field rather than a docstring because a
+        reader six months from now gets it from the record instead of
+        from the source, and because the day a quantity model IS
+        validated, the field is where that becomes visible. Until then
+        it says False on every row, which is exactly the claim the
+        instrument can support.
+        """
+        if not mixture:
+            return None
+
+        components = mixture.get("components") or []
+
+        return {
+            "status": mixture.get("status"),
+            "method": mixture.get("method"),
+            "component_count": len(components),
+            "components": [
+                {
+                    "material_key": component.get("material"),
+                    "spectral_contribution": component.get(
+                        "spectral_contribution"
+                    ),
+                    "normalized_contribution": component.get(
+                        "normalized_contribution"
+                    ),
+                    "is_mass_fraction": False,
+                    "quantity_model": None,
+                }
+                for component in components
+            ],
+            "reconstruction_rmse": mixture.get("reconstruction_rmse"),
+            "improvement_over_single": mixture.get(
+                "improvement_over_single"
+            ),
+            "caveat": "Spectral contribution is not mass fraction. "
+                      "Converting one to the other needs a model "
+                      "validated against physically prepared mixtures; "
+                      "research/training/evaluate_mixtures.py scores the "
+                      "prepared mixtures on file and reports whether one "
+                      "holds up yet.",
+        }
 
     def _confidence(self, decision, separation, unknown, fusion):
         """

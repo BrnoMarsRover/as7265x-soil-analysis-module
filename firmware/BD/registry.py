@@ -273,7 +273,8 @@ class DatabaseHandle:
 
         try:
             self.database = MaterialDatabase(
-                path, layer=self.key, protected=self.protected
+                path, layer=self.key, protected=self.protected,
+                feature_space=self.feature_space,
             )
 
         except DatabaseError as error:

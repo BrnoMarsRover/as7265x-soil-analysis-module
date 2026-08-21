@@ -200,6 +200,11 @@ class FakeAS7265X:
         self.channel_reads = 0
 
         self.selected_device = 0
+
+        # Writes to DEV_SELECT_CONTROL. Reading 18 channels needs three
+        # of these, one per internal device; it used to issue eighteen.
+        self.device_selects = 0
+
         self._rx_value = None
         self._pending_write = None
 
@@ -361,6 +366,7 @@ class FakeAS7265X:
     def _write_virtual(self, register, value):
         if register == V_DEV_SELECT:
             self.selected_device = value & 0x03
+            self.device_selects += 1
             self.vregs[V_DEV_SELECT] = (
                 (0x30 if self.slaves_present else 0x00) | (value & 0x03)
             )

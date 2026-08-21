@@ -35,6 +35,7 @@ if str(FIRMWARE_ROOT) not in sys.path:
 
 from BD import config                                    # noqa: E402
 from BD.channels import AS7265X_18, CHANNELS, WAVELENGTHS  # noqa: E402
+from research.material_identity import identity           # noqa: E402
 
 SOURCE = config.DB1_SOURCE
 OUTPUT = config.DB1_FILE
@@ -66,74 +67,16 @@ NOISE = (
 # ----------------------------------------------------------------------
 # Canonical identity of the 23 materials.
 #
-# Reference knowledge ABOUT the substances - names, formulae, classes -
-# never used to alter a measured value. It lives here rather than in a
-# separate data file because it is an input to this build, not measured
-# data in its own right.
+# Reference knowledge ABOUT the substances - names, formulae, classes,
+# and the Czech labels printed on the containers - never used to alter a
+# measured value.
+#
+# It used to be a dict in this file. DB2 measures the SAME 23 physical
+# containers and needs the same identities, and two copies of a name
+# table drift apart the first time one of them is corrected. So it
+# moved to research/material_identity.py and both builders read it
+# from there.
 # ----------------------------------------------------------------------
-TAXONOMY = {
-    "Iron(III) Oxide Red": (
-        "Hematite (synthetic)", "Fe2O3", "iron_oxide",
-        ["Ferric oxide", "Red iron oxide"]),
-    "Iron(II,III) Oxide Black": (
-        "Magnetite (synthetic)", "Fe3O4", "iron_oxide",
-        ["Black iron oxide", "Ferrous ferric oxide"]),
-    "Sulfur Powder": (
-        "Sulfur", "S8", "native_element", ["Brimstone", "Sulphur"]),
-    "Magnesium Oxide": (
-        "Periclase (synthetic)", "MgO", "oxide", ["Magnesia"]),
-    "Calcium Carbonate (Chalk)": (
-        "Calcite", "CaCO3", "carbonate",
-        ["Chalk", "Calcium carbonate", "Whiting"]),
-    "Kaolin (White Clay)": (
-        "Kaolinite", "Al2Si2O5(OH)4", "phyllosilicate_clay",
-        ["Kaolin", "China clay", "White clay"]),
-    "Bentonite": (
-        "Bentonite (montmorillonite-rich)",
-        "(Na,Ca)0.33(Al,Mg)2Si4O10(OH)2*nH2O", "phyllosilicate_clay",
-        ["Bentonit", "Montmorillonite clay", "Smectite clay"]),
-    "Epsom Salt (Magnesium Sulfate)": (
-        "Epsomite", "MgSO4*7H2O", "sulfate",
-        ["Epsom salt", "Magnesium sulfate heptahydrate"]),
-    "Activated Carbon": (
-        "Activated carbon", "C", "carbonaceous", ["Activated charcoal"]),
-    "Aluminum Sulfate": (
-        "Aluminium sulfate", "Al2(SO4)3", "sulfate",
-        ["Alum (aluminium sulfate)", "Aluminium sulphate"]),
-    "Sodium Bicarbonate": (
-        "Nahcolite", "NaHCO3", "carbonate",
-        ["Baking soda", "Sodium hydrogen carbonate"]),
-    "Green Clay (Illite)": (
-        "Illite", "K0.65Al2(Al0.65Si3.35O10)(OH)2", "phyllosilicate_clay",
-        ["Green clay", "Illitic clay"]),
-    "Pink Clay": (
-        "Pink clay (kaolinite-rich, Fe-bearing)", None,
-        "phyllosilicate_clay", ["Rose clay"]),
-    "Red Clay": (
-        "Red clay (Fe-bearing)", None, "phyllosilicate_clay",
-        ["Red illite", "French red clay"]),
-    "Iron(II) Sulfate": (
-        "Melanterite / ferrous sulfate", "FeSO4*7H2O", "sulfate",
-        ["Ferrous sulfate", "Green vitriol", "Copperas"]),
-    "Borax (Sodium Tetraborate)": (
-        "Borax", "Na2B4O7*10H2O", "borate",
-        ["Sodium tetraborate", "Tincal"]),
-    "Potassium Nitrate": (
-        "Niter", "KNO3", "nitrate", ["Saltpetre", "Saltpeter", "Nitre"]),
-    "Talc": (
-        "Talc", "Mg3Si4O10(OH)2", "phyllosilicate",
-        ["Talcum", "Soapstone powder"]),
-    "Copper(II) Sulfate": (
-        "Chalcanthite", "CuSO4*5H2O", "sulfate",
-        ["Cupric sulfate", "Blue vitriol", "Copper sulphate"]),
-    "Ascorbic Acid": (
-        "Ascorbic acid", "C6H8O6", "organic_acid", ["Vitamin C"]),
-    "Tartaric Acid": ("Tartaric acid", "C4H6O6", "organic_acid", []),
-    "Magnesium Carbonate": (
-        "Magnesite / hydromagnesite", "MgCO3", "carbonate",
-        ["Magnesia alba"]),
-    "Citric Acid": ("Citric acid", "C6H8O7", "organic_acid", []),
-}
 
 
 def sha256(path):
@@ -427,9 +370,7 @@ def build(dark_reference, white_reference, materials, findings, source_hash):
 
     for name, material in sorted(materials.items()):
         rows = {row["channel"]: row for row in material["rows"]}
-        canonical, formula, material_class, aliases = TAXONOMY.get(
-            name, (None, None, None, [])
-        )
+        record = identity(name)
 
         flags = sorted({
             flag for channel in CHANNELS for flag in (
@@ -441,13 +382,14 @@ def build(dark_reference, white_reference, materials, findings, source_hash):
         })
 
         records[name] = {
-            "material_id": name.lower().replace(" ", "_").replace(
-                "(", "").replace(")", "").replace(",", ""),
-            "display_name": name,
-            "canonical_name": canonical,
-            "chemical_formula": formula,
-            "material_class": material_class,
-            "aliases": aliases,
+            "material_id": record["material_id"],
+            "display_name": record["display_name"],
+            "name_en": record["name_en"],
+            "name_cs": record["name_cs"],
+            "canonical_name": record["canonical_name"],
+            "chemical_formula": record["chemical_formula"],
+            "material_class": record["material_class"],
+            "aliases": record["aliases"],
 
             "measurement_type": "MEASURED",
             "calibration_id": LEGACY_CALIBRATION_ID,

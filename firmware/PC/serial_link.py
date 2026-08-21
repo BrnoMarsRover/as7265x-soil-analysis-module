@@ -260,6 +260,13 @@ class SerialLink:
         # between one unlucky frame and an unhealthy link.
         self.corrupt_frames = 0
         self.salvaged_frames = 0
+
+        # Bytes received from the port, for measuring what a response
+        # really costs on a 115200 wire. A byte is 10 bits with 8N1
+        # framing, so 86.8 us: the size of a response is the floor under
+        # its latency, and the only way to tell transport cost from
+        # firmware cost is to know both.
+        self.bytes_read = 0
         self.last_noise = []
 
         # THE DAMAGED LINES THEMSELVES, not just how many there were.
@@ -620,6 +627,8 @@ class SerialLink:
 
             if not chunk:
                 continue
+
+            self.bytes_read += len(chunk)
 
             buffer += chunk.decode("utf-8", "replace")
 

@@ -1,1 +1,19 @@
+# The operator client needs only this one.
 pyserial>=3.5
+
+# Deployment (firmware/tools/device.py) needs these two.
+#
+# mpremote copies files to the board and reads its filesystem.
+mpremote>=1.22
+
+# mpy-cross compiles the firmware to bytecode BEFORE it is uploaded,
+# because the board can no longer compile it itself: deploying the
+# sources fails at import with
+#
+#     MemoryError: memory allocation failed, allocating 1196 bytes
+#
+# IT MUST MATCH THE MICROPYTHON ON THE BOARD. A .mpy is versioned
+# bytecode, not portable source - the board runs MicroPython v1.28.0
+# and loads .mpy v6.3, which is what mpy-cross 1.28.x emits. A mismatch
+# is not a warning; the module fails to import.
+mpy-cross==1.28.0.post2

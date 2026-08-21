@@ -23,6 +23,7 @@ Layer rule: BD must never import Science or Science.decision.
 """
 
 import json
+import unicodedata
 
 from BD import config
 from BD.registry import DatabaseRegistry
@@ -40,11 +41,33 @@ class TaxonomyError(Exception):
 
 
 def _normalize(text):
-    """Fold a name to its comparison form: case and spacing only."""
+    """
+    Fold a name to its comparison form: case, spacing and diacritics.
+
+    DIACRITICS ARE FOLDED, AND THAT IS NOT GUESSING. The containers are
+    labelled in Czech - "Jíl zelený", "Kyselina citronová" - and the
+    operator types those names into a Windows console that does not
+    reliably accept them, so the same material arrives as "Jil zeleny"
+    one day and "Jíl zelený" the next. Treating those as two different
+    materials refused a correct label; the session log shows exactly
+    that happening to "BIO Jil Zeleny".
+
+    Stripping accents is a deterministic, reversible-in-meaning fold of
+    ONE alphabet, not a similarity match. It can merge two names only if
+    they differ by nothing but accents, and the builder checks that no
+    two materials in the library collide under it. Edit distance and
+    phonetics stay out: those WOULD guess.
+    """
     if text is None:
         return ""
 
-    return " ".join(str(text).strip().lower().replace("_", " ").split())
+    folded = unicodedata.normalize("NFKD", str(text))
+    folded = "".join(
+        character for character in folded
+        if not unicodedata.combining(character)
+    )
+
+    return " ".join(folded.strip().lower().replace("_", " ").split())
 
 
 class MaterialIdentity:

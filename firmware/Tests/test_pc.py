@@ -24,6 +24,7 @@ Run:  py test_pc.py
 
 import json
 import sys
+import time
 
 import support
 
@@ -137,7 +138,24 @@ class FakePort:
         return sum(len(chunk) for chunk in self.script)
 
     def read(self, count=1):
+        """
+        One scripted chunk, or nothing after waiting like a real port.
+
+        pySerial's read() BLOCKS for up to `timeout` when no bytes
+        arrive. Returning b"" instantly instead turned every test that
+        waits out a timeout into a busy spin: the link's read loop is
+        `while monotonic() < deadline`, so a 10-second negative test
+        burned a core for ten seconds and its result depended on how
+        loaded the machine was. It made this suite fail in run_all and
+        pass on its own, which is the least useful kind of failure
+        there is.
+
+        Sleeping for the port timeout models the real thing and costs
+        no CPU.
+        """
         if not self.script:
+            time.sleep(self.timeout if self.timeout else 0.01)
+
             return b""
 
         return self.script.pop(0)
@@ -819,6 +837,364 @@ checks.ok("no spectrum" in buffer.getvalue(),
           "table")
 
 Path(handle.name).unlink(missing_ok=True)
+
+
+# ======================================================================
+checks.section("a bench measurement is saved only where the operator says")
+#
+# The sensor test used to end by offering the learning history and
+# nothing else, so a bench measurement worth keeping as a Sample had to
+# be taken again through the mission workflow. Three outcomes now:
+# learning history, Sample archive, or nothing at all.
+
+import builtins                                   # noqa: E402
+
+
+class ScriptedInput:
+    """Feeds a prompt sequence to workflow.prompts, which owns input()."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.asked = []
+
+    def __call__(self, prompt=""):
+        self.asked.append(prompt)
+
+        if not self.answers:
+            raise EOFError("the script ran out of answers")
+
+        return self.answers.pop(0)
+
+
+def with_answers(answers, call):
+    original = builtins.input
+    script = ScriptedInput(answers)
+    builtins.input = script
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            value = call()
+
+    finally:
+        builtins.input = original
+
+    return value, out.getvalue(), script
+
+
+def bench_acquisition():
+    """What the ESP32 returns from sensor_test_raw, in miniature."""
+    def spectrum(offset):
+        return {channel: 100.0 + offset + index
+                for index, channel in enumerate(ALL_CHANNELS)}
+
+    return {
+        "illuminations": {
+            name: {
+                "illumination": name,
+                "repeats": 2,
+                "acquisitions": [spectrum(n), spectrum(n + 0.5)],
+                "data_ready_wait_ms": [595, 596],
+            }
+            for n, name in enumerate(("white", "uv", "ir"))
+        },
+        "sensor_settings": {"gain": 2, "integration_cycles": 100},
+        "bulbs_off": True,
+    }
+
+
+bench_handle = tempfile.NamedTemporaryFile(suffix=".json", delete=False,
+                                           mode="w", encoding="utf-8")
+bench_handle.write(json.dumps({"schema_version": 4, "samples": []}))
+bench_handle.close()
+
+bench = Mission(FakeLink())
+bench.store = SampleStore(Path(bench_handle.name)).load()
+bench.learning = None
+
+acquisition = bench_acquisition()
+
+# ---- [3] EXIT: nothing is written anywhere ---------------------------
+result, output, script = with_answers(
+    ["3"],
+    lambda: records.offer_measurement_disposition(bench, acquisition, {}),
+)
+
+checks.equal(result, (None, False), "exit reports that nothing was saved")
+checks.equal(len(bench.store.active_samples()), 0,
+             "and no Sample was created")
+checks.ok("NOTHING SAVED" in output, "and it says so plainly")
+
+# ---- [1] with no learning database: refused, not crashed -------------
+result, output, script = with_answers(
+    ["1", "3"],
+    lambda: records.offer_measurement_disposition(bench, acquisition, {}),
+)
+
+checks.equal(result, (None, False),
+             "asking for the learning history without one saves nothing")
+checks.ok("UNAVAILABLE" in output,
+          "and the menu says the learning database is unavailable")
+
+# ---- [2] save as a Sample --------------------------------------------
+# Answers: menu 2, sample id, every metadata field blank, then exit.
+metadata_blanks = [""] * (len(records.METADATA_FIELDS) + 2)
+
+result, output, script = with_answers(
+    ["2", "BENCH1"] + metadata_blanks + ["3"],
+    lambda: records.offer_measurement_disposition(bench, acquisition, {}),
+)
+
+saved_sample, saved_learning = result
+
+checks.equal(saved_sample, "BENCH1", "the Sample is reported as saved")
+checks.ok(not saved_learning, "and the learning history was not touched")
+
+stored = bench.store.get_sample("BENCH1")
+
+checks.ok(stored is not None, "the Sample exists in the archive")
+checks.equal(stored["slot_id"], None,
+             "a bench measurement belongs to no carousel slot")
+
+stored_measurements = records.measurements_of(stored)
+
+checks.equal(len(stored_measurements), 1, "with exactly one measurement")
+
+stored_raw = stored_measurements[0].get("raw") or {}
+
+checks.equal(sorted(stored_raw), ["ir", "uv", "white"],
+             "and its RAW is still grouped by illumination")
+checks.equal(len(stored_raw["white"]), 18,
+             "with all 18 channels under each lamp")
+
+# RAW SURVIVES A FAILED ANALYSIS. No calibration is active in this
+# fixture, so Science cannot produce reflectance - and that must cost
+# the analysis, never the measurement.
+checks.ok("RAW saved:      YES" in output,
+          "RAW is reported as saved even though the analysis could not run")
+
+records_source = open(records.__file__, encoding="utf-8").read()
+bench_save_at = records_source.index("def save_acquisition_as_sample")
+bench_add_at = records_source.index("add_measurement", bench_save_at)
+bench_analyse_at = records_source.index("analyse_measurement", bench_save_at)
+
+checks.ok(bench_add_at < bench_analyse_at,
+          "and the bench save persists RAW BEFORE it calls Science, the "
+          "same ordering the mission workflow uses")
+
+# ---- saving twice does not write twice -------------------------------
+result, output, script = with_answers(
+    ["2", "3"],
+    lambda: records.offer_measurement_disposition(
+        bench, acquisition, {}, measurement_id="M_TEST"),
+)
+
+Path(bench_handle.name).unlink(missing_ok=True)
+
+
+# ======================================================================
+checks.section("the sensor test reads the keys an AnalysisRun really has")
+#
+# THREE BUGS, ONE CAUSE. The sensor-test screen and the learning store
+# were written against a previous analysis shape and asked an
+# AnalysisRun for a "measurement" key it does not have. Each one only
+# fired when a sensor test got as far as a SUCCESSFUL analysis on real
+# hardware, which is why they survived:
+#
+#   calibration.menu_full_sensor_test  KeyError: 'measurement'
+#   display.print_evidence_summary     AttributeError: 'dict' object
+#                                      has no attribute 'summarize'
+#   session.record_observation         refused every observation with
+#                                      "carries no raw spectra"
+
+from BD.decision_learning import DecisionLearningStore   # noqa: E402
+
+
+def analysis_run_fixture():
+    """The shape Science.pipeline.analyze actually returns."""
+    raw = {
+        name: {channel: 10.0 + index
+               for index, channel in enumerate(ALL_CHANNELS)}
+        for name in ("white", "uv", "ir")
+    }
+
+    return {
+        "analysis_run_id": None,
+        "measurement_id": "SENSOR_TEST",
+        "sample_id": None,
+        "analysis_status": "OK",
+        "decision_status": "OK",
+        "calibration": {"calibration_id": "CAL_A",
+                        "legacy_calibration_id": "CAL_LEGACY"},
+        "versions": {"decision_model": "FREYA_DECISION_V001"},
+        "representations": {"normalized": {}},
+        "database_results": [
+            {"database": "DB1", "database_id": "DB1",
+             "version": "measured18-v1", "status": "READY",
+             "candidate_count": 23, "channels_compared": 17,
+             "normalization": "legacy:CAL_LEGACY",
+             "metrics": {
+                 "cosine": {"winner": "Red Clay", "winner_score": 0.72,
+                            "absolute_margin": 0.004},
+                 "rmse": {"winner": "Bentonite", "winner_score": 0.25,
+                          "absolute_margin": 0.009},
+                 "pearson_r": {"winner": "Kaolin", "winner_score": 0.33,
+                               "absolute_margin": 0.005},
+             }},
+            {"database": "DB2", "status": "EMPTY",
+             "reason": "DB2 cannot be derived from DB1."},
+        ],
+        "quality": {"hardware": {"status": "WARNING"},
+                    "normalization": {"status": "OK"}},
+        "evidence": {
+            "raw": raw,
+            "quality": {"hardware": {"status": "WARNING"},
+                        "normalization": {"status": "OK"}},
+            "channel_reliability": {
+                "features_total": 54,
+                "raw_valid_total": 54,
+                "normalized_valid_total": 27,
+                "by_illumination": {
+                    name: {"raw_valid_channels": 18,
+                           "normalized_valid_channels": 9}
+                    for name in ("white", "uv", "ir")
+                },
+            },
+            "acquisition": {
+                "sensor_settings": {"gain_x": "16x",
+                                    "integration_cycles": 100},
+                "acquisition_profile_id": "PROFILE_TEST",
+            },
+        },
+        "decision": {"level": "UNKNOWN", "material": None,
+                     "decision_model_version": "FREYA_DECISION_V001"},
+    }
+
+
+run_fixture = analysis_run_fixture()
+
+checks.ok("measurement" not in run_fixture,
+          "an AnalysisRun has no top-level 'measurement' key - the whole "
+          "cause of this section")
+
+# HARDWARE QC IS 'WARNING' ON PURPOSE. print_evidence_summary only
+# reaches the quality.summarize() call when the QC is imperfect, which
+# is why a local named `quality` could shadow the Science.quality module
+# for so long without anybody noticing.
+for name, call in (
+    ("print_evidence_summary",
+     lambda: display.print_evidence_summary(run_fixture["evidence"])),
+    ("print_database_results",
+     lambda: display.print_database_results(
+         run_fixture["database_results"])),
+    ("print_decision",
+     lambda: display.print_decision(run_fixture["decision"])),
+):
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            call()
+
+        raised = None
+
+    except Exception as error:
+        raised = "{}: {}".format(type(error).__name__, error)
+
+    checks.ok(raised is None,
+              "{} renders a real AnalysisRun{}".format(
+                  name, "" if raised is None else " (" + raised + ")"))
+
+# The screen must not ask for keys the run does not carry.
+calibration_source = open(
+    support.PC_DIR / "workflow" / "calibration.py", encoding="utf-8"
+).read()
+sensor_test_source = calibration_source[
+    calibration_source.index("def menu_full_sensor_test"):
+    calibration_source.index("def menu_led_test")
+]
+
+def code_only(source):
+    """
+    The source with comments and docstrings removed.
+
+    The comments in that function NAME the dead keys, deliberately, so
+    the next reader knows what the screen used to ask for and why it
+    broke. A scan that does not strip them finds the explanation and
+    reports it as the bug.
+    """
+    lines = []
+
+    for line in source.splitlines():
+        stripped = line.strip()
+
+        if stripped.startswith("#"):
+            continue
+
+        lines.append(line.split("  # ")[0])
+
+    text = chr(10).join(lines)
+
+    # Docstrings too - the repaired code documents the old shape.
+    while '"""' in text:
+        start = text.index('"""')
+        end = text.find('"""', start + 3)
+
+        if end == -1:
+            break
+
+        text = text[:start] + text[end + 3:]
+
+    return text
+
+
+sensor_test_code = code_only(sensor_test_source)
+
+for dead_key in ('result["measurement"]', 'result["reference_matches"]',
+                 'result["analysis"]', '"cross_database"',
+                 '"metric_agreement"',
+                 '"legacy_database_calibration_id"'):
+    checks.ok(dead_key not in sensor_test_code,
+              "the sensor test no longer reads {}".format(dead_key))
+
+# ---- the learning store accepts a real result -------------------------
+learning_file = Path(tempfile.mkdtemp()) / "learning.sqlite3"
+
+bench.learning = DecisionLearningStore(learning_file)
+
+record = bench.record_observation(
+    "M_FIXTURE", run_fixture, label_type="UNKNOWN_SAMPLE",
+    verification_status="UNKNOWN",
+)
+
+checks.ok(record is not None,
+          "record_observation stores an observation from a real "
+          "AnalysisRun - it used to refuse every one of them")
+
+stored_status = bench.learning.status()
+
+checks.equal(stored_status["observations"], 1,
+             "and the learning history holds exactly that one")
+
+learning_source = open(
+    support.PC_DIR / "workflow" / "session.py", encoding="utf-8"
+).read()
+observation_source = learning_source[
+    learning_source.index("def record_observation"):
+    learning_source.index("def calibration_health")
+]
+
+checks.ok('measurement.get("raw")' not in code_only(observation_source),
+          "and it takes RAW from the evidence package, not from a "
+          "'measurement' key that does not exist")
+
+# The disposition menu offers the learning history once a store is open.
+result, output, script = with_answers(
+    ["3"],
+    lambda: records.offer_measurement_disposition(
+        bench, acquisition, run_fixture),
+)
+
+checks.ok("UNAVAILABLE" not in output,
+          "with a learning database open, saving to it is offered rather "
+          "than reported unavailable")
 
 
 serial_link.serial = _real_serial

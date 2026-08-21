@@ -189,14 +189,39 @@ def blank_profile():
     }
 
 
+def _canonical(value):
+    """
+    One representation per physical value, so equal conditions hash equal.
+
+    25 and 25.0 are the same lamp current. They are not the same JSON,
+    and the fingerprint is a hash of JSON - so a profile built from a
+    seed file that wrote the current as an integer got a different id
+    from one built from the same current after `_milliamps` turned it
+    into a float. That split a single measurement session across two
+    acquisition profiles, which is exactly the mistake the fingerprint
+    exists to prevent.
+
+    An integral float folds to its integer. Nothing else is touched: 25.5
+    stays 25.5, and a genuinely different current still hashes
+    differently.
+    """
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+
+    return value
+
+
 def _fingerprint_values(profile):
     values = []
 
     for section, field in FINGERPRINT_FIELDS:
-        value = (profile.get(section) or {}).get(field)
-
-        if isinstance(value, (list, tuple)):
-            value = list(value)
+        value = _canonical((profile.get(section) or {}).get(field))
 
         values.append([section, field, value])
 
@@ -266,6 +291,38 @@ def compare(left, right):
     }
 
 
+def _milliamps(value):
+    """
+    A lamp current as a number, from either a number or "25mA".
+
+    The firmware reports the current as a LABEL for the register code
+    it wrote, because that is what an operator needs to read. A profile
+    field that is compared for equality needs the number.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip().lower()
+
+    for suffix in ("ma", "m a"):
+        if text.endswith(suffix):
+            text = text[:-len(suffix)].strip()
+
+            break
+
+    try:
+        return float(text)
+
+    except ValueError:
+        return None
+
+
 def from_measurement(sensor_settings, firmware_version=None, label=None,
                      geometry=None, notes=None):
     """
@@ -288,10 +345,29 @@ def from_measurement(sensor_settings, firmware_version=None, label=None,
         "integration_cycles": settings.get("integration_cycles"),
     })
 
+    # THE INSTRUMENT REPORTS THE CURRENTS UNDER A DIFFERENT NAME.
+    #
+    # This asked for settings["white_current_ma"] and the ESP32 has
+    # never sent a key of that name. It sends
+    #
+    #     "led_currents_ma": {"white": "25mA", "uv": "25mA",
+    #                         "ir": "25mA"}
+    #
+    # so all three currents were recorded as null in every profile
+    # built from a real acquisition, and all three are FINGERPRINT
+    # fields: two acquisitions taken at 25 mA and at 100 mA produced
+    # the same fingerprint and compared as COMPATIBLE_WITH_UNKNOWNS.
+    # The lamp current is one of the few things that genuinely changes
+    # what a count means.
+    currents = settings.get("led_currents_ma") or {}
+
     profile["illumination"].update({
-        "white_current_ma": settings.get("white_current_ma"),
-        "uv_current_ma": settings.get("uv_current_ma"),
-        "ir_current_ma": settings.get("ir_current_ma"),
+        "white_current_ma": _milliamps(
+            settings.get("white_current_ma", currents.get("white"))),
+        "uv_current_ma": _milliamps(
+            settings.get("uv_current_ma", currents.get("uv"))),
+        "ir_current_ma": _milliamps(
+            settings.get("ir_current_ma", currents.get("ir"))),
     })
 
     profile["hardware"]["firmware_version"] = firmware_version

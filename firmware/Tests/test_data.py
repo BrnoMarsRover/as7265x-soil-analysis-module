@@ -374,11 +374,384 @@ checks.equal(len(db1.materials), 23, "with 23 materials")
 checks.equal(len(db3.materials), 84, "and DB3 with 84")
 
 db2 = registry.get("DB2")
-checks.ok(not db2.ready,
-          "DB2 is empty and reports itself unready rather than pretending")
-checks.ok(db2.status, "with a status naming why")
-checks.ok(db1.ready and db3.ready,
-          "and an empty DB2 does not take the other two down with it")
+
+checks.ok(db1.ready and db2.ready and db3.ready,
+          "all three databases load independently")
+checks.equal(db2.evidence, "MEASURED",
+             "DB2 was measured on this instrument, like DB1")
+checks.equal(db2.feature_space, "AS7265X_54_MULTIILLUM",
+             "but in the 54-feature space, which DB1 is not")
+checks.ok(db1.feature_space != db2.feature_space,
+          "so a DB1 spectrum can never be scored against a DB2 record "
+          "by lining up the first 18 numbers of each")
+checks.equal(len(db2.materials), 22,
+             "DB2 holds the 22 materials measured under all three lamps")
+
+# DB2 IS A SUBSET OF DB1 AND MUST STAY ONE.
+#
+# Every material in DB2 was measured from the same container as the DB1
+# material of the same name. A key in DB2 that DB1 does not have would
+# mean the two libraries had drifted apart on names, and every
+# cross-database statement about "the same material" would be wrong.
+checks.equal(sorted(set(db2.materials) - set(db1.materials)), [],
+             "and every one of them is a DB1 material under the same key")
+checks.equal(sorted(set(db1.materials) - set(db2.materials)),
+             ["Sodium Bicarbonate"],
+             "the one DB1 material never measured under UV and IR is "
+             "ABSENT from DB2 rather than present and zero")
+
+checks.equal(db2.database.incomplete_materials(), {},
+             "no DB2 record has a hole in its 54 features")
+
+for name, spectrum in sorted(db2.materials.items())[:3]:
+    checks.equal(len(spectrum), 54,
+                 "{}: 54 features, not 54 wavelengths".format(name))
+
+checks.equal(db2.database.calibration_id,
+             "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
+             "DB2 names the full calibration it was measured under, not "
+             "the legacy one that never touched it")
+checks.equal(db1.database.calibration_id, "FREYA_COMPETITION_2026_CAL_V1",
+             "and DB1 still names the legacy calibration")
+
+# Both languages, on both databases. The bench labels are Czech and the
+# library is English; a material that can only be named in one of them
+# cannot be labelled by the person holding the container.
+for key, handle in (("DB1", db1), ("DB2", db2)):
+    named = [
+        name for name in handle.materials
+        if (handle.metadata.get(name) or {}).get("name_cs")
+    ]
+
+    checks.equal(len(named), len(handle.materials),
+                 "{}: every material carries a Czech name beside its "
+                 "English one".format(key))
+
+
+# ======================================================================
+checks.section("an acquisition profile records the lamp current")
+#
+# REGRESSION. from_measurement asked for settings["white_current_ma"]
+# and the firmware has never sent a key of that name - it sends
+# led_currents_ma as a mapping of labels. All three currents were
+# therefore null in every profile ever built from a real acquisition,
+# and all three are FINGERPRINT fields: a measurement at 25 mA and one
+# at 100 mA produced the same fingerprint and compared COMPATIBLE.
+
+from BD.acquisition_profiles import (          # noqa: E402
+    _milliamps,
+    compare,
+    fingerprint,
+    from_measurement,
+    unknown_fingerprint_fields,
+)
+
+# Exactly what the ESP32 reports, copied from a real sensor_test_raw.
+FIRMWARE_SETTINGS = {
+    "measurement_mode_name": "one-shot",
+    "measurement_mode": 3,
+    "config_register": "0x2C",
+    "led_currents": {"uv": 1, "white": 1, "ir": 1},
+    "led_currents_ma": {"ir": "25mA", "uv": "25mA", "white": "25mA"},
+    "led_current_ma": "25mA",
+    "led_current": 1,
+    "gain_x": "16x",
+    "gain": 2,
+    "data_ready": False,
+    "integration_cycles": 100,
+}
+
+profile = from_measurement(FIRMWARE_SETTINGS, firmware_version="6.0.0")
+
+checks.equal(profile["sensor"]["measurement_mode"], 3, "the mode is recorded")
+checks.equal(profile["sensor"]["gain"], 2, "the gain is recorded")
+checks.equal(profile["sensor"]["integration_cycles"], 100,
+             "the integration time is recorded")
+
+checks.equal(profile["illumination"]["white_current_ma"], 25.0,
+             "the WHITE lamp current is recorded, as a number")
+checks.equal(profile["illumination"]["uv_current_ma"], 25.0,
+             "and the UV lamp current")
+checks.equal(profile["illumination"]["ir_current_ma"], 25.0,
+             "and the IR lamp current")
+
+unknown = unknown_fingerprint_fields(profile)
+
+for field in ("illumination.white_current_ma", "illumination.uv_current_ma",
+              "illumination.ir_current_ma"):
+    checks.ok(field not in unknown,
+              "{} is no longer an unknown fingerprint field".format(field))
+
+# THE FINGERPRINT MUST SEPARATE TWO DIFFERENT LAMP CURRENTS. That is the
+# whole point of recording them.
+brighter = dict(FIRMWARE_SETTINGS)
+brighter["led_currents_ma"] = {"ir": "100mA", "uv": "100mA",
+                               "white": "100mA"}
+
+bright_profile = from_measurement(brighter, firmware_version="6.0.0")
+
+checks.equal(bright_profile["illumination"]["white_current_ma"], 100.0,
+             "a 100 mA acquisition reads as 100 mA")
+checks.ok(fingerprint(profile) != fingerprint(bright_profile),
+          "and it fingerprints differently from the 25 mA one - which it "
+          "did not while both were null")
+checks.equal(compare(profile, bright_profile)["status"], "INCOMPATIBLE",
+             "so the two are reported as different acquisition conditions")
+
+# A number, a label, and nonsense.
+checks.equal(_milliamps(25), 25.0, "a bare number is a current")
+checks.equal(_milliamps("25mA"), 25.0, "and so is the label the firmware sends")
+checks.equal(_milliamps("12.5mA"), 12.5, "including a fractional one")
+checks.equal(_milliamps(None), None, "absent stays absent")
+checks.equal(_milliamps("not a current"), None,
+             "and anything unparseable stays absent rather than becoming 0")
+
+# THE SAME CONDITION MUST HASH THE SAME.
+#
+# REGRESSION. The fingerprint is a hash of JSON, and 25 is not the same
+# JSON as 25.0. A profile built from a seed file that wrote the lamp
+# current as an integer got a different id from one built from the same
+# current after _milliamps turned it into a float - which split the
+# 2026-08-17 session across two acquisition profiles, the exact mistake
+# the fingerprint exists to prevent.
+integral = from_measurement(dict(FIRMWARE_SETTINGS))
+floated = from_measurement(dict(FIRMWARE_SETTINGS))
+floated["illumination"]["white_current_ma"] = 25.0
+floated["illumination"]["uv_current_ma"] = 25.0
+floated["illumination"]["ir_current_ma"] = 25.0
+integral["illumination"]["white_current_ma"] = 25
+integral["illumination"]["uv_current_ma"] = 25
+integral["illumination"]["ir_current_ma"] = 25
+
+checks.equal(fingerprint(integral), fingerprint(floated),
+             "25 mA and 25.0 mA are one acquisition condition, not two")
+
+fractional = from_measurement(dict(FIRMWARE_SETTINGS))
+fractional["illumination"]["white_current_ma"] = 25.5
+
+checks.ok(fingerprint(integral) != fingerprint(fractional),
+          "while 25.5 mA is genuinely different and still says so")
+
+
+# ======================================================================
+checks.section("a prepared mixture records what was weighed")
+#
+# The record that lets the system learn to find one material inside
+# another. Everything here is about refusing a mixture that would
+# become a misleading training example - a fraction that is really a
+# percent, a total with a hole in it, a component nobody can score.
+
+from BD.decision_learning import (                     # noqa: E402
+    DecisionLearningStore,
+    LABEL_EXACT_MATERIAL,
+    LABEL_PREPARED_MIXTURE,
+    LearningError,
+    ROLE_COMPONENT,
+    ROLE_MATRIX,
+    normalize_mixture,
+)
+
+SPIKE = [
+    {"role": ROLE_COMPONENT, "material_key": "Iron(III) Oxide Red",
+     "prepared_mass_fraction": 0.1},
+    {"role": ROLE_MATRIX, "matrix_label": "garden soil",
+     "prepared_mass_fraction": 0.9},
+]
+
+cleaned = normalize_mixture(SPIKE)
+checks.equal(len(cleaned), 2, "a spike into soil is two ingredients")
+checks.equal(cleaned[0]["role"], ROLE_COMPONENT,
+             "the weighed material is a COMPONENT")
+checks.equal(cleaned[1]["role"], ROLE_MATRIX,
+             "and what it went into is the MATRIX, not a leftover")
+checks.equal(cleaned[1]["matrix_label"], "garden soil",
+             "which is named, because it is most of the signal")
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([
+        {"material_key": "Iron(III) Oxide Red",
+         "prepared_mass_fraction": 10},
+    ]),
+    "a fraction of 10 is refused - percentages are the classic way to "
+    "record a sample as 1000% hematite",
+)
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([
+        {"material_key": "Iron(III) Oxide Red",
+         "prepared_mass_fraction": 0.1},
+        {"material_key": "Bentonite", "prepared_mass_fraction": 0.2},
+    ]),
+    "fractions that add to 0.3 are refused: the missing mass was in the "
+    "cup and attributing it to what WAS listed makes both wrong",
+)
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([
+        {"material_key": "Iron(III) Oxide Red",
+         "prepared_mass_fraction": 0.5},
+        {"material_key": "Bentonite"},
+    ]),
+    "half a mixture weighed is not a partially known mixture - a "
+    "fraction is a share of a total",
+)
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([
+        {"material_key": "Bentonite", "prepared_mass_fraction": 0.5},
+        {"material_key": "Bentonite", "prepared_mass_fraction": 0.5},
+    ]),
+    "one material cannot have two proportions",
+)
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([
+        {"role": ROLE_COMPONENT, "prepared_mass_fraction": 1.0},
+    ]),
+    "a component that names no material cannot be scored against "
+    "anything and is refused",
+)
+
+checks.raises(
+    LearningError,
+    lambda: normalize_mixture([]),
+    "an empty mixture is an unknown sample, and there is a label for that",
+)
+
+# Unweighed mixtures are legitimate: they say WHAT was in the sample
+# without saying how much, which still supports detection.
+unweighed = normalize_mixture([
+    {"material_key": "Iron(III) Oxide Red"},
+    {"role": ROLE_MATRIX, "matrix_label": "garden soil"},
+])
+checks.equal(len(unweighed), 2,
+             "a mixture with no proportions at all is accepted - it "
+             "scores detection, not quantity")
+
+
+# -- the store round trip ---------------------------------------------
+mixture_db = Path(tempfile.gettempdir()) / "freya_test_mixture.sqlite3"
+
+if mixture_db.exists():
+    mixture_db.unlink()
+
+learning = DecisionLearningStore(mixture_db)
+counts = {channel: 100.0 for channel in CHANNELS}
+
+learning.add_observation("MIX_01", {"white": counts})
+learning.add_ground_truth(
+    "MIX_01", LABEL_PREPARED_MIXTURE, mixture=SPIKE,
+    verification_status="VERIFIED",
+    verification_source="operator_known_reference_material",
+)
+
+components = learning.components("MIX_01")
+checks.equal(len(components), 2, "both ingredients are queryable as rows")
+checks.equal(components[0]["material_key"], "Iron(III) Oxide Red",
+             "in the order they were entered")
+checks.close(components[0]["prepared_mass_fraction"], 0.1,
+             "with the fraction that was weighed")
+
+found = learning.observations_containing("Iron(III) Oxide Red")
+checks.equal([entry["measurement_id"] for entry in found], ["MIX_01"],
+             "and the mixture is found by asking what contains hematite")
+
+checks.equal(
+    learning.observations_containing(
+        "Iron(III) Oxide Red", min_fraction=0.5
+    ),
+    [],
+    "a 10% spike does not answer a query for 50% or more",
+)
+
+# A pure jar counts as containing itself: it is the easy end of the
+# same detection curve and a model needs both ends.
+learning.add_observation("PURE_01", {"white": counts})
+learning.add_ground_truth(
+    "PURE_01", LABEL_EXACT_MATERIAL,
+    material_key="Iron(III) Oxide Red",
+    verification_status="VERIFIED",
+    verification_source="operator_known_reference_material",
+)
+
+found = learning.observations_containing("Iron(III) Oxide Red")
+checks.equal(sorted(entry["measurement_id"] for entry in found),
+             ["MIX_01", "PURE_01"],
+             "the pure jar counts as containing itself at fraction 1.0")
+
+checks.raises(
+    LearningError,
+    lambda: learning.add_ground_truth(
+        "PURE_01", LABEL_EXACT_MATERIAL,
+        material_key="Iron(III) Oxide Red", mixture=SPIKE, replace=True,
+    ),
+    "composition on a non-mixture label is refused - it would make a "
+    "pure material look like a mixture in every query that counts them",
+)
+
+summary = learning.mixture_summary()
+checks.equal(summary["mixtures"], 1, "one prepared mixture on file")
+checks.equal(summary["matrices"], {"garden soil": 1},
+             "against one named matrix")
+
+
+# ======================================================================
+checks.section("how the sample was presented is recorded, or is absent")
+
+learning.add_sample_context(
+    "MIX_01", sensor_to_sample_mm=30.0, sample_mass_g=12.5,
+    packing="TAMPED", moisture="AIR_DRY", substrate="garden soil",
+)
+
+context = learning.get_sample_context("MIX_01")
+checks.close(context["sensor_to_sample_mm"], 30.0,
+             "the sensor-to-sample distance is stored")
+checks.equal(context["packing"], "TAMPED", "and how it was packed")
+checks.equal(context["sample_depth_mm"], None,
+             "a question that was not answered stays NULL - 'not "
+             "recorded' and 'zero deep' are different facts")
+
+checks.raises(
+    LearningError,
+    lambda: learning.add_sample_context("MIX_01", sensor_to_sample_mm=99.0),
+    "a second context is refused without replace: the first was "
+    "observed, a later one is remembered",
+)
+
+checks.raises(
+    LearningError,
+    lambda: learning.add_sample_context("PURE_01", packing="SQUASHED"),
+    "packing is a controlled vocabulary, not free text",
+)
+
+checks.raises(
+    LearningError,
+    lambda: learning.add_sample_context("PURE_01",
+                                        sensor_to_sample_mm=-5.0),
+    "and a negative distance is refused rather than stored",
+)
+
+checks.raises(
+    LearningError,
+    lambda: learning.add_sample_context("NO_SUCH_MEASUREMENT",
+                                        packing="LOOSE"),
+    "context for an observation that does not exist is refused",
+)
+
+coverage = learning.context_coverage()
+checks.equal(coverage["with_any_context"], 1,
+             "coverage says how much of the history carries context")
+checks.equal(coverage["by_field"]["sample_depth_mm"], 0,
+             "field by field, so a null-heavy column is visible before "
+             "a training run discovers it")
+
+learning.close()
+mixture_db.unlink()
 
 
 sys.exit(checks.report())

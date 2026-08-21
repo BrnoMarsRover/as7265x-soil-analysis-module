@@ -22,14 +22,11 @@ from serial_link import DeviceError, LinkError
 from workflow.display import (
     ESP32_STAGE_LABELS,
     offer_decision_detail,
-    print_agreement,
     print_check,
-    print_cross_database,
+    print_database_results,
     print_decision,
     print_evidence_summary,
-    print_metric_table,
     print_quality,
-    print_result_block,
     print_settings_block,
     print_spectrum_table,
     print_triad_table,
@@ -53,7 +50,7 @@ import textwrap
 
 from serial_link import utc_timestamp
 
-from workflow.records import capture_ground_truth
+from workflow.records import offer_measurement_disposition
 
 from Science import pipeline
 
@@ -308,7 +305,25 @@ def menu_full_sensor_test(mission):
     print()
     print("SETTINGS")
     print()
-    print_settings_block(result["measurement"].get("sensor_settings"))
+
+    # THE SETTINGS COME FROM THE ACQUISITION, NOT FROM THE ANALYSIS.
+    #
+    # This read `result["measurement"]["sensor_settings"]` and an
+    # AnalysisRun has no "measurement" key at all - the block of that
+    # name lives inside the EVIDENCE package, and even there it holds
+    # the wavelengths and the illumination list rather than the sensor
+    # settings. The line raised KeyError on the first sensor test that
+    # got as far as a successful analysis on real hardware, which is
+    # exactly the run nobody had been able to reach.
+    #
+    # `settings` is what the ESP32 reported for THIS acquisition, read
+    # back from the silicon, and it is already in hand above.
+    print_settings_block(
+        settings
+        or ((result.get("evidence") or {}).get("acquisition") or {}).get(
+            "sensor_settings"
+        )
+    )
 
     print()
     print("FULL SPECTRAL DATA")
@@ -324,22 +339,30 @@ def menu_full_sensor_test(mission):
         print("full spectral calibration is active.")
 
     print()
-    print("LEGACY DATABASE COMPARISON")
-    print("  normalized with {}".format(
-        result["calibration"]["legacy_database_calibration_id"]
-    ))
-    print()
-    print_metric_table(result["reference_matches"], limit=8)
-
-    print()
-    print_agreement(result.get("metric_agreement"))
-
-    print()
     print("=" * 60)
     print()
-    print("THREE-DATABASE COMPARISON")
+    print("DATABASE COMPARISON")
+    print("  legacy calibration {}".format(
+        (result.get("calibration") or {}).get("legacy_calibration_id")
+    ))
     print()
-    print_cross_database(result.get("cross_database"))
+
+    # WHAT THE ANALYSIS ACTUALLY PRODUCES.
+    #
+    # This block used to ask for result["reference_matches"],
+    # result["metric_agreement"], result["cross_database"] and
+    # result["analysis"]. An AnalysisRun has none of them - they were
+    # the previous pipeline's shape, and the four display helpers that
+    # consumed them expected it too. The screen therefore died with
+    # KeyError on the first sensor test that reached a successful
+    # analysis on real hardware, one line after printing the settings.
+    #
+    # The current run reports each database separately, and per metric
+    # rather than as one ranked list, deliberately: DB1 says "this
+    # resembles something measured on this instrument" and DB3 says
+    # "this resembles a laboratory spectrum after modelling our
+    # sensor". Those are different claims and are not averaged.
+    print_database_results(result.get("database_results"))
 
     print()
     print("=" * 60)
@@ -354,30 +377,17 @@ def menu_full_sensor_test(mission):
         print("DECISION MODEL")
         print()
         print("  Not run: {}".format(
-            result.get("evidence_error")
+            (result.get("error") or {}).get("message")
             or "no active calibration, so no evidence package could be "
                "built"
         ))
 
-    print()
-    print("=" * 60)
-    print()
-    print("RESULT  (DB1, legacy calibration - the previous pipeline)")
-    print()
-    print_result_block(result["analysis"])
-
-    print()
-    print("TEST ONLY - NOTHING SAVED")
-
     offer_decision_detail(result)
 
-    if mission.learning is not None and result.get("evidence"):
-        capture_ground_truth(
-            mission,
-            "TEST_{}".format(utc_timestamp().replace(":", "").replace(
-                "-", "")[:15]),
-            result,
-        )
+    # NOTHING HAS BEEN WRITTEN YET, and the operator decides what
+    # happens next: the learning history, the Sample archive, both, or
+    # neither. See records.offer_measurement_disposition.
+    offer_measurement_disposition(mission, data, result)
 
     print()
     pause()

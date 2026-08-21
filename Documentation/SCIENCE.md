@@ -378,7 +378,9 @@ Stated here because they bound every conclusion this system can reach.
 
 1. **No yard-derived reference library.** DB1 is lab reagents and clays;
    DB3 is projected USGS spectra. Material identity is not claimed.
-2. **DB2 is empty.** All comparison runs in the 18-band space.
+2. **DB2 covers 22 materials, and UV is weak on 8 channels.** A
+   54-feature comparison is possible; it is not equally trustworthy
+   across all 54, and the marginal features are flagged per record.
 3. **Small n.** Three repeats per site is the floor at which spread exists
    at all. No significance test is valid, and none is computed.
 4. **The white reference does not describe the samples.** Six of twelve
@@ -388,6 +390,13 @@ Stated here because they bound every conclusion this system can reach.
 6. **The shipped geology is DRAFT photo-interpretation** and must be
    reviewed by a geologist. `plan.review_problems()` surfaces this, and
    the pre-run check warns on it.
+7. **No composition is estimated.** Unmixing returns a spectral
+   contribution, which is not a mass fraction: particulate mixing is not
+   linear, and converting between them needs a model validated against
+   physically prepared mixtures. The learning database can now hold
+   those mixtures, and `research/training/evaluate_mixtures.py` reports
+   whether the relationship survives leaving each one out. Until it
+   does, every component carries `is_mass_fraction: false`.
 7. **No references and no prediction figure exist yet.** Fabricating
    citations would be worse than having none; the validator fails until a
    human supplies them.

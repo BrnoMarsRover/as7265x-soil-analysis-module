@@ -197,6 +197,220 @@ def _minimal_error(payload, code, message):
     )
 
 
+# No space after ':' or ',', which is the same JSON and fewer bytes.
+#
+# MEASURED on the board: a 5-repeat triad response is 4305 bytes with
+# MicroPython's default ", " / ": " separators and 3700 bytes with these
+# - 605 bytes saved, 14%. At 115200 baud every byte is 87 us of wire
+# time, so that is 52 ms off the response, and json.dumps is marginally
+# FASTER because it has less to build. The PC parses both identically.
+_COMPACT = (",", ":")
+
+
+class _ChunkSink:
+    """
+    A response written out as it is built, never held whole in memory.
+
+    THE HEAP THIS RUNS ON CANNOT SPARE A BUFFER THE SIZE OF THE ANSWER.
+    Measured on the board at the moment of failure: joining 22 pieces
+    into 1457 contiguous bytes raised MemoryError with 86576 bytes free
+    - and MicroPython collects automatically before it raises, so that
+    number is what remained AFTER a full collection. 86 kB free and no
+    1.5 kB hole. Collecting the whole response into a list and joining
+    it fails for the same reason building it in one string does, only
+    later.
+
+    So the largest allocation here is ONE CONSOLE CHUNK -
+    STDOUT_CHUNK_BYTES, the size _write_all slices to anyway - and even
+    that is not required: if the chunk cannot be joined, the pieces go
+    out individually. What is never allocated is anything proportional
+    to the size of the answer.
+
+    Buffering to a chunk rather than writing every piece is what keeps
+    it usable. A 10-repeat triad splits into roughly sixteen hundred
+    pieces, and one console write each took a measured 161 s against
+    49 s for the same response sent whole - close enough to the PC's
+    180 s ceiling to lose the measurement anyway.
+
+    The remaining cost is real and is accepted deliberately: a response
+    written progressively can be cut off part-way if the board runs out
+    mid-write, leaving a truncated line. That is the FALLBACK path only
+    - it runs when the response could not be built whole - and the PC
+    reads a truncated frame as MALFORMED_RESPONSE and asks again, where
+    before it lost a 25-second measurement outright.
+    """
+
+    def __init__(self, write=None, limit=None):
+        self._write = write or _write_all
+        self.limit = limit or config.STDOUT_CHUNK_BYTES
+        self._parts = []
+        self._size = 0
+        self.pieces = 0
+        self.bytes = 0
+
+    def add(self, text):
+        self.pieces += 1
+        self.bytes += len(text)
+
+        self._parts.append(text)
+        self._size += len(text)
+
+        if self._size >= self.limit:
+            self.flush()
+
+    def flush(self):
+        """
+        Push what has accumulated, ONE console write if that is possible.
+
+        Writing every piece separately is what makes this path safe, and
+        also what makes it slow: a 10-repeat triad splits into roughly
+        sixteen hundred pieces, and one console write each took a
+        measured 161 s against 49 s for the same response sent whole -
+        close enough to the PC's 180 s ceiling to lose the measurement
+        anyway.
+
+        So the pieces are gathered into one console-sized string first.
+        That is a small allocation and it usually succeeds; when it does
+        not, the pieces go out individually exactly as before. Slow beats
+        lost, but only when slow is actually necessary.
+        """
+        if not self._parts:
+            return
+
+        parts = self._parts
+        self._parts = []
+        self._size = 0
+
+        try:
+            joined = "".join(parts)
+
+        except MemoryError:
+            for part in parts:
+                self._write(part)
+
+            return
+
+        self._write(joined)
+
+    def done(self):
+        self.flush()
+
+        return self.bytes
+
+
+def _emit_json(obj, sink):
+    """
+    Serialize into `sink`, splitting ONLY where a whole subtree will not fit.
+
+    json.dumps is C code and allocates its result as ONE contiguous
+    block. That is the operation this firmware cannot always complete:
+    the collector never moves objects, so an acquisition that has just
+    filled the heap with several hundred small floats leaves plenty
+    free and no large hole. Measured on the board: 94784 bytes free,
+    largest single block 8 kB.
+
+    So the object is cut up only as finely as the heap forces. Every
+    subtree is offered to json.dumps whole first; if that raises
+    MemoryError it is split into its members and each is offered
+    separately, recursively. A healthy heap therefore pays ONE dumps
+    call and nothing at all for this path, and a fragmented one pays
+    only for the branches that actually failed.
+
+    Measured cost of the split, 5-repeat triad: one level 39 ms against
+    32 ms whole, three levels 49 ms, every level 316 ms. The output
+    parses equal to the unsplit form at every depth.
+    """
+    # ONLY json.dumps IS GUARDED HERE, AND THE RESULT IS ADDED OUTSIDE
+    # THE GUARD.
+    #
+    # With `sink.add(json.dumps(obj))` inside the try, a MemoryError
+    # raised by the SINK - after the text had already been appended to
+    # it - was caught by this same handler, which then emitted the very
+    # same subtree again through the split path. The sink kept the
+    # first copy, so every retry left more behind: the pending list
+    # grew, the next pack failed too, and a heap that was merely tight
+    # was driven into genuine exhaustion. Measured: the failure was
+    # reported with 86720 bytes free, because unwinding released it all
+    # again before the number was read.
+    #
+    # A failure to STORE is not a reason to re-serialize. Only a
+    # failure to BUILD is.
+    try:
+        text = json.dumps(obj, separators=_COMPACT)
+
+    except MemoryError:
+        # Reclaim what the failed attempt used before asking for the
+        # smaller blocks the split needs.
+        gc.collect()
+
+        text = None
+
+    if text is not None:
+        sink.add(text)
+
+        return
+
+    if isinstance(obj, dict):
+        sink.add("{")
+        first = True
+
+        for key, value in obj.items():
+            if not first:
+                sink.add(",")
+
+            first = False
+
+            sink.add(json.dumps(str(key), separators=_COMPACT))
+            sink.add(":")
+
+            _emit_json(value, sink)
+
+        sink.add("}")
+
+    elif isinstance(obj, (list, tuple)):
+        sink.add("[")
+        first = True
+
+        for value in obj:
+            if not first:
+                sink.add(",")
+
+            first = False
+
+            _emit_json(value, sink)
+
+        sink.add("]")
+
+    else:
+        # A leaf that will not fit is not a fragmentation problem, and
+        # there is nothing left to split. Let it raise.
+        sink.add(json.dumps(obj, separators=_COMPACT))
+
+
+def _traceback_text(error, limit=260):
+    """
+    A one-line traceback for a failure inside the response builder.
+
+    stdout IS the protocol stream, so a traceback cannot be printed;
+    the only way it reaches anyone is inside the error frame. Newlines
+    become " | " because the frame is one line of JSON.
+    """
+    try:
+        import io
+
+        buffer = io.StringIO()
+        sys.print_exception(error, buffer)
+
+        text = buffer.getvalue()
+        text = text.replace("\n", " | ").replace('"', "'")
+        text = text.replace("\\", "/")
+
+        return text[-limit:]
+
+    except Exception:
+        return "traceback unavailable"
+
+
 def send_json(payload):
     """
     The single exit point for every response.
@@ -217,17 +431,28 @@ def send_json(payload):
     it, and the PC waited out its entire 180-second timeout for a frame
     that was never coming - which reads exactly like a dead board and
     is not one. One request gets one frame, whatever happens.
+
+    THE RETRY THAT USED TO LIVE HERE WAS NOT A FIX. Collecting a second
+    time and asking for the same contiguous block again answers the
+    same way, because a non-moving collector cannot make a large hole
+    out of small ones: measured back-to-back on the board, the first
+    triad after boot returned and EVERY later one came back
+    RESPONSE_TOO_LARGE, having spent its full 24 s reading the sensor
+    first. The data existed and was thrown away for want of a buffer.
+    _emit_json removes the large allocation instead of retrying it.
     """
     # Reclaim before the largest allocation of the cycle, not after it
     # has already failed.
     gc.collect()
 
+    streamed = False
+
     try:
-        text = json.dumps(payload)
+        text = json.dumps(payload, separators=_COMPACT)
 
     except (TypeError, ValueError):
         try:
-            text = json.dumps(make_json_safe(payload))
+            text = json.dumps(make_json_safe(payload), separators=_COMPACT)
 
         except Exception as error:
             text = _minimal_error(
@@ -236,25 +461,19 @@ def send_json(payload):
                 + type(error).__name__ + ").")
 
     except MemoryError:
-        # One honest retry: collecting again sometimes coalesces enough
-        # to fit. If it does not, say so in a frame small enough to
-        # build with no room to spare.
+        # The response is real and the sensor data in it is expensive.
+        # Write it out in pieces rather than reporting a buffer
+        # shortage as a failed measurement.
         gc.collect()
 
-        try:
-            text = json.dumps(payload)
-
-        except Exception:
-            text = _minimal_error(
-                payload, "RESPONSE_TOO_LARGE",
-                "The response did not fit in available memory. Ask for "
-                "fewer repeats, or read the parts separately.")
+        text = None
+        streamed = True
 
     # The leading newline is a guard, not decoration: it closes anything
     # already sitting on the console so this frame gets a line of its
     # own. See config.RESPONSE_GUARD_NEWLINE.
     #
-    # WRITTEN AS THREE PIECES, never concatenated.
+    # WRITTEN AS SEPARATE PIECES, never concatenated.
     #
     # `prefix + text + "\n"` builds a SECOND complete copy of the
     # response - the largest allocation this firmware makes - and it
@@ -266,14 +485,37 @@ def send_json(payload):
     # alternately, because the error path's gc.collect() freed for the
     # next request exactly what the concatenation had needed.
     #
-    # Three writes allocate nothing beyond the 256-byte chunks
+    # Separate writes allocate nothing beyond the 256-byte chunks
     # _write_all already slices, and _ascii_only returns the SAME
     # object when the text is pure ASCII, which every response of this
     # protocol is.
     if config.RESPONSE_GUARD_NEWLINE:
         _write_all("\n")
 
-    _write_all(_ascii_only(text))
+    if not streamed:
+        _write_all(_ascii_only(text))
+
+    else:
+        # Past this point the frame is already going out, so a failure
+        # can only be reported by ending the line and letting the PC
+        # see a frame it cannot parse. It asks again; it does not wait
+        # out a 180-second timeout for an answer that is not coming.
+        try:
+            sink = _ChunkSink()
+            _emit_json(payload, sink)
+            sink.done()
+
+        except Exception as error:
+            free = gc.mem_free() if hasattr(gc, "mem_free") else -1
+
+            _write_all(_minimal_error(
+                payload, "RESPONSE_TOO_LARGE",
+                "The response could not be written ("
+                + type(error).__name__ + ", " + str(free)
+                + " bytes free) at " + _traceback_text(error)
+                + ". Ask for fewer repeats, or read the parts "
+                "separately."))
+
     _write_all("\n")
 
 
@@ -364,6 +606,61 @@ class Protocol:
     def _uptime_ms(self):
         return self.hw.uptime_ms()
 
+    def _memory(self):
+        """
+        Heap figures, and the largest block that can actually be had.
+
+        FREE IS NOT THE SAME AS AVAILABLE. MicroPython's collector does
+        not move objects, so a heap with 90 kB free in 200-byte pieces
+        cannot serve a 6 kB response - and that, not exhaustion, is what
+        RESPONSE_TOO_LARGE was reporting. A memory figure that shows
+        only mem_free explains none of it, so `largest_block` is
+        measured here by asking for real bytearrays, largest first, and
+        keeping the first size that succeeds.
+
+        The probe allocates at most one block, releases it immediately,
+        and collects afterwards, so reading it does not change what the
+        next response can allocate.
+        """
+        gc.collect()
+
+        # CPython's gc has neither figure - firmware/Tests runs this
+        # exact file on CPython against fake hardware, and a status
+        # command that raises AttributeError there would make the whole
+        # protocol untestable off the board. Absent is reported as
+        # absent rather than faked with a zero.
+        if not hasattr(gc, "mem_free"):
+            return None
+
+        free = gc.mem_free()
+        allocated = gc.mem_alloc()
+
+        largest = 0
+
+        for size in (32768, 16384, 12288, 8192, 6144, 4096,
+                     3072, 2048, 1024, 512, 256):
+            if size > free:
+                continue
+
+            try:
+                probe = bytearray(size)
+
+            except MemoryError:
+                continue
+
+            largest = size
+            del probe
+
+            break
+
+        gc.collect()
+
+        return {
+            "free": free,
+            "allocated": allocated,
+            "largest_block": largest,
+        }
+
     def _require_slot(self, request):
         if "slot" not in request:
             raise CommandError(
@@ -433,6 +730,7 @@ class Protocol:
             "uptime_ms": self._uptime_ms(),
             "transport": "usb-serial-console",
             "commands": self.command_names(),
+            "memory": self._memory(),
 
             "sensor": self.sensor.status(),
             "servo": self.servo.status(),
