@@ -184,12 +184,24 @@ class FakeAS7265X:
     """
 
     def __init__(self, absent_scans=0, slaves_present=True,
-                 accept_config=True, data_ready=True, other_devices=()):
+                 accept_config=True, data_ready=True, other_devices=(),
+                 bus_error=False):
         self.absent_scans = absent_scans
         self.slaves_present = slaves_present
         self.accept_config = accept_config
         self.data_ready_supported = data_ready
         self.other_devices = list(other_devices)
+
+        # THE DEVICE STOPS ACKNOWLEDGING, MID-SESSION.
+        #
+        # `absent_scans` only hides the sensor from scan(), which models
+        # a slow boot. It does NOT model the connector coming loose
+        # after the driver has already brought the sensor up: there the
+        # scan is long past and every subsequent transfer raises. On a
+        # rover that is the likelier of the two, and without this flag a
+        # test that thought it had killed the bus was still talking to a
+        # perfectly healthy fake.
+        self.bus_error = bus_error
 
         self.scans = 0
         self.led_on = False
@@ -278,13 +290,16 @@ class FakeAS7265X:
     def scan(self):
         self.scans += 1
 
+        if self.bus_error:
+            return list(self.other_devices)
+
         if self.scans <= self.absent_scans:
             return list(self.other_devices)
 
         return list(self.other_devices) + [ADDRESS]
 
     def writeto(self, address, data):
-        if address != ADDRESS:
+        if address != ADDRESS or self.bus_error:
             raise OSError("no device at 0x{:02X}".format(address))
 
         if len(data) == 1:
@@ -299,7 +314,7 @@ class FakeAS7265X:
             self._handle_virtual(value)
 
     def readfrom(self, address, count):
-        if address != ADDRESS:
+        if address != ADDRESS or self.bus_error:
             raise OSError("no device at 0x{:02X}".format(address))
 
         register = getattr(self, "_selected_register", STATUS_REG)

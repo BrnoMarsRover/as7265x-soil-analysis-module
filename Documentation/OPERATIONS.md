@@ -13,6 +13,43 @@ themselves use is resolved from `__file__`, so what they read and write
 does not depend on the working directory — but `py rover_science_client.py`
 from somewhere else is a missing file, not a missing COM port.
 
+### 0. On Linux, read every command below through this table
+
+The main computer is Linux; the bench machine is Windows. The programs
+are the same on both — every path they use is built with `pathlib`, and
+nothing in the project shells out to a platform command. Only the way
+you *type* the command changes:
+
+| Windows (as written below) | Linux |
+| --- | --- |
+| `py` | `python3` |
+| `firmware\PC\...` | `firmware/PC/...` (forward slashes work on Windows too) |
+| `COM4` | `/dev/ttyUSB0` — or `/dev/ttyACM0`, and the number moves between plug-ins |
+| `Get-CimInstance ...` (find the holder of a port) | `sudo fuser -v /dev/ttyUSB0`, or `lsof /dev/ttyUSB0` |
+
+```bash
+cd ~/development/maksym/as7265x-soil-analysis-module
+python3 -m pip install -r firmware/PC/requirements.txt
+python3 firmware/PC/rover_science_client.py --port /dev/ttyUSB0
+```
+
+**One Linux-only step, once per account.** Serial devices belong to a
+group — `dialout` on Debian and Ubuntu, `uucp` on Arch — and an account
+outside it gets a permission error on open that has nothing to do with
+the board:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+Then log out and back in: group membership is read at login, so a
+freshly opened terminal in the same session still fails. `id -nG`
+confirms it. See `PORT_DENIED` in §4.
+
+`device.py` needs no `--port` on Linux when exactly one USB-serial
+device is attached — it finds it. With none or several attached it says
+so and lists what it saw, rather than guessing which board to reflash.
+
 ---
 
 ## 1. Requirements
@@ -250,6 +287,36 @@ Check the cable first, then:
 py -c "from serial.tools import list_ports; print([p.device for p in list_ports.comports()])"
 ```
 
+On Linux the same list, plus what the kernel thought when the board was
+plugged in:
+
+```bash
+ls -l /dev/ttyUSB* /dev/ttyACM*
+```
+
+### PORT_DENIED
+
+```
+PORT_DENIED: /dev/ttyUSB0 exists but this account may not open it.
+```
+
+**Linux only, and it is not a fault in the board.** The device node is
+there; the account is not in the group that owns it. This is a
+different failure from `PORT_BUSY` and needs a different action —
+nothing is holding the port, so hunting for a process finds nothing.
+
+```bash
+ls -l /dev/ttyUSB0          # the group in column 4 is the one you need
+sudo usermod -aG dialout $USER
+```
+
+Log out and back in afterwards. Group membership is established at
+login, so the change does not reach a terminal that is already open.
+
+`sudo` on the client is not the fix. It works once and then writes
+`firmware/BD/samples/` as root, which is the one directory in this
+project that git cannot restore.
+
 ---
 
 ## 5. The manual REPL
@@ -316,26 +383,58 @@ training data and the model registry.
 py firmware\Tests\run_all.py
 ```
 
-Five suites, ~707 checks, no hardware required:
+This runs the **software** campaign and only the software campaign.
+Nothing it does can open a serial port or turn the carousel — see §8.1.
+
+Twenty-one suites, grouped by the question they answer:
 
 ```
-test_architecture.py   domain boundaries and obsolete architecture
-test_esp32.py          protocol, drivers, carousel, on fake hardware
-test_science.py        formulas, comparison, Decision Model
-test_data.py           record model, RAW immutability, provenance
-test_pc.py             serial lifecycle, error kinds, measurement order
+static        boundaries, and every name/import/call site in the tree
+unit          formulas, record shapes, operator input, numeric edges
+contracts     PC and firmware agreeing on names, arguments, shapes
+integration   layers driving each other, up to a whole simulated session
+fault         serial, sensor, servo and filesystem failures, injected
+state         carousel and Sample state machines, abused
+linux         ports, permissions, case-exact paths, working directory
+entrypoints   importing or --help must not DO anything
+integrity     the protected databases, hashed before and after
+stress        thousands of cycles, looking for drift and leaks
+randomized    seeded fault storms; the seed is printed on failure
+regression    one test per defect that ever reached the bench
 ```
 
-One suite at a time:
+One group, or one suite, at a time:
 
 ```powershell
-py firmware\Tests\run_all.py esp32
+py firmware\Tests\run_all.py linux
 ```
 
-The suites run the **real** firmware modules on CPython against fakes
-that speak the actual I²C and ST3215 protocols, so a driver bug shows
-up as a failing check rather than as a passing check against a stub
-that shares the bug.
+The suites run the **real** firmware modules, the real client and the
+real Science on CPython. Only the hardware boundary is faked —
+`serial.Serial`, `machine.I2C`, `machine.UART`, the clock, the
+keyboard and the directory records go in. The AS7265x and ST3215 fakes
+speak the actual register and frame protocols, so a driver bug shows up
+as a failing check rather than as a passing check against a stub that
+shares the bug.
+
+The run ends by re-hashing every file under `firmware/BD/` and fails if
+one byte moved. A test that damages the archive is the one kind of test
+failure that costs more than the bug it was looking for.
+
+### 8.1 Hardware tests are a separate campaign
+
+```powershell
+py firmware\Tests\hardware\run_hardware.py --port COM4
+```
+
+That one **turns the carousel**. It is not reachable from `run_all.py`,
+it has no default port, and every stage that moves anything needs an
+additional `--move`. `run_all.py --hardware` is refused rather than
+quietly running the software suite instead.
+
+The reason is that `run_all.py` is the command people run by reflex —
+from a hook, from an editor, from another room — and the carousel may
+be holding samples or be mechanically constrained.
 
 ---
 

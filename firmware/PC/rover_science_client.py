@@ -21,8 +21,16 @@ out. The screens live in workflow/, the transport in serial_link.py,
 and no scientific arithmetic lives anywhere on this side at all - if a
 number appears on screen, Science computed it.
 
-    py firmware\\PC\\rover_science_client.py --port COM4
-    py firmware\\PC\\rover_science_client.py --port COM4 --command ping --verbose
+    python3 firmware/PC/rover_science_client.py --port /dev/ttyUSB0
+    py      firmware/PC/rover_science_client.py --port COM4
+
+    python3 firmware/PC/rover_science_client.py --port /dev/ttyUSB0 \
+            --command ping --verbose
+
+The first line of each pair is the Linux main computer, the second the
+Windows bench. Forward slashes work on both. If Linux answers
+PORT_DENIED, the account is not in the serial group - the error says
+which command fixes it.
 
 RUN IT FROM THE REPOSITORY ROOT. Every path this program needs is
 resolved from __file__, so the working directory does not change what

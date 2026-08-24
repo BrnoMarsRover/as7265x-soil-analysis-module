@@ -659,7 +659,13 @@ def configuration_payload(registry=None, calibration_store=None,
     }
 
     try:
-        from research.erc import config as measurement_config
+        # Science/config.py, NOT research/erc/config.py: the expected
+        # sensor settings are a scientific constant that mirrors
+        # ESP32/config.py, and ERC's config knows only about the
+        # competition. Importing the wrong one raised an AttributeError
+        # this try swallowed, so the snapshot recorded None for all
+        # three settings it exists to pin down.
+        from Science import config as measurement_config
 
         payload["expected_measurement_mode"] = (
             measurement_config.EXPECTED_MEASUREMENT_MODE

@@ -22,9 +22,23 @@ The two properties this suite exists for:
 Run:  py test_pc.py
 """
 
+import ast
 import json
 import sys
+import tempfile
 import time
+from pathlib import Path
+
+# The shared scaffolding lives in firmware/Tests/. Walking up to it by
+# name means this suite runs from any working directory and does not
+# care how deep under Tests/software/ it sits.
+_TESTS_DIR = next(
+    p for p in Path(__file__).resolve().parents if p.name == "Tests"
+)
+
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+
 
 import support
 
@@ -162,8 +176,17 @@ class FakePort:
 
 
 def link_with(port, **kwargs):
-    """A SerialLink whose open() produces the given fake port."""
+    """
+    A SerialLink whose open() produces the given fake port.
+
+    The request counter is reset to zero, so the ids are "1", "2", ...
+    and a fixture can script an answer to a known id. Production seeds
+    the counter from the clock instead - see `_request_id` in
+    serial_link.py and the stale-frame section below, which is the
+    check that made that necessary.
+    """
     link = SerialLink("COM_TEST", **kwargs)
+    link._request_id = 0
 
     def fake_serial():
         return port
@@ -321,6 +344,156 @@ checks.equal(error.code, "PORT_OPEN_FAILED",
 
 checks.ok(error.code != "PORT_BUSY",
           "PORT_BUSY is never the fallback diagnosis")
+
+
+# ======================================================================
+checks.section("the same failures, named on Linux")
+
+# The operator's main computer runs Linux, and pySerial spells every one
+# of these differently there: it builds the message from the underlying
+# OSError instead of from a Windows exception repr. Until these strings
+# were recognized, a missing /dev/ttyUSB0 and an account outside the
+# dialout group both arrived as PORT_OPEN_FAILED - a code that names no
+# action at all.
+
+error = failing_open(
+    "[Errno 2] could not open port /dev/ttyUSB0: [Errno 2] No such file "
+    "or directory: '/dev/ttyUSB0'")
+checks.equal(error.code, "PORT_NOT_FOUND",
+             "a missing /dev/ttyUSB0 is PORT_NOT_FOUND")
+
+error = failing_open(
+    "Could not exclusively lock port /dev/ttyUSB0: [Errno 11] Resource "
+    "temporarily unavailable")
+checks.equal(error.code, "PORT_BUSY",
+             "a port another process has locked is PORT_BUSY")
+
+error = failing_open(
+    "[Errno 16] could not open port /dev/ttyUSB0: [Errno 16] Device or "
+    "resource busy: '/dev/ttyUSB0'")
+checks.equal(error.code, "PORT_BUSY", "and so is EBUSY")
+
+error = failing_open(
+    "[Errno 13] could not open port /dev/ttyUSB0: [Errno 13] Permission "
+    "denied: '/dev/ttyUSB0'")
+checks.equal(error.code, "PORT_DENIED",
+             "a POSIX permission denial is PORT_DENIED, not PORT_BUSY - "
+             "no other program is holding anything")
+checks.ok("dialout" in error.message,
+          "and the message names the group the account has to join")
+
+error = failing_open(
+    "could not open port 'COM4': PermissionError(13, 'Access is denied.', "
+    "None, 5)")
+checks.equal(error.code, "PORT_BUSY",
+             "a WINDOWS denial still means another program holds the port")
+
+
+# ======================================================================
+checks.section("the workflow only calls commands the link has")
+
+# The check that was missing, and the reason it was missing.
+#
+# `mission.link.sync_load_slot(1)` sat in two branches of the carousel
+# screen - option [7] of CAROUSEL SETUP and the whole of RE-SYNC. Both
+# are reachable only after a real ST3215 has answered, so no suite here
+# and no bench session without hardware ever executed the line. It
+# failed with an AttributeError on the operator's first real carousel
+# setup, after everything it depends on had already worked.
+#
+# Reading the call sites out of the source costs nothing and does not
+# need the hardware the branch needs.
+
+def link_attributes_used():
+    """Every `<something>.link.NAME` the PC layer names, with its file."""
+    used = set()
+
+    for source_file in sorted(support.PC_DIR.rglob("*.py")):
+        if "__pycache__" in source_file.parts:
+            continue
+
+        tree = ast.parse(source_file.read_text(encoding="utf-8"),
+                         filename=str(source_file))
+
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "link"):
+                used.add((
+                    "{}:{}".format(
+                        source_file.relative_to(support.PC_DIR).as_posix(),
+                        node.lineno,
+                    ),
+                    node.attr,
+                ))
+
+    return used
+
+
+# Class members plus the attributes __init__ binds: `link.online` is a
+# real part of the surface and lives only on the instance.
+link_surface = set(dir(SerialLink)) | set(vars(SerialLink("COM_TEST")))
+used = link_attributes_used()
+
+missing = sorted(
+    "{} calls link.{}".format(where, name)
+    for where, name in used
+    if name not in link_surface
+)
+
+checks.equal(missing, [],
+             "every link.<name> the PC layer uses exists on SerialLink")
+
+checks.ok(len(used) > 30,
+          "and the check actually walked the workflow ({} call sites "
+          "seen)".format(len(used)))
+
+
+# ======================================================================
+checks.section("every command the link sends has a handler")
+
+# The other half of the same seam. serial_link.py names the command
+# strings; ESP32/protocol.py owns the table of names it will answer to.
+# A typo on either side is a runtime UNKNOWN_COMMAND on the bench, which
+# is a slow way to find a misspelling.
+
+link_tree = ast.parse(
+    (support.PC_DIR / "serial_link.py").read_text(encoding="utf-8"))
+
+sent = set()
+
+for node in ast.walk(link_tree):
+    if (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "request"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)):
+        sent.add(node.args[0].value)
+
+protocol_tree = ast.parse(
+    (support.ESP32_DIR / "protocol.py").read_text(encoding="utf-8"))
+
+handled = set()
+
+for node in ast.walk(protocol_tree):
+    if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "COMMANDS"
+            for t in node.targets):
+        for key in node.value.keys:
+            if isinstance(key, ast.Constant):
+                handled.add(key.value)
+
+checks.ok(len(handled) > 20,
+          "the ESP32 command table was found and read ({} commands)".format(
+              len(handled)))
+
+checks.equal(sorted(sent - handled), [],
+             "every command serial_link.py sends is in the ESP32 table")
+
+checks.ok(len(sent) > 20,
+          "and the link was read the same way ({} commands sent)".format(
+              len(sent)))
 
 
 # ======================================================================
@@ -620,10 +793,17 @@ def attributes_reached_for(name):
     return found
 
 
+# A throwaway path even though these instances are never loaded or
+# written. `SampleStore()` with no argument means the operator's live
+# archive, and a rule that is absolute is a rule nobody has to re-check
+# every time a line is added below it - see
+# data_integrity/test_protected_data.py.
+_SURFACE_DIR = Path(tempfile.mkdtemp(prefix="freya-surface-"))
+
 for name, instance in (
-    ("store", SampleStore()),
-    ("calibrations", CalibrationStore()),
-    ("profiles", AcquisitionProfileStore()),
+    ("store", SampleStore(_SURFACE_DIR / "samples.json")),
+    ("calibrations", CalibrationStore(directory=_SURFACE_DIR)),
+    ("profiles", AcquisitionProfileStore(_SURFACE_DIR / "profiles.json")),
     ("registry", DatabaseRegistry()),
 ):
     used = attributes_reached_for(name)
@@ -638,8 +818,7 @@ for name, instance in (
 # ======================================================================
 checks.section("the main screen renders")
 
-import tempfile              # noqa: E402
-from pathlib import Path     # noqa: E402
+# noqa placeholder - Path is imported at the top of the file
 
 from workflow.session import Mission   # noqa: E402
 
@@ -1195,6 +1374,103 @@ result, output, script = with_answers(
 checks.ok("UNAVAILABLE" not in output,
           "with a learning database open, saving to it is offered rather "
           "than reported unavailable")
+
+
+# ======================================================================
+checks.section("the carousel origin is actually declared")
+
+# Not a static check this time: the two screens are RUN, with the
+# answers an operator would type, against a link that serves the real
+# response shape. `sync_load_slot` passed every static reading of this
+# file and every suite in run_all.py; it did not survive being called.
+
+from workflow import carousel as carousel_screen           # noqa: E402
+
+SYNCED_CAROUSEL = {
+    "slot_count": 4,
+    "position_valid": True,
+    "selected_slot": 1,
+    "current_load_slot": 1,
+    "current_scan_slot": 3,
+    "carousel_phase": "LOAD",
+    "reference": {
+        "origin": {
+            "servo": "ST3215",
+            "feedback": True,
+            "origin_counts": 2048,
+            "origin_deg": 180.0,
+        },
+        "origin_scan_slot": 3,
+        "alignment_offset_deg": 0.0,
+        "drift_deg": 0.0,
+        "drift_measurable": True,
+    },
+}
+
+
+class SyncingLink:
+    """A link with a connected servo that answers sync_position."""
+
+    online = True
+    port = "COM_TEST"
+
+    def __init__(self):
+        self.synced = []
+
+    def get_status(self):
+        status = dict(STATUS)
+        status["servo"] = {
+            "connected": True,
+            "selected": True,
+            "label": "Waveshare ST3215",
+            "backend": {
+                "connected": True, "id": 1, "position_counts": 2048,
+                "position_deg": 180.0, "mode_name": "STEP",
+                "voltage_v": 11.9, "temperature_c": 34,
+            },
+        }
+        status["carousel"] = dict(SYNCED_CAROUSEL)
+
+        return status
+
+    def sync_position(self, load_slot=None, scan_slot=None):
+        self.synced.append((load_slot, scan_slot))
+
+        return {"synchronized": True, "carousel": dict(SYNCED_CAROUSEL)}
+
+
+sync_link = SyncingLink()
+sync_mission = Mission(sync_link)
+
+# CAROUSEL SETUP, option [7]: "set current position as Slot 1 / LOAD".
+result, output, script = with_answers(
+    ["7"],
+    lambda: carousel_screen.menu_initial_calibration(sync_mission),
+)
+
+checks.equal(result, True,
+             "CAROUSEL SETUP [7] completes instead of raising - this is "
+             "the branch that failed with AttributeError on the first "
+             "real carousel setup")
+checks.equal(sync_link.synced, [(1, None)],
+             "and it declares Slot 1 as the LOADING slot, by name")
+checks.ok("Carousel setup complete" in output,
+          "and says the setup is done")
+checks.ok("2048" in output,
+          "and reports the encoder origin the servo captured")
+
+# RE-SYNC, the same command from the other screen.
+sync_link.synced = []
+
+result, output, script = with_answers(
+    ["y"],
+    lambda: carousel_screen.menu_resync(sync_mission),
+)
+
+checks.equal(sync_link.synced, [(1, None)],
+             "RE-SYNC declares the same origin the same way")
+checks.ok("Synchronized" in output,
+          "and confirms it to the operator")
 
 
 serial_link.serial = _real_serial

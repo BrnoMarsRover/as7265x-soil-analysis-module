@@ -536,6 +536,46 @@ def _print_block_summary(title, aggregated):
     ))
 
 
+def report_save(mission, document, note):
+    """
+    Save a calibration, and say plainly if it could not be saved.
+
+    THE SAVE USED TO BE UNGUARDED.
+
+    `mission.calibrations.save(document)` was called bare, twice. A
+    full disk or a read-only directory raised out of BD, past the menu
+    loop - which catches LinkError and TimeoutError - and out of the
+    application, as a traceback.
+
+    The calibration lost with it is not cheap: it is a multi-minute
+    procedure with physical white and dark references placed in the
+    carousel by hand, and it cannot be recovered by restarting.
+    Telling the operator that the save failed at least lets them free
+    some space and press the key again while the references are still
+    in the slots.
+
+    Returns True when the calibration is on disk.
+    """
+    try:
+        path = mission.calibrations.save(document)
+
+    except CalibrationError as error:
+        print()
+        print("!! COULD NOT SAVE THE CALIBRATION: {}".format(error.message))
+        print("   The measurement is still in memory and the references")
+        print("   are still in the carousel. Free some space and choose")
+        print("   this option again - restarting the client loses it.")
+        print()
+        pause()
+
+        return False
+
+    print("Saved{}: {}".format(
+        " ({})".format(note) if note else "", path))
+
+    return True
+
+
 def menu_full_calibration(mission):
     """
     Guided Dark + WHITE/UV/IR calibration.
@@ -708,8 +748,9 @@ def menu_full_calibration(mission):
         print()
 
         if confirm("Keep it on disk as engineering data?"):
-            path = mission.calibrations.save(document)
-            print("Saved (inactive, marked invalid): {}".format(path))
+            if not report_save(mission, document, "inactive, marked "
+                                                  "invalid"):
+                return
 
         else:
             print("Discarded.")
@@ -719,8 +760,9 @@ def menu_full_calibration(mission):
 
         return
 
-    path = mission.calibrations.save(document)
-    print("Saved: {}".format(path))
+    if not report_save(mission, document, None):
+        return
+
     print()
 
     if not confirm("Activate this calibration?"):

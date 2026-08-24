@@ -38,7 +38,7 @@ deployment tool - never by the operator client on the way in.
 
 WHY THE ERROR KIND MATTERS
 
-"The module did not answer" has at least seven distinct causes and they
+"The module did not answer" has at least nine distinct causes and they
 need completely different actions. Telling an operator that another
 program may be holding COM4 - when COM4 opened perfectly and it was the
 firmware that never answered - sends them to Task Manager for a fault
@@ -46,17 +46,32 @@ that is in the firmware. Every failure here carries a code:
 
     PORT_NOT_FOUND       no such port; check the cable
     PORT_BUSY            the port exists and something else holds it
+    PORT_DENIED          it exists, nothing holds it, and this account
+                         may not open it - Linux serial group
     PORT_OPEN_FAILED     it exists, is free, and still would not open
     PORT_LOST            it disappeared while we were using it
     PROTOCOL_TIMEOUT     the port is open; nothing answered in time
     DEVICE_AT_REPL       MicroPython is at the >>> prompt, not serving
     MALFORMED_RESPONSE   something answered, and it was not a frame
+    INVALID_REQUEST      we were asked to send something that is not
+                         legal JSON, and refused before sending it
     DEVICE_ERROR         the firmware answered "ok": false
+
+MATCHING AN ANSWER TO ITS QUESTION
+
+Three things must agree before a frame is accepted as the answer to a
+request: the request id, the presence of `ok`, and the command name.
+The third is not redundant. Request ids restart every session and the
+board does not restart with them, so a client that died with a command
+in flight leaves its answer in the driver buffer for the next client to
+find with a matching id on it. See `_matches_request`.
 """
 
 import json
+import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     import serial
@@ -117,17 +132,57 @@ class DeviceError(LinkError):
     """The firmware answered, and the answer was "ok": false."""
 
 
+# Substrings that identify an open() failure, per cause. pySerial wraps
+# the OS error in the exception TEXT rather than in errno, so the text is
+# where the distinction lives - and the text differs by platform, which
+# is why each cause lists more than one spelling.
+#
+# The Windows strings were captured on this machine. The POSIX strings
+# are what `serialposix.py` builds from the underlying OSError, and they
+# matter because the main computer is a Linux machine: without them a
+# missing /dev/ttyUSB0 and a user who is not in `dialout` both fall
+# through to PORT_OPEN_FAILED, which names no action at all.
+
+_NOT_FOUND_MARKERS = (
+    "FileNotFoundError",                # Windows, pySerial's repr
+    "cannot find the file",             # Windows, English
+    "No such file or directory",        # POSIX, ENOENT
+)
+
+_BUSY_MARKERS = (
+    "Access is denied",                 # Windows, English
+    "Zugriff verweigert",               # Windows, German
+    "PermissionError",                  # Windows, pySerial's repr
+    "could not exclusively lock",       # POSIX, our own flock request
+    "Resource temporarily unavailable",  # POSIX, EAGAIN from flock
+    "Device or resource busy",          # POSIX, EBUSY
+)
+
+# POSIX only, and checked AFTER the busy markers: on Windows a denial IS
+# another program holding the port, while on Linux it is almost always
+# the login account missing from the serial group.
+_DENIED_MARKERS = (
+    "Permission denied",                # POSIX, EACCES
+)
+
+
+def _matches(text, markers):
+    lowered = text.lower()
+
+    return any(marker.lower() in lowered for marker in markers)
+
+
 def _classify_open_failure(port, error):
     """
     Turn a SerialException from open() into a code an operator can act on.
 
-    pySerial wraps the Windows error in the exception TEXT rather than
-    in errno, so the text is where the distinction lives. Both messages
-    below were captured from this machine.
+    Four outcomes, because they need four different actions: plug the
+    board in, close the other program, add yourself to the serial group,
+    or read the raw text because we genuinely do not know.
     """
     text = str(error)
 
-    if "FileNotFoundError" in text or "cannot find the file" in text:
+    if _matches(text, _NOT_FOUND_MARKERS):
         return LinkError(
             "PORT_NOT_FOUND",
             "{} does not exist. The board is not plugged in, or its "
@@ -135,13 +190,25 @@ def _classify_open_failure(port, error):
             data={"port": port, "detail": text},
         )
 
-    if ("PermissionError" in text or "Access is denied" in text
-            or "Zugriff verweigert" in text):
+    if _matches(text, _BUSY_MARKERS):
         return LinkError(
             "PORT_BUSY",
             "{} exists but is already open in another program. Close "
             "the other client, terminal or REPL session holding "
             "it.".format(port),
+            data={"port": port, "detail": text},
+        )
+
+    if _matches(text, _DENIED_MARKERS):
+        return LinkError(
+            "PORT_DENIED",
+            "{} exists but this account may not open it. On Linux the "
+            "serial devices belong to a group - usually 'dialout', "
+            "'uucp' on some distributions - and the account has to be a "
+            "member:\n"
+            "    sudo usermod -aG dialout $USER\n"
+            "then log out and back in, because group membership is read "
+            "at login. Nothing is wrong with the board.".format(port),
             data={"port": port, "detail": text},
         )
 
@@ -240,9 +307,17 @@ class SerialLink:
                  timeout=DEFAULT_TIMEOUT, connect_timeout=CONNECT_TIMEOUT,
                  verbose=False):
         if serial is None:                             # pragma: no cover
+            # sys.executable rather than `py`: the launcher is Windows
+            # only, and the file is in firmware/PC/, not the repository
+            # root. The old hint named neither correctly, which on the
+            # Linux main computer made it advice that could not be
+            # followed.
             raise RuntimeError(
                 "pyserial is not installed. Install it with:\n"
-                "    py -m pip install -r requirements.txt"
+                "    {} -m pip install -r {}".format(
+                    sys.executable,
+                    Path(__file__).resolve().parent / "requirements.txt",
+                )
             )
 
         self.port = port
@@ -260,6 +335,12 @@ class SerialLink:
         # between one unlucky frame and an unhealthy link.
         self.corrupt_frames = 0
         self.salvaged_frames = 0
+
+        # Frames with our request id and somebody else's command. See
+        # _matches_request: these are a previous session's answers,
+        # still in the driver buffer, and one of them being accepted
+        # would hand this session the last one's measurement.
+        self.stale_frames = 0
 
         # Bytes received from the port, for measuring what a response
         # really costs on a 115200 wire. A byte is 10 bits with 8N1
@@ -282,7 +363,22 @@ class SerialLink:
         # Capped, because this is a diagnostic aid and not a log file.
         self.damaged_lines = []
 
-        self._request_id = 0
+        # SEEDED, NOT ZERO, and still a plain increasing integer.
+        #
+        # Starting every session at 1 means every session's first
+        # request has the same id as every previous session's first
+        # request. Combined with an open() that deliberately does not
+        # clear the receive buffer, that is how a dead client's
+        # leftover answer becomes the next client's first result. The
+        # command check in _matches_request is the real defence; this
+        # makes the collision unlikely as well as harmless.
+        #
+        # The +1 is not cosmetic: without it the modulo lands on zero
+        # roughly once in a million starts, and that one session
+        # numbers its first request "1" - precisely the id every
+        # session used before this change, and the one most likely to
+        # be lying in the buffer.
+        self._request_id = 1 + int(time.time() * 1000) % 1000000
 
     # ------------------------------------------------------------------
     # diagnostics output
@@ -499,6 +595,42 @@ class SerialLink:
 
         return str(self._request_id)
 
+    def _matches_request(self, frame, request_id, cmd):
+        """
+        Whether this frame is the answer to the request we just sent.
+
+        THREE CONDITIONS, AND THE THIRD WAS MISSING.
+
+        The id must match, and the frame must carry "ok" - only a
+        response has one, which is what stops the REPL's echo of our
+        own request from being accepted.
+
+        The third is that the COMMAND must match, and it exists because
+        request ids restart at 1 in every session while the board does
+        not restart with them. A client that died with a `measure_raw`
+        in flight leaves its answer in the driver buffer; the next
+        client opens the port - which deliberately does not clear that
+        buffer, because it may hold the traceback explaining the death -
+        numbers its first request 1, and finds a frame already there
+        with request_id 1 on it. Without this check the previous
+        session's measurement was returned as the answer to the new
+        session's first command.
+
+        A frame with no `cmd` at all is still accepted: every response
+        this firmware builds carries one, but refusing an answer for a
+        field we do not strictly need would turn a compatible firmware
+        into a dead link.
+        """
+        if frame.get("request_id") != request_id:
+            return False
+
+        if "ok" not in frame:
+            return False
+
+        answered = frame.get("cmd")
+
+        return answered is None or answered == cmd
+
     def request(self, cmd, timeout=None, retries=0, **payload):
         """
         Send one command and return its ``data`` object.
@@ -527,7 +659,29 @@ class SerialLink:
             message.update(payload)
             message["timestamp"] = utc_timestamp()
 
-            line = json.dumps(message) + "\n"
+            # allow_nan=False, so this owner never puts a frame on the
+            # wire that is not legal JSON.
+            #
+            # Python writes NaN and Infinity as the bare words `NaN`
+            # and `Infinity`, which no JSON specification allows and
+            # which MicroPython's parser refuses. The failure that
+            # produces is a parse error on the far side, reported
+            # against a command that looked perfectly ordinary here -
+            # so the value is refused at the point it is serialized,
+            # where the offending field can still be named.
+            try:
+                line = json.dumps(message, allow_nan=False) + "\n"
+
+            except ValueError as error:
+                raise LinkError(
+                    "INVALID_REQUEST",
+                    "{} cannot be sent: {}. A payload field is not a "
+                    "finite number, and JSON has no way to write "
+                    "one.".format(cmd, error),
+                    data={"cmd": cmd, "payload": {
+                        key: repr(value) for key, value in payload.items()
+                    }},
+                )
 
             self._trace("TX JSON", line.strip())
 
@@ -540,7 +694,7 @@ class SerialLink:
                 self.serial.write(line.encode("utf-8"))
                 self.serial.flush()
 
-                response = self._read_response(request_id, timeout)
+                response = self._read_response(request_id, timeout, cmd)
 
             except serial.SerialException as error:
                 self.close()
@@ -584,7 +738,7 @@ class SerialLink:
 
         raise last_damage
 
-    def _read_response(self, request_id, timeout):
+    def _read_response(self, request_id, timeout, cmd=None):
         """
         Read until the answer to request_id arrives.
 
@@ -686,6 +840,11 @@ class SerialLink:
                 if not isinstance(frame, dict):
                     continue
 
+                if self._matches_request(frame, request_id, cmd):
+                    self._trace("RX JSON", line[:200])
+
+                    return frame
+
                 if frame.get("request_id") != request_id:
                     # An answer to something else, or an unsolicited
                     # frame. Not ours; keep waiting.
@@ -705,9 +864,15 @@ class SerialLink:
 
                     continue
 
-                self._trace("RX JSON", line[:200])
+                # Right id, right shape, wrong command: a leftover from
+                # a previous session whose ids overlap ours.
+                self._trace("RX STALE", line[:120])
+                self.stale_frames += 1
 
-                return frame
+                if len(self.last_noise) < NOISE_LIMIT:
+                    self.last_noise.append(line)
+
+                continue
 
         raise LinkError(
             "PROTOCOL_TIMEOUT",

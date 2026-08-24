@@ -96,17 +96,39 @@ def utc_now():
 
 
 def _write_json(path, payload):
+    """
+    Atomic write, and every failure becomes a ProfileError.
+
+    Same reasoning as BD/calibrations.py: the rename was already
+    atomic, but an OSError escaping from here reaches a caller that
+    catches ProfileError and nothing else. A profile is registered in
+    the middle of building a measurement's evidence, so a raw OSError
+    there takes down a measurement that has already happened.
+    """
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".tmp")
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.flush()
-        os.fsync(handle.fileno())
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
 
-    os.replace(tmp, path)
+        os.replace(tmp, path)
+
+    except OSError as error:
+        try:
+            os.unlink(tmp)
+
+        except OSError:
+            pass
+
+        raise ProfileError(
+            "PROFILE_SAVE_ERROR",
+            "Could not write {}: {}".format(path, error),
+        )
 
 
 def _read_json(path):

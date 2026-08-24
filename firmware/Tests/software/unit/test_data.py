@@ -26,6 +26,17 @@ import sys
 import tempfile
 from pathlib import Path
 
+# The shared scaffolding lives in firmware/Tests/. Walking up to it by
+# name means this suite runs from any working directory and does not
+# care how deep under Tests/software/ it sits.
+_TESTS_DIR = next(
+    p for p in Path(__file__).resolve().parents if p.name == "Tests"
+)
+
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+
+
 import support
 
 support.add_project_root()

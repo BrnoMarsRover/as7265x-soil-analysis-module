@@ -1001,7 +1001,8 @@ as7265x-soil-analysis-module/
 │  ├─ PC/               operator workflow, orchestration, the one serial owner
 │  ├─ Science/          every scientific formula, and the Decision Model
 │  ├─ BD/               calibration, DB1/DB2/DB3, training data, Sample records
-│  ├─ Tests/            five suites; runs the real firmware on CPython
+│  ├─ Tests/            software/ runs the real firmware on CPython;
+│  │                    hardware/ needs a real board and turns the carousel
 │  ├─ tools/            device.py - deploy and verify the ESP32
 │  └─ research/         non-production: experiments, ERC planning, training
 └─ Documentation/

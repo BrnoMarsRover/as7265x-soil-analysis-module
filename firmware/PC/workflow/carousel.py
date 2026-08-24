@@ -256,7 +256,7 @@ def menu_initial_calibration(mission):
                 print("Torque enabled; the carousel is held again.")
 
             elif selection == "7":
-                data = mission.link.sync_load_slot(1)
+                data = mission.link.sync_position(load_slot=1)
                 carousel = data.get("carousel") or {}
                 reference = carousel.get("reference") or {}
                 origin = reference.get("origin") or {}
@@ -417,7 +417,7 @@ def menu_resync(mission):
         return
 
     try:
-        data = mission.link.sync_load_slot(1)
+        data = mission.link.sync_position(load_slot=1)
 
     except (LinkError, TimeoutError) as error:
         report_failure(error)
@@ -560,12 +560,38 @@ def menu_servo_bus_scan(mission):
     the moment select_servo has just failed, and requiring a working
     selection first would be circular.
     """
+    # Whether there is anything to lose. Asked once, before the loop:
+    # after the first scan the answer is always "no", and the warning
+    # would be about a connection the scan itself has already taken.
+    connected_at_entry = servo_connected(mission)
+
     while True:
         banner("SERVO BUS SCAN")
 
         print("Pings the servo bus and reports what answers. MOVES")
         print("NOTHING - a ping asks a servo to identify itself.")
         print()
+
+        # "Moves nothing" is true and is not the whole story. The scan
+        # reopens UART2 at every baud rate the ST3215 supports, so a
+        # connected servo has to be released first and the carousel
+        # origin is invalidated with it. Saying only "moves nothing"
+        # sent operators into a scan that silently cost them the
+        # alignment they had just done by hand.
+        if connected_at_entry:
+            print("IT DOES COST YOU THE CONNECTION. The scan reopens")
+            print("UART2, so the servo is released and the carousel")
+            print("position is invalidated - you will have to connect")
+            print("and re-declare Slot 1 afterwards.")
+            print()
+
+            if not confirm("Scan anyway, losing the carousel origin?"):
+                print("Cancelled; the servo and the origin are untouched.")
+
+                return
+
+            connected_at_entry = False
+
         print("[1] Quick scan")
         print("    The configured ID, at all 8 baud rates, in both pin")
         print("    orders. About 1 second.")

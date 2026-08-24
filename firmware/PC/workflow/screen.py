@@ -9,7 +9,12 @@ saying what BD and the firmware say right now.
 
 from serial_link import DeviceError, LinkError
 
-from workflow import calibration, carousel, measure, records
+# NOT `carousel`. Six places in this file bind `carousel` to the
+# carousel STATE DICT from get_status, which shadowed the module import
+# in every one of them - so `carousel.get(...)` read as a call into
+# workflow/carousel.py while being a plain dict lookup. The screens this
+# file needs are imported by name below.
+from workflow import calibration, measure, records
 from workflow.display import (
     print_system_status,
     report_failure,

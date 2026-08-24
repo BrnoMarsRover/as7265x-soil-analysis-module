@@ -69,7 +69,7 @@ def features_for(observation, calibration, representation):
         return preprocessing.snv(normalized)
 
     if representation == "derivative_white":
-        return spectral_features.first_derivative(normalized)
+        return features.first_derivative(normalized)
 
     raise ValueError("unknown representation {!r}".format(representation))
 

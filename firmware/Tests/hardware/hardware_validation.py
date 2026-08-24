@@ -7,9 +7,14 @@ logic and proves nothing about the wiring, the servo, the sensor or the
 mechanism. This file is the other half: it drives the REAL board over
 the REAL serial link and reports what the hardware actually did.
 
-    py firmware\\Tests\\hardware_validation.py --port COM4
-    py firmware\\Tests\\hardware_validation.py --port COM4 --stage sensor
-    py firmware\\Tests\\hardware_validation.py --port COM4 --move --stage servo-move
+    python3 firmware/Tests/hardware_validation.py --port /dev/ttyUSB0
+    python3 firmware/Tests/hardware_validation.py --port /dev/ttyUSB0 \
+            --stage sensor
+    python3 firmware/Tests/hardware_validation.py --port /dev/ttyUSB0 \
+            --move --stage servo-move
+
+On the Windows bench the launcher is `py` and the port is COM4;
+everything else, forward slashes included, is the same.
 
 DELIBERATELY SEPARATE FROM run_all.py. `run_all.py` is run casually and
 often, including by people who are not standing next to the mechanism.
@@ -38,8 +43,12 @@ import time
 from pathlib import Path
 
 
-TESTS_DIR = Path(__file__).resolve().parent
-FIRMWARE_DIR = TESTS_DIR.parent
+# Resolved by NAME, not by counting `.parent` hops: this file has already
+# moved one directory deeper once (Tests/ -> Tests/hardware/), and a
+# hop count silently pointed FIRMWARE_DIR at Tests/ when it did.
+HERE = Path(__file__).resolve()
+FIRMWARE_DIR = next(p for p in HERE.parents if p.name == "firmware")
+TESTS_DIR = FIRMWARE_DIR / "Tests"
 REPO_ROOT = FIRMWARE_DIR.parent
 
 sys.path.insert(0, str(FIRMWARE_DIR / "PC"))

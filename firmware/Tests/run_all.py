@@ -1,22 +1,24 @@
 """
-Run every suite and print one summary.
+The test entry point. Runs SOFTWARE tests, and only software tests.
 
-Each suite is a standalone program that must run in its OWN process:
-ESP32/ and BD/ both contain a module called `config`, and the ESP32
-firmware is reloaded from scratch several times within one suite.
-Sharing an interpreter would let one suite's imports decide another
-suite's results.
+    py run_all.py            every software suite
+    py run_all.py linux      only software suites matching "linux"
 
-Five suites, one per question:
+TWO CAMPAIGNS, DELIBERATELY SEPARATE
 
-    architecture  are the boundaries still where they are supposed to be
-    esp32         does the hardware controller behave
-    science       is the mathematics right
-    data          is the scientific record sound
-    pc            does the orchestration hold the port and the order
+    Tests/software/    no hardware, nothing physical can move
+    Tests/hardware/    a real board on a real port, and it turns things
 
-    py run_all.py            every suite
-    py run_all.py esp32      only suites whose name contains "esp32"
+This file reaches ONLY the first. Hardware verification has its own
+entry point and needs an explicit --port that has no default:
+
+    py hardware/run_hardware.py --port /dev/ttyUSB0
+
+That separation is not tidiness. `run_all.py` is the command run by
+reflex, in a hook, from an editor, by someone who is not standing next
+to the mechanism - and the carousel may be holding samples or be
+mechanically constrained. A test suite that can turn an actuator must
+never be reachable by reflex.
 
 Exit status is non-zero if any suite fails, so this is usable in a hook.
 """
@@ -25,104 +27,71 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 HERE = Path(__file__).resolve().parent
 
-# Architecture first: if a boundary has moved, every later failure is
-# likely to be a symptom of that rather than a fault of its own.
-SUITES = (
-    ("test_architecture.py", "domain boundaries and obsolete architecture"),
-    ("test_esp32.py", "protocol, drivers, carousel, on fake hardware"),
-    ("test_science.py", "formulas, comparison, Decision Model"),
-    ("test_data.py", "record model, RAW immutability, provenance"),
-    ("test_pc.py", "serial lifecycle, error kinds, measurement order"),
-)
+SOFTWARE_RUNNER = HERE / "software" / "run_software.py"
+HARDWARE_RUNNER = HERE / "hardware" / "run_hardware.py"
 
 
-def run(name):
-    """Run one suite, returning (passed, checks, output)."""
-    result = subprocess.run(
-        [sys.executable, str(HERE / name)],
-        capture_output=True, text=True, cwd=str(HERE),
-    )
+USAGE = """usage: run_all.py [-h] [PATTERN]
 
-    checks = 0
+Run the Freya software test suites. No hardware is touched and nothing
+physical can move.
 
-    for line in result.stdout.splitlines():
-        if "all " in line and " checks passed" in line:
-            try:
-                checks = int(line.split("all ")[1].split(" checks")[0])
+positional arguments:
+  PATTERN     run only suites whose path or group matches, e.g. "linux"
 
-            except (IndexError, ValueError):
-                checks = 0
+options:
+  -h, --help  show this message and exit
 
-    return result.returncode == 0, checks, result
+Hardware verification is a separate campaign and is NOT reachable from
+here - it turns the carousel:
+
+    hardware/run_hardware.py --port /dev/ttyUSB0
+"""
 
 
 def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    pattern = argv[0] if argv else None
+    argv = list(sys.argv[1:] if argv is None else argv)
 
-    suites = [
-        (name, description) for name, description in SUITES
-        if pattern is None or pattern in name
-    ]
+    # Answered here rather than passed down. `--help` reaching the
+    # software runner would be taken for a suite-name filter, match
+    # nothing, and exit 2 with "No suite matches '--help'" - which is
+    # the small version of the defect this whole campaign started from.
+    if any(flag in argv for flag in ("-h", "--help", "help")):
+        print(USAGE)
 
-    if not suites:
-        print("No suite matches {!r}.".format(pattern))
+        return 0
+
+    # Refused rather than ignored: someone typing this means to run
+    # hardware tests, and silently running the software suite instead
+    # would report a pass for a campaign that never happened.
+    for flag in ("--hardware", "--with-hardware", "hardware"):
+        if flag in argv:
+            print("run_all.py runs SOFTWARE tests only.")
+            print()
+            print("Hardware verification is a separate campaign with its")
+            print("own entry point, because it physically turns the")
+            print("carousel:")
+            print()
+            print("    {} {} --port /dev/ttyUSB0".format(
+                Path(sys.executable).name,
+                HARDWARE_RUNNER.relative_to(HERE.parent.parent).as_posix(),
+            ))
+
+            return 2
+
+    if not SOFTWARE_RUNNER.is_file():
+        print("Missing {}".format(SOFTWARE_RUNNER))
 
         return 2
 
-    print("=" * 68)
-    print("Freya science module - test suites")
-    print("=" * 68)
-    print()
+    result = subprocess.run(
+        [sys.executable, str(SOFTWARE_RUNNER)] + argv,
+        cwd=str(SOFTWARE_RUNNER.parent),
+    )
 
-    total = 0
-    failures = []
-
-    for name, description in suites:
-        print("{:<26} {:<38}".format(name, description), end="", flush=True)
-
-        passed, checks, result = run(name)
-
-        total += checks
-
-        if passed:
-            print("{:>4} ok".format(checks))
-
-        else:
-            print("  FAILED")
-            failures.append((name, result))
-
-    print()
-    print("=" * 68)
-
-    if failures:
-        print("{} of {} suites FAILED, {} checks passed elsewhere".format(
-            len(failures), len(suites), total
-        ))
-
-        for name, result in failures:
-            print()
-            print("-" * 68)
-            print("{}:".format(name))
-            print("-" * 68)
-
-            # Only the failing lines and the tail, so one broken suite does
-            # not bury the summary.
-            for line in result.stdout.splitlines():
-                if line.strip().startswith("FAIL") or "FAILED" in line:
-                    print(line)
-
-            if result.stderr.strip():
-                print(result.stderr.strip()[-2000:])
-
-        return 1
-
-    print("all {} suites passed, {} checks total".format(len(suites), total))
-
-    return 0
+    return result.returncode
 
 
 if __name__ == "__main__":

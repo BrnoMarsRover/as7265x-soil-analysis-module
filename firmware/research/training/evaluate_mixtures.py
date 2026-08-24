@@ -230,48 +230,24 @@ def _rank_candidates(measured, library, channels):
     scored = []
 
     for name, spectrum in library.materials.items():
-        pairs = [
-            (measured[channel], spectrum[channel])
-            for channel in channels
-            if channel in measured and channel in spectrum
-        ]
+        # metrics.paired() and metrics.cosine() are the Science layer's
+        # own pairing and angular metric. An earlier revision called a
+        # `metrics.cosine_similarity(dict, dict, keys=...)` that has
+        # never existed on this module, caught the AttributeError and
+        # silently scored every candidate with a private copy of the
+        # formula instead - a shortlist computed outside Science.
+        pairs = metrics.paired(measured, spectrum, channels)
 
         if len(pairs) < 3:
             continue
 
-        left = [pair[0] for pair in pairs]
-        right = [pair[1] for pair in pairs]
-
-        try:
-            score = metrics.cosine_similarity(
-                dict(zip(range(len(left)), left)),
-                dict(zip(range(len(right)), right)),
-                keys=list(range(len(left))),
-            )
-
-        except (TypeError, AttributeError):
-            # Falls back to a plain cosine if the metrics module's
-            # signature is not the one assumed. The candidate set is a
-            # shortlist, not a result; a slightly different ordering
-            # changes which six materials are offered, not the score.
-            score = _cosine(left, right)
+        score = metrics.cosine(pairs)
 
         scored.append((score if score is not None else 0.0, name))
 
     scored.sort(reverse=True)
 
     return [name for _, name in scored[:CANDIDATE_DEPTH]]
-
-
-def _cosine(left, right):
-    numerator = sum(a * b for a, b in zip(left, right))
-    left_norm = sum(a * a for a in left) ** 0.5
-    right_norm = sum(b * b for b in right) ** 0.5
-
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-
-    return numerator / (left_norm * right_norm)
 
 
 def _rank_of(name, components):

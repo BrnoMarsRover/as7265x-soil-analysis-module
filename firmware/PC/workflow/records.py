@@ -931,7 +931,10 @@ def menu_learning_history(mission):
 
         print()
         print("  Score them with:")
-        print("    py firmware/research/training/evaluate_mixtures.py")
+        # sys.executable, not `py`: the launcher exists only on Windows
+        # and the operator client runs on the Linux main computer.
+        print("    {} firmware/research/training/evaluate_mixtures.py"
+              .format(sys.executable))
 
     else:
         print("  none yet")

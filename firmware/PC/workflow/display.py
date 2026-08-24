@@ -1239,6 +1239,30 @@ def print_bus_scan(report):
     for line in textwrap.wrap(str(report.get("diagnosis") or ""), 66):
         print("  {}".format(line))
 
+    # THE SCAN COSTS THE CONNECTION, AND THAT HAS TO BE ON SCREEN.
+    #
+    # A scan reopens UART2 at eight baud rates in both pin orders, so a
+    # servo that was connected is released first and the carousel
+    # position goes with it. The firmware does that correctly and
+    # reports it in `released_servo` - but this screen used to drop the
+    # field, so an operator who ran a scan from Tools mid-session was
+    # told "MOVES NOTHING", and then found the origin they had aligned
+    # by hand was gone, with nothing on screen to say why.
+    released = report.get("released_servo")
+
+    if released:
+        print()
+        print("  THE SERVO WAS RELEASED so the scan could reopen UART2.")
+
+        message = released.get("message") if isinstance(released, dict) \
+            else None
+
+        if message:
+            print("  {}".format(message))
+
+        print("  The carousel position went with it: connect the servo")
+        print("  again and re-declare Slot 1 before the next measurement.")
+
     for difference in report.get("differences") or []:
         print()
 

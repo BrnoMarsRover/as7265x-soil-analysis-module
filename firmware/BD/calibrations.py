@@ -68,18 +68,47 @@ def utc_now():
 
 
 def _write_json(path, payload):
-    """Atomic write, so an interrupted save cannot truncate the library."""
+    """
+    Atomic write, so an interrupted save cannot truncate the library.
+
+    EVERY FAILURE BECOMES A CalibrationError.
+
+    The atomic part was already right - temporary file, fsync, rename.
+    What was missing is that a failure escaped as a raw OSError, and
+    the screens catch CalibrationError. A full disk while saving a
+    freshly measured calibration therefore took down the operator
+    client with a traceback, and the calibration went with it: it is a
+    multi-minute procedure with physical white and dark references in
+    the carousel, and it cannot be recovered by restarting the
+    program.
+
+    The temporary file is removed on the way out, so a failing disk
+    does not leave a trail of .tmp files beside the library.
+    """
     path = Path(path)
     tmp = path.with_suffix(path.suffix + ".tmp")
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.flush()
-        os.fsync(handle.fileno())
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
 
-    os.replace(tmp, path)
+        os.replace(tmp, path)
+
+    except OSError as error:
+        try:
+            os.unlink(tmp)
+
+        except OSError:
+            pass
+
+        raise CalibrationError(
+            "CALIBRATION_SAVE_ERROR",
+            "Could not write {}: {}".format(path, error),
+        )
 
 
 def _read_json(path):

@@ -90,6 +90,23 @@ def ask_float(prompt, minimum=None, maximum=None):
 
             continue
 
+        # NaN AND INFINITY, BEFORE THE RANGE CHECK.
+        #
+        # `float("nan")` succeeds, and NaN then compares False against
+        # EVERY bound - `nan < -15.0` and `nan > 15.0` are both False -
+        # so it walked through both guards below and was returned as a
+        # valid angle. From here it reaches json.dumps, which writes a
+        # bare `NaN` that is not legal JSON, and then a servo goal.
+        #
+        # Infinity happens to be caught by the range check; it is
+        # refused here anyway, because relying on a bound to reject a
+        # value that is not a number is relying on an accident.
+        if value != value or value in (float("inf"), float("-inf")):
+            print("Enter a real number. NaN and infinity are not "
+                  "positions a mechanism can be moved to.")
+
+            continue
+
         if minimum is not None and value < minimum:
             print("Minimum is {}.".format(minimum))
 

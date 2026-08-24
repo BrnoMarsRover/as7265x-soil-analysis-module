@@ -56,6 +56,7 @@ manufacturer's real response curves, re-running this updates what the
 confidence model believes. Nothing is pinned by hand.
 """
 
+import argparse
 import collections
 import json
 import sys
@@ -216,6 +217,19 @@ def analyse(materials, classes):
 
 
 def main():
+    # An argument parser on a script that takes no arguments, because
+    # this one WRITES a protected reference library. Without it every
+    # argument was ignored - including `--help`, which quietly rewrote
+    # DB3.json instead of printing usage. --audit-only is the same
+    # escape hatch build_db1.py and build_db2.py have: compute the
+    # analysis, print it, touch nothing.
+    parser = argparse.ArgumentParser(description=__doc__.strip())
+    parser.add_argument(
+        "--audit-only", action="store_true",
+        help="report the analysis without writing it into DB3.json",
+    )
+    args = parser.parse_args()
+
     path = config.DB3_FILE
 
     if not path.exists():
@@ -295,6 +309,12 @@ def main():
                 "py firmware/research/analyse_discriminability.py",
         "by_class": report,
     }
+
+    if args.audit_only:
+        print()
+        print("--audit-only: {} left unchanged".format(path.name))
+
+        return 0
 
     path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 

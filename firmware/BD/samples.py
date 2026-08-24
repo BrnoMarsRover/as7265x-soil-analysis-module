@@ -54,6 +54,7 @@ Layer rule: BD must never import Science. This module stores and
 validates the SHAPE of a record; what the numbers mean is Science's.
 """
 
+import copy
 import json
 import os
 import re
@@ -290,7 +291,21 @@ def new_measurement(measurement_id, sample_id, slot_id, raw=None,
                 "MISSING_RAW",
             )
 
-        record["raw"] = raw
+        # A DEEP COPY, not the caller's object.
+        #
+        # `record["raw"] = raw` stored a live reference to a dictionary
+        # the caller still owns, so anything that touched that
+        # dictionary afterwards - a normalization done in place, a unit
+        # conversion, a debug line - silently edited the archive's copy
+        # of what the instrument reported. RAW is the one thing in this
+        # project that must be exactly what came off the sensor, and
+        # "immutable" cannot mean "immutable unless somebody keeps the
+        # reference".
+        #
+        # dict(raw) is not enough: raw is nested one level, illumination
+        # -> channel -> value, and a shallow copy shares the inner
+        # dictionaries.
+        record["raw"] = copy.deepcopy(raw)
 
     else:
         # Deliberately no `raw` key at all, rather than null: a reader
@@ -405,11 +420,27 @@ def _write_json(path, payload):
     replacement is a rename within one filesystem, which is what makes
     it atomic.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # INSIDE THE TRY, both of them.
+    #
+    # Creating the directory and creating the temporary file were
+    # outside it, so the two failures that actually happen on a rover -
+    # a full disk and a read-only directory - escaped as raw OSErrors
+    # while every screen in the project catches StorageError. A save
+    # that failed because the card was full crashed the operator
+    # client instead of saying "could not save".
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    handle, temporary = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".samples-", suffix=".tmp"
-    )
+        handle, temporary = tempfile.mkstemp(
+            dir=str(path.parent), prefix=".samples-", suffix=".tmp"
+        )
+
+    except OSError as error:
+        raise StorageError(
+            "Could not prepare a temporary file beside {}: {}".format(
+                path, error
+            )
+        )
 
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -461,6 +492,11 @@ class SampleStore:
         self.data = None
         self.error = None
 
+        # The last state that reached the disk. `_write` restores from
+        # it when a save fails, so what the screens read never contains
+        # a Sample the archive does not.
+        self._durable = None
+
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
@@ -473,6 +509,7 @@ class SampleStore:
                 "schema_version": ARCHIVE_VERSION,
                 "samples": [],
             }
+            self._durable = copy.deepcopy(self.data)
 
             return self
 
@@ -503,6 +540,7 @@ class SampleStore:
             return self
 
         self.data = payload
+        self._durable = copy.deepcopy(payload)
 
         return self
 
@@ -516,11 +554,48 @@ class SampleStore:
         return self._require_ready().setdefault("samples", [])
 
     def _write(self):
+        """
+        Persist, or leave memory exactly as the disk is.
+
+        WHY THE SNAPSHOT.
+
+        Every mutator here follows the same shape: change `self.data`,
+        then call this. If the write fails, the caller gets a
+        StorageError - and used to be left holding a store whose
+        in-memory archive contained a Sample, a measurement or a state
+        change that is not on disk and never will be.
+
+        That divergence is worse than the failed write. The screens
+        read the store, so the operator is shown a Sample the archive
+        does not contain; the workflow's rule that RAW is persisted
+        BEFORE Science runs becomes a rule about a record that only
+        exists in memory; and the next successful save writes the
+        phantom out as though it had been there all along.
+
+        So a failed write restores what was last durable. The operator
+        sees the failure AND a store that matches the file, which is
+        the only pair of facts they can act on.
+        """
         data = self._require_ready()
+
         data["schema_version"] = ARCHIVE_VERSION
         data["updated_at"] = utc_now()
 
-        _write_json(self.path, data)
+        try:
+            _write_json(self.path, data)
+
+        except Exception:
+            # Back to the last state that reached the disk. Taking the
+            # snapshot HERE would be too late - the mutation has
+            # already been applied to `data` by the caller - so what is
+            # restored is the copy made after the previous successful
+            # write.
+            if self._durable is not None:
+                self.data = copy.deepcopy(self._durable)
+
+            raise
+
+        self._durable = copy.deepcopy(data)
 
     # ------------------------------------------------------------------
     # queries

@@ -3,9 +3,14 @@ The ESP32 device tool: status, clean, deploy, verify, reset.
 
 ONE command deploys the firmware:
 
-    py firmware\\tools\\device.py deploy --port COM4 --clean
+    python3 firmware/tools/device.py deploy --port /dev/ttyUSB0 --clean
+    py      firmware/tools/device.py deploy --port COM4         --clean
 
-and it is not allowed to report success until the board has been reset,
+The first line is the Linux main computer, the second the Windows
+bench; forward slashes work on both. On Linux --port may be left out
+when exactly one USB-serial device is attached - see default_port().
+
+It is not allowed to report success until the board has been reset,
 has booted on its own, and has answered a ping. Everything else here
 exists to make that one command trustworthy.
 
@@ -329,7 +334,8 @@ def build_firmware(report):
                 message = (
                     "mpy-cross is not installed. It must match the "
                     "firmware on the board (MicroPython v1.28.0): "
-                    "py -m pip install mpy-cross==1.28.0.post2"
+                    "{} -m pip install mpy-cross==1.28.0.post2".format(
+                        sys.executable)
                 )
 
             report.step("BUILD", False,
@@ -862,8 +868,11 @@ def command_deploy(args):
         print()
         print("Run the same command again to finish:")
         print()
-        print("    py firmware\\tools\\device.py deploy --port {} --clean"
-              .format(args.port))
+        print("    {} {} deploy --port {} --clean".format(
+            Path(sys.executable).name,
+            Path(__file__).resolve().relative_to(REPO_ROOT).as_posix(),
+            args.port,
+        ))
 
         return 130
 
@@ -930,6 +939,61 @@ def command_reset(args):
     return 1 if report.failed else 0
 
 
+# USB-serial device nodes, per platform. Listed by GLOB rather than by
+# pyserial's list_ports, deliberately: PC/serial_link.py is the one
+# module in this project allowed to import pyserial, and a deployment
+# tool that never opens a port has no business becoming the second. A
+# device node is a file, and looking for a file needs no serial library.
+POSIX_PORT_GLOBS = (
+    "ttyUSB*",        # Linux, CP210x / FT232 style bridges - this board
+    "ttyACM*",        # Linux, native-USB boards
+    "cu.usbserial*",  # macOS, the same bridges
+    "cu.usbmodem*",   # macOS, native USB
+)
+
+
+def attached_ports():
+    """Every USB-serial device node present, sorted. POSIX only."""
+    if sys.platform.startswith("win"):
+        return []
+
+    dev = Path("/dev")
+
+    if not dev.is_dir():                               # pragma: no cover
+        return []
+
+    found = []
+
+    for pattern in POSIX_PORT_GLOBS:
+        # as_posix(), not str(): identical on the Linux machine this
+        # runs on, and it keeps the function meaningful when it is
+        # exercised from the Windows bench, where str() on a Path would
+        # produce `\dev\ttyUSB0` and hide whether the logic is right.
+        found.extend(path.as_posix() for path in dev.glob(pattern))
+
+    return sorted(set(found))
+
+
+def default_port():
+    """
+    What --port means when it is not given.
+
+    COM4 is right on the Windows bench machine and meaningless on the
+    Linux main computer, where the same board is /dev/ttyUSB0 or
+    /dev/ttyACM0 and the number moves between plug-ins. So there is no
+    POSIX literal to default to: the device nodes are looked up, and if
+    the answer is not exactly one there is no default at all - guessing
+    which of several attached boards to reflash is not a thing a
+    deployment tool should do.
+    """
+    if sys.platform.startswith("win"):
+        return "COM4"
+
+    candidates = attached_ports()
+
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="device.py",
@@ -939,8 +1003,10 @@ def build_parser():
         "command",
         choices=("status", "clean", "deploy", "verify", "reset"),
     )
-    parser.add_argument("--port", default="COM4",
-                        help="serial port of the ESP32 (default COM4)")
+    parser.add_argument("--port", default=None,
+                        help="serial port of the ESP32 (default: COM4 on "
+                             "Windows, the single attached USB-serial "
+                             "device on Linux and macOS)")
     parser.add_argument(
         "--clean", action="store_true",
         help="remove every user file from the device before uploading",
@@ -951,6 +1017,39 @@ def build_parser():
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+
+    if args.port is None:
+        args.port = default_port()
+
+    if args.port is None:
+        print("No serial port given and none could be chosen for you.")
+        print()
+
+        ports = attached_ports()
+
+        if ports:
+            print("USB-serial devices attached right now:")
+
+            for line in ports:
+                print("    {}".format(line))
+
+            print()
+            print("More than one, so the tool will not pick for you.")
+
+        else:
+            print("No USB-serial device node is present - the board is "
+                  "not plugged in, or its USB bridge has not "
+                  "enumerated.")
+
+        print()
+        print("Name one with --port, for example:")
+        print("    {} {} {} --port /dev/ttyUSB0".format(
+            Path(sys.executable).name,
+            Path(__file__).name,
+            args.command,
+        ))
+
+        return 2
 
     handlers = {
         "status": command_status,

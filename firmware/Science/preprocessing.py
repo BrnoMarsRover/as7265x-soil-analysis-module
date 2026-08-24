@@ -99,6 +99,26 @@ def normalize(sample, dark, white, decimals=None):
     result = {}
 
     for channel in CHANNELS:
+        # A NON-FINITE INPUT IS AN UNDEFINED CHANNEL, for exactly the
+        # reason a zero denominator is.
+        #
+        # NaN and infinity arrive from a corrupted frame, a hand-edited
+        # calibration file, or a JSON parser that accepts the literals
+        # `NaN` and `Infinity` - which CPython's does. Arithmetic
+        # propagates them silently: NaN - NaN is NaN, and the channel
+        # then travels the whole pipeline looking like a measurement.
+        # Downstream does drop it, but only as "invalid", with no
+        # record of why, while `conditioning()` can say why a None
+        # happened. So the same convention is applied here: a channel
+        # that cannot be computed is None, and it is None for one
+        # reason or the other, never a number.
+        if not (_finite(sample.get(channel))
+                and _finite(dark.get(channel))
+                and _finite(white.get(channel))):
+            result[channel] = None
+
+            continue
+
         denominator = white[channel] - dark[channel]
 
         if denominator == 0:
@@ -361,7 +381,19 @@ def reject_outliers(values):
 
 
 def summarize_channel(values):
-    """Full statistics for one channel's repeated readings."""
+    """
+    Full statistics for one channel's repeated readings.
+
+    The readings are filtered here as well as in `channel_series`. That
+    is deliberate duplication, not an oversight: `median` and `mean`
+    below take numbers by contract and raise on None, so the one
+    function that turns "whatever the caller has" into statistics is
+    the right place to make the contract true. In the production
+    pipeline this filter removes nothing, because channel_series has
+    already run - which is exactly what a guard should look like.
+    """
+    values = [float(value) for value in (values or []) if _finite(value)]
+
     if not values:
         return {
             "n": 0, "accepted": 0, "rejected": 0,

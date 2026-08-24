@@ -176,12 +176,14 @@ pyserial. Two facts in it were measured on the bench, not assumed:
   `boot:0x13 (SPI_FAST_FLASH_BOOT)`. Driving both lines instead lands
   in `boot:0x3 (DOWNLOAD_BOOT)`, where the firmware never runs.
 
-Failures carry a code, because "the module did not answer" has seven
-causes needing seven different actions:
+Failures carry a code, because "the module did not answer" has eight
+causes needing eight different actions:
 
 ```
 PORT_NOT_FOUND      no such port
 PORT_BUSY           it exists and something else holds it
+PORT_DENIED         it exists, nothing holds it, and this account may
+                    not open it - Linux serial group membership
 PORT_OPEN_FAILED    it exists, is free, and would not open
 PORT_LOST           it disappeared mid-request
 PROTOCOL_TIMEOUT    the port opened; nothing answered

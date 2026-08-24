@@ -203,11 +203,21 @@ is the one shipped constant that is a guess.
 py firmware\Tests\run_all.py
 ```
 
-Five suites, 707 checks, no hardware needed. `test_architecture.py`
-alone is 312 checks and will tell you immediately if a boundary has
-moved: it greps for MG995, for 8-slot assumptions, for a second driver,
-for BD importing Science, for production importing research, and for a
-second module importing pyserial.
+Twenty-one suites, no hardware needed and none possible: `run_all.py`
+reaches `Tests/software/` only. `Tests/hardware/` is a separate
+campaign with its own entry point, no default port, and a `--move`
+flag on anything that turns the carousel.
+
+`static/test_architecture.py` alone is 316 checks and will tell you
+immediately if a boundary has moved: it greps for MG995, for 8-slot
+assumptions, for a second driver, for BD importing Science, for
+production importing research, and for a second module importing
+pyserial. `static/test_static_api.py` beside it reads every name,
+import and call site in the tree, which is what catches a method that
+does not exist in a branch nothing has run yet.
+
+The run finishes by re-hashing `firmware/BD/` and fails if a byte
+moved.
 
 ```powershell
 py firmware\tools\device.py status --port COM4

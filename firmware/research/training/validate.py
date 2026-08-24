@@ -41,7 +41,10 @@ from BD.decision_learning import (                           # noqa: E402
 )
 from BD.registry import DatabaseRegistry                     # noqa: E402
 from Science.taxonomy import Taxonomy                             # noqa: E402
-from Science.decision import class_models                       # noqa: E402
+# Science/class_models.py is a module of its own, not something inside
+# decision.py. Spelled the other way this file raised ImportError before
+# a single line of it ran.
+from Science import class_models                                # noqa: E402
 from Science.decision import (                           # noqa: E402
     AMBIGUOUS_SET,
     DecisionEngine,
