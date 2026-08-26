@@ -1,0 +1,23 @@
+# Evidence belongs to a run, not to the source tree.
+#
+# Every directory under artifacts/ is one invocation: its manifest, its
+# events, its measurements, its defects and its summary. They are
+# generated, they can be large, and an endurance run writes tens of
+# thousands of event lines - none of which belongs in version control.
+#
+# WHAT TO DO WITH A RESULT THAT MATTERS. Copy the run directory out of
+# here and attach it to the defect or the commit that cites it. A number
+# quoted in a report with no run id behind it is an opinion; a run id
+# with no archived directory behind it is a broken reference.
+artifacts/
+
+# The layer-gate ledger: which tests have passed on REAL hardware, on
+# THIS bench. Machine-specific by definition - another machine's ledger
+# would open gates here that nothing on this bench has earned.
+ledger.json
+
+# A bench profile names one physical instrument: its USB serial number,
+# its device path, its operator. Copy profile.example.json and keep the
+# copy local. The example itself IS tracked.
+configuration/*.json
+!configuration/profile.example.json

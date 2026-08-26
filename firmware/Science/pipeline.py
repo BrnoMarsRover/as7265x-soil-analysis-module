@@ -383,8 +383,35 @@ def _reference_analysis(registry, representations, reliability,
 
             continue
 
+        # THE 54-FEATURE SPACE MUST NAME ITS OWN KEYS.
+        #
+        # `None` was meant as "do not restrict this comparison to the
+        # 18-channel reliability subset". That is not what it does.
+        # `metrics.paired` reads `channels or CHANNELS`, and CHANNELS is
+        # the eighteen BARE band names - A, B, C - while a 54-feature
+        # vector is keyed `white:A`, `uv:A`, `ir:A`.
+        #
+        # So `None` made paired() look for eighteen names that exist on
+        # NEITHER side and find nothing. Measured: a 54-feature
+        # measurement against a 54-feature library, identical keys on
+        # both sides, produced 0 compared features and every metric
+        # None - while the entry still reported itself available with 22
+        # candidates.
+        #
+        # DB2 therefore contributed nothing to any decision, on every
+        # measurement, and no screen said so. It is the multi-
+        # illumination database: the one that uses all three lamps, and
+        # the only one that can tell two materials apart when their
+        # white-light spectra agree.
+        #
+        # The keys come from the MEASUREMENT rather than from a
+        # constant, so a library with a different subset still compares
+        # over exactly what both sides have - which is what `paired`
+        # does within the list it is given.
         comparison_channels = (
-            None if handle.feature_space == AS7265X_54_MULTIILLUM else usable
+            sorted(measured)
+            if handle.feature_space == AS7265X_54_MULTIILLUM
+            else usable
         )
         comparison_weights = (
             None if handle.feature_space == AS7265X_54_MULTIILLUM else weights

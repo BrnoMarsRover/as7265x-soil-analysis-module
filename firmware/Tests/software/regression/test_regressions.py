@@ -139,9 +139,15 @@ checks.section("2026-08: a previous session's answer was accepted")
 link, port, clock, installed = linked(link_kwargs={"timeout": 2.0})
 
 try:
-    link._request_id = 0
+    # Forged to collide exactly, so the COMMAND check stays under test.
+    # Session nonces make a natural collision vanishingly unlikely; that
+    # is the first defence, and this asserts the second one still works
+    # when the first is defeated.
+    colliding_id = "{}-{}".format(link.session, link._request_id + 1)
+
     port._enqueue(
-        (json.dumps({"request_id": "1", "ok": True, "cmd": "measure_raw",
+        (json.dumps({"request_id": colliding_id, "ok": True,
+                     "cmd": "measure_raw",
                      "data": {"stale": True}}) + "\n").encode("utf-8"))
 
     data = link.request("get_status")
@@ -156,14 +162,21 @@ finally:
     link.close()
 
 link, port, clock, installed = linked()
+other, _other_port, _other_clock, other_installed = linked()
 
 try:
-    checks.ok(str(link._request_id + 1) != "1",
+    checks.ok(link._next_request_id() != "1",
               "and no session's first request is numbered 1 any more")
+    checks.ok(link.session != other.session,
+              "two sessions get different nonces, so the ids of one "
+              "cannot be produced by the other - the clock-seeded "
+              "counter this replaced wrapped every 1000 seconds")
 
 finally:
     installed.restore()
+    other_installed.restore()
     link.close()
+    other.close()
 
 
 # ======================================================================

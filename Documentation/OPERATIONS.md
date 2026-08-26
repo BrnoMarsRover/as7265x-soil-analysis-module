@@ -294,6 +294,30 @@ plugged in:
 ls -l /dev/ttyUSB* /dev/ttyACM*
 ```
 
+### PORT_CLOSED
+
+```
+PORT_CLOSED: The connection to the science module is closed
+(/dev/ttyUSB0 was lost during a get_status command).
+Reconnect the module before running get_status.
+```
+
+The link is not open — almost always because it was **lost**, not
+because anyone closed it. The message names the command that lost it.
+
+Every hardware action is refused with this until you reconnect;
+software-only screens (Records, Help) keep working. Restart the client
+with the module plugged in:
+
+```bash
+python3 firmware/PC/rover_science_client.py --port /dev/ttyUSB0
+```
+
+**After reconnecting, the carousel origin is gone.** That is deliberate:
+the servo may have been turned by hand while the link was down, and a
+remembered slot number is indistinguishable from a measured one once it
+is on screen. Connect the servo and re-declare Slot 1.
+
 ### PORT_DENIED
 
 ```
@@ -316,6 +340,39 @@ login, so the change does not reach a terminal that is already open.
 `sudo` on the client is not the fix. It works once and then writes
 `firmware/BD/samples/` as root, which is the one directory in this
 project that git cannot restore.
+
+---
+
+### SERVO_POSITION_MISMATCH — the carousel moved and the measurement stopped
+
+```
+Servo 1 was commanded 2048 counts, the encoder moved 2 counts ...
+THE CAROUSEL HAS MOVED and its position is now unknown.
+
+  stage  : MOVE_TO_SCANNER
+  carousel: THE CAROUSEL MOVED. It stopped somewhere that could not
+            be verified.
+            LOOK AT THE MECHANISM before assuming which slot is where.
+```
+
+**Read the two numbers.** "Commanded N counts, the encoder moved M" is
+the whole diagnosis:
+
+| | |
+| --- | --- |
+| M close to N | the servo went where it was told and stopped slightly out — suspect the tolerance or mechanical binding |
+| M near zero, and the carousel visibly turned | **the encoder is not tracking the mechanism.** This happened on the bench on 2026-08-24 and is open hardware item **H-002** in `firmware/Tests/hardware/HARDWARE_VERIFICATION_PLAN.md`. Check the servo's operating mode, and whether there is a reduction between servo and carousel |
+| M near zero, and nothing moved | the servo is not acting on the goal — check power at the driver board |
+
+No spectrum was acquired and none was saved. The carousel position is
+invalidated. The sample is somewhere between the loader and the
+scanner: look at the mechanism, then connect the servo and re-declare
+Slot 1.
+
+The screen will **never** say "nothing was moved" in this case. That
+sentence is reserved for a refusal that happened before the servo was
+commanded — it used to be printed here too, which sent an operator away
+from a carousel that had just turned 180 degrees.
 
 ---
 
@@ -379,6 +436,14 @@ training data and the model registry.
 
 ## 8. Run the tests
 
+On the main computer:
+
+```bash
+python3 firmware/Tests/run_all.py
+```
+
+On the Windows bench:
+
 ```powershell
 py firmware\Tests\run_all.py
 ```
@@ -386,16 +451,19 @@ py firmware\Tests\run_all.py
 This runs the **software** campaign and only the software campaign.
 Nothing it does can open a serial port or turn the carousel — see §8.1.
 
-Twenty-one suites, grouped by the question they answer:
+Thirty-nine suites, grouped by the question they answer:
 
 ```
 static        boundaries, and every name/import/call site in the tree
-unit          formulas, record shapes, operator input, numeric edges
+unit          formulas, record shapes, operator input, numeric edges,
+              and the Science invariants as properties
 contracts     PC and firmware agreeing on names, arguments, shapes
-integration   layers driving each other, up to a whole simulated session
-fault         serial, sensor, servo and filesystem failures, injected
-state         carousel and Sample state machines, abused
-linux         ports, permissions, case-exact paths, working directory
+integration   layers driving each other, up to whole simulated missions
+fault         serial, sensor, servo, filesystem, memory, protocol
+              limits and the firmware's own error paths, injected
+state         carousel, Sample and whole-mission state machines, abused
+linux         ports, permissions, errno classes, locale, clock, paths
+process       signals, EOF, interruption and restart
 entrypoints   importing or --help must not DO anything
 integrity     the protected databases, hashed before and after
 stress        thousands of cycles, looking for drift and leaks
@@ -405,8 +473,15 @@ regression    one test per defect that ever reached the bench
 
 One group, or one suite, at a time:
 
-```powershell
-py firmware\Tests\run_all.py linux
+```bash
+python3 firmware/Tests/run_all.py linux
+```
+
+The suites can also be run in a deterministic scrambled order, which is
+how the acceptance runs prove they do not depend on each other:
+
+```bash
+python3 firmware/Tests/run_all.py --shuffle=777
 ```
 
 The suites run the **real** firmware modules, the real client and the

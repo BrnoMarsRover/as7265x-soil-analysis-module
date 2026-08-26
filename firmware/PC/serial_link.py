@@ -9,9 +9,10 @@ one place where it is closed, and one place to look when it is not.
 WHAT THIS MODULE KNOWS
 
     the wire            newline-delimited JSON at 115200 over CP2102
-    request ids         every request numbered, every answer matched
+    request ids         a session nonce and a counter, every answer
+                        matched against both
     timeouts            bounded waits, never an indefinite block
-    failure kinds       which of seven different things went wrong
+    failure kinds       which of ten different things went wrong
 
 It knows nothing about samples, slots, calibration or science.
 
@@ -61,13 +62,30 @@ MATCHING AN ANSWER TO ITS QUESTION
 
 Three things must agree before a frame is accepted as the answer to a
 request: the request id, the presence of `ok`, and the command name.
-The third is not redundant. Request ids restart every session and the
-board does not restart with them, so a client that died with a command
-in flight leaves its answer in the driver buffer for the next client to
-find with a matching id on it. See `_matches_request`.
+
+The id is `<24 random bits>-<counter>`, and the randomness is not
+decoration. Two earlier designs collided ACROSS SESSIONS while looking
+perfectly reasonable:
+
+    a counter from 1        every session's first request was "1", and
+                            open() deliberately does not clear the
+                            receive buffer, so a dead client's answer
+                            was the next client's first result
+
+    a clock-seeded counter  `time.time()*1000 % 1000000` wraps every
+                            1000 seconds, so two clients started
+                            sixteen minutes apart produced identical
+                            ids - and `wait_online` makes `ping` the
+                            first command of every session, so the
+                            command check could not tell them apart
+
+The command name is the second defence, for the case where the first
+is defeated anyway. See `_matches_request` and
+Tests/software/contracts/test_request_identity.py.
 """
 
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -101,6 +119,32 @@ CONNECT_TIMEOUT = 15.0
 # Bytes of non-frame text kept for the diagnosis, so a boot traceback
 # survives to be shown.
 NOISE_LIMIT = 40
+
+# THE LONGEST LINE THIS READER WILL ACCUMULATE BEFORE GIVING UP ON IT.
+#
+# The framing is newline-delimited, so a device that talks without ever
+# sending a newline is a device whose "line" never ends. Measured: a
+# stuck stream at 115200 fills 2.08 MB during one MEASURE_TIMEOUT, all
+# of it in a single Python string that is copied on every append - so
+# the cost is quadratic as well as unbounded, and this is exactly the
+# shape a half-crashed board or a noisy bridge produces.
+#
+# The firmware has had the matching rule from the start
+# (config.MAX_COMMAND_BYTES, 4096); the host had none, which left the
+# protection one-sided.
+#
+# 64 KiB is chosen against the real numbers rather than a round guess.
+# The largest legitimate frame this firmware can build is
+# `sensor_test_raw` at MAX_REPEATS = 25, measured at 16,454 bytes, so
+# this is roughly four times the worst legal case - wide enough that no
+# real response can ever be truncated by it, small enough that a stuck
+# stream costs 64 KiB instead of megabytes.
+#
+# An over-long line is DISCARDED, not turned into an error: garbage on
+# the wire is not an answer, and resynchronizing at the next newline is
+# what lets the real frame behind it still be read. If none arrives,
+# the ordinary PROTOCOL_TIMEOUT says so.
+MAX_FRAME_BYTES = 65536
 
 
 def utc_timestamp():
@@ -261,7 +305,19 @@ def salvage_json(text):
         try:
             return json.loads(text[start:])
 
-        except ValueError:
+        # RecursionError, not only ValueError. CPython's JSON scanner
+        # recurses once per level of nesting, and a line carrying about
+        # 17,000 opening brackets exhausts the stack instead of
+        # returning a parse error. RecursionError is not a ValueError,
+        # so it escaped this handler and every other one in the module
+        # and killed the application from a line of console noise.
+        #
+        # MAX_FRAME_BYTES makes that line unlikely to survive the reader
+        # at all, but the threshold is a property of the interpreter's
+        # stack rather than of this protocol - it moves with the Python
+        # build and the platform - so the parse is guarded here as well
+        # rather than relying on a byte count to stay below it.
+        except (ValueError, RecursionError):
             start = text.find("{", start + 1)
 
     return None
@@ -329,6 +385,13 @@ class SerialLink:
         self.serial = None
         self.online = False
 
+        # WHY the link is closed, when it was closed by a failure rather
+        # than by a normal quit. It turns "the connection is not open"
+        # into "the connection was lost because the device disappeared",
+        # which is the difference between a puzzled operator and one who
+        # knows to check the cable.
+        self.closed_reason = None
+
         # Answers that arrived damaged, and answers recovered from a
         # line with rubbish in front of them. Not fatal on their own -
         # both are handled - but a rising count is the difference
@@ -341,6 +404,12 @@ class SerialLink:
         # still in the driver buffer, and one of them being accepted
         # would hand this session the last one's measurement.
         self.stale_frames = 0
+
+        # Lines that ran past MAX_FRAME_BYTES without a terminator and
+        # were thrown away. A device that never finishes a line is a
+        # different fault from one that answers slowly, and the timeout
+        # alone cannot tell them apart.
+        self.oversized_lines = 0
 
         # Bytes received from the port, for measuring what a response
         # really costs on a 115200 wire. A byte is 10 bits with 8N1
@@ -363,22 +432,63 @@ class SerialLink:
         # Capped, because this is a diagnostic aid and not a log file.
         self.damaged_lines = []
 
-        # SEEDED, NOT ZERO, and still a plain increasing integer.
+        # A RANDOM SESSION NONCE, PLUS A COUNTER.
         #
-        # Starting every session at 1 means every session's first
-        # request has the same id as every previous session's first
-        # request. Combined with an open() that deliberately does not
-        # clear the receive buffer, that is how a dead client's
-        # leftover answer becomes the next client's first result. The
-        # command check in _matches_request is the real defence; this
-        # makes the collision unlikely as well as harmless.
+        # Request ids exist to match an answer to its question. That
+        # only works if no OTHER session can produce the same id, and
+        # two earlier designs could:
         #
-        # The +1 is not cosmetic: without it the modulo lands on zero
-        # roughly once in a million starts, and that one session
-        # numbers its first request "1" - precisely the id every
-        # session used before this change, and the one most likely to
-        # be lying in the buffer.
-        self._request_id = 1 + int(time.time() * 1000) % 1000000
+        #   counter from 1        every session's first request was
+        #                         "1", so a dead client's leftover
+        #                         answer was the next client's first
+        #                         result
+        #   clock-seeded counter  better, and still wrong: the seed was
+        #                         `time.time()*1000 % 1000000`, which
+        #                         WRAPS EVERY 1000 SECONDS. Two clients
+        #                         started 16 minutes apart got byte-
+        #                         identical ids, which is a routine
+        #                         interval for an operator restarting
+        #                         the client during a run.
+        #
+        # A nonce removes the coincidence instead of making it rarer.
+        # 24 random bits from the OS, so two sessions collide about
+        # once in 16.7 million - and even then the counter and the
+        # command name must line up as well.
+        #
+        # `os.urandom`, not `random`: `random` can be seeded, and a
+        # test or a tool that seeds it globally would quietly make
+        # every session's ids identical again.
+        #
+        # THE FORMAT IS A STRING ON PURPOSE. The firmware echoes
+        # `request_id` verbatim and never parses it, so this needs no
+        # firmware change and no protocol version bump.
+        #
+        # AND IF THE OS WILL NOT GIVE US ANY. `os.urandom` can fail:
+        # on Linux it falls back to opening /dev/urandom, which needs a
+        # file descriptor, so a process that has exhausted its
+        # descriptors gets an OSError here - and a raw OSError out of a
+        # constructor is an unhandled traceback before the operator has
+        # seen a single screen.
+        #
+        # It is refused rather than worked around. A fixed fallback
+        # nonce would make every session's ids identical again, which
+        # is the precise defect the nonce was introduced to remove, and
+        # it would do it silently. RuntimeError, because `main()`
+        # already turns that into a diagnosed exit-2 - the same
+        # treatment as a missing pyserial.
+        try:
+            self.session = os.urandom(3).hex()
+
+        except (OSError, NotImplementedError) as error:
+            raise RuntimeError(
+                "The operating system would not supply random bytes for "
+                "the session id ({}). Request ids exist to stop one "
+                "session's answer being accepted by another, and a "
+                "fixed fallback would defeat that silently, so the "
+                "client will not start.".format(error)
+            )
+
+        self._request_id = 0
 
     # ------------------------------------------------------------------
     # diagnostics output
@@ -447,14 +557,22 @@ class SerialLink:
 
         self.serial = handle
         self.online = False
+        self.closed_reason = None       # a successful open clears it
 
         self._trace("PORT OPEN", "{} at {} baud, dtr={} rts={}".format(
             self.port, self.baudrate, handle.dtr, handle.rts))
 
         return self
 
-    def close(self):
-        """Release the port. Safe to call twice, and never raises."""
+    def close(self, reason=None):
+        """
+        Release the port. Safe to call twice, and never raises.
+
+        `reason` is remembered so that a later command can say WHY the
+        link is closed instead of only that it is. A link closed by a
+        normal quit and one closed because the device vanished need
+        different sentences on screen.
+        """
         if self.serial is not None:
             try:
                 self.serial.close()
@@ -464,6 +582,9 @@ class SerialLink:
 
             self.serial = None
             self._trace("PORT CLOSED", self.port)
+
+        if reason is not None:
+            self.closed_reason = str(reason)
 
         self.online = False
 
@@ -479,7 +600,7 @@ class SerialLink:
         never calls it on the way in.
         """
         if self.serial is None:
-            raise RuntimeError("Link is not open; call open() first.")
+            raise self._closed_error("hard_reset")
 
         self.serial.dtr = False
         time.sleep(0.05)
@@ -590,10 +711,53 @@ class SerialLink:
     # transport
     # ------------------------------------------------------------------
 
+    def _closed_error(self, cmd=None):
+        """
+        Asking a closed link to do something is a LinkError, not a crash.
+
+        THE DEFECT THIS EXISTS FOR, observed on the Linux bench:
+
+            /dev/ttyUSB0 disappeared mid-request
+            -> PORT_LOST, and the link correctly closed itself
+            -> the operator returned to the main screen
+            -> the menu loop called hardware_status()
+            -> RuntimeError("Link is not open; call open() first.")
+            -> traceback, application gone
+
+        The same traceback was reachable from the sensor test, and from
+        every other screen: 39 places in the PC layer catch LinkError
+        and exactly one caught RuntimeError. So the fix is not to add
+        `except RuntimeError` in 39 places - it is for the one serial
+        owner to speak the language its callers already handle.
+
+        A RuntimeError here was never right anyway. "The device is
+        gone" is an operational condition an operator can act on, not
+        a programming error.
+        """
+        if self.closed_reason:
+            return LinkError(
+                "PORT_CLOSED",
+                "The connection to the science module is closed ({}). "
+                "Reconnect the module before running {}.".format(
+                    self.closed_reason, cmd or "hardware commands"
+                ),
+                data={"port": self.port, "cmd": cmd,
+                      "reason": self.closed_reason},
+            )
+
+        return LinkError(
+            "PORT_CLOSED",
+            "The connection to the science module is not open. "
+            "Reconnect the module before running {}.".format(
+                cmd or "hardware commands"),
+            data={"port": self.port, "cmd": cmd},
+        )
+
     def _next_request_id(self):
+        """`<session nonce>-<counter>`; unique within and across runs."""
         self._request_id += 1
 
-        return str(self._request_id)
+        return "{}-{}".format(self.session, self._request_id)
 
     def _matches_request(self, frame, request_id, cmd):
         """
@@ -644,7 +808,7 @@ class SerialLink:
         - ask for retries.
         """
         if self.serial is None:
-            raise RuntimeError("Link is not open; call open() first.")
+            raise self._closed_error(cmd)
 
         if timeout is None:
             timeout = self.timeout
@@ -696,14 +860,48 @@ class SerialLink:
 
                 response = self._read_response(request_id, timeout, cmd)
 
-            except serial.SerialException as error:
-                self.close()
+            # OSError AS WELL AS SerialException, and pySerial is why.
+            #
+            # pySerial does not wrap every OS failure. `read()` and
+            # `write()` catch OSError and re-raise it as a
+            # SerialException; `in_waiting` and `flush()` do not:
+            #
+            #     in_waiting   fcntl.ioctl(self.fd, TIOCINQ, ...)
+            #     flush        termios.tcdrain(self.fd)
+            #
+            # Both are raw syscalls, and on the Linux main computer both
+            # raise a bare OSError the moment the device node goes away -
+            # EIO for a vanished tty, ENODEV for one physically removed.
+            # `_read_response` asks for `in_waiting` before EVERY read, so
+            # this is not an exotic path: it is the FIRST thing that fails
+            # when /dev/ttyUSB0 disappears, which is exactly the event
+            # H-004 was opened for.
+            #
+            # Catching only SerialException therefore let the one failure
+            # this module exists to classify escape as an unhandled
+            # traceback - the same defect as RF-002, in a different
+            # exception type. SerialException is itself an OSError
+            # subclass, so the pair covers the real module; the fake's
+            # exception is not, which is why both are named.
+            except (serial.SerialException, OSError) as error:
+                self.close(reason="{} was lost during a {} command"
+                                  .format(self.port, cmd))
+
+                detail = str(error)
+                errno_name = getattr(error, "errno", None)
+
+                if errno_name is not None:
+                    detail = "{} (errno {})".format(detail, errno_name)
 
                 raise LinkError(
                     "PORT_LOST",
                     "{} disappeared while the request was in flight: "
-                    "{}".format(self.port, error),
-                    data={"port": self.port},
+                    "{}\nReconnect the module before continuing; every "
+                    "hardware command will be refused until you "
+                    "do.".format(self.port, detail),
+                    data={"port": self.port, "cmd": cmd,
+                          "errno": errno_name,
+                          "reconnect_required": True},
                 )
 
             except LinkError as error:
@@ -759,6 +957,12 @@ class SerialLink:
 
         buffer = ""
 
+        # True while the tail of an over-long line is being thrown away.
+        # Without it the bytes AFTER the cap would be read as the start
+        # of a fresh line and reported as noise, which is a second
+        # misleading diagnosis on top of the first.
+        discarding = False
+
         while time.monotonic() < deadline:
             # ONE BYTE, THEN WHATEVER CAME WITH IT.
             #
@@ -786,8 +990,46 @@ class SerialLink:
 
             buffer += chunk.decode("utf-8", "replace")
 
+            # BOUND THE UNTERMINATED LINE. See MAX_FRAME_BYTES.
+            #
+            # The check runs on EVERY pass, not only the first. Skipping
+            # it once `discarding` was set left the buffer growing
+            # exactly as before between the cap and the newline that
+            # ends it - and against a stream that never sends one, that
+            # is every byte of it. The counter and the diagnosis are
+            # what happen once; the discarding is what has to keep
+            # happening.
+            if len(buffer) > MAX_FRAME_BYTES:
+                if not discarding:
+                    self.oversized_lines += 1
+                    self._trace(
+                        "RX OVERSIZED",
+                        "line exceeded {} bytes with no newline; "
+                        "discarding until one arrives".format(
+                            MAX_FRAME_BYTES),
+                    )
+
+                    if len(self.last_noise) < NOISE_LIMIT:
+                        self.last_noise.append(
+                            "<a line longer than {} bytes arrived with no "
+                            "terminator and was discarded>".format(
+                                MAX_FRAME_BYTES)
+                        )
+
+                    discarding = True
+
+                buffer = ""
+
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
+
+                if discarding:
+                    # That newline ends the over-long line. Everything
+                    # before it belonged to a line already given up on.
+                    discarding = False
+
+                    continue
+
                 line = line.strip()
 
                 if not line:
@@ -796,7 +1038,10 @@ class SerialLink:
                 try:
                     frame = json.loads(line)
 
-                except ValueError:
+                # RecursionError as well: pathological nesting exhausts
+                # the stack rather than failing to parse. See
+                # salvage_json for the whole argument.
+                except (ValueError, RecursionError):
                     salvaged = salvage_json(line)
 
                     if salvaged is not None and isinstance(salvaged, dict):

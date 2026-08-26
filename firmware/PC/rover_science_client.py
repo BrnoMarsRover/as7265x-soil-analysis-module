@@ -63,6 +63,7 @@ from serial_link import (                                   # noqa: E402
     LinkError,
     SerialLink,
 )
+from workflow.prompts import OperatorGone                    # noqa: E402
 from workflow.screen import interactive                     # noqa: E402
 
 
@@ -124,7 +125,62 @@ def build_parser():
     return parser
 
 
+def make_console_unbreakable():
+    """
+    Stop a character the terminal cannot encode from killing a screen.
+
+    THE DEFECT THIS EXISTS FOR.
+
+    Sample notes, locations, tasks and hypotheses are free text typed by
+    the operator, and this is a Brno team: "vzorek z pouste, zluty
+    pisek" arrives with hacek and carka in it, and an en dash comes free
+    with most keyboards. Python encodes stdout using the LOCALE's
+    encoding, so on a machine running under LANG=C - a systemd unit, a
+    minimal container, a cron job, or a redirected pipe - that encoding
+    is ASCII, and printing the note raises UnicodeEncodeError from
+    inside print(). The records screen dies with a traceback over a
+    character in a comment field.
+
+    Reproduced: `print_full_sample` on a record whose location contains
+    an en dash, with stdout at ASCII.
+
+    WHY THE ENCODING IS LEFT ALONE AND ONLY THE ERROR HANDLER CHANGES.
+
+    Forcing UTF-8 onto a terminal that is genuinely cp1252 would replace
+    a crash with mojibake, which is a quieter way to be wrong. Changing
+    only the handler keeps a UTF-8 terminal perfect - the normal Linux
+    case - and turns the unrepresentable character into a visible
+    `\\u010d` escape everywhere else. Nothing is silently lost: the
+    ARCHIVE is written by json.dump with ensure_ascii=False through an
+    explicit encoding="utf-8", so the stored text is unaffected by
+    whatever the terminal can show.
+
+    stdin is given the same treatment for the same reason: typing an
+    accented character into a prompt should not raise UnicodeDecodeError
+    out of input().
+    """
+    for stream in (sys.stdout, sys.stderr, sys.stdin):
+        # A stream replaced by a test, a pipe wrapper or an IDE may not
+        # be a TextIOWrapper at all, and reconfigure() is only on those.
+        reconfigure = getattr(stream, "reconfigure", None)
+
+        if reconfigure is None:
+            continue
+
+        try:
+            reconfigure(errors="backslashreplace"
+                        if stream is not sys.stdin else "replace")
+
+        except (OSError, ValueError):
+            # Detached, already closed, or a stream that will not be
+            # reconfigured. The program runs; it just keeps whatever
+            # handler it had.
+            pass
+
+
 def main(argv=None):
+    make_console_unbreakable()
+
     args = build_parser().parse_args(argv)
 
     try:
@@ -175,6 +231,17 @@ def main(argv=None):
         return 1
 
     except KeyboardInterrupt:
+        print()
+
+        return 0
+
+    # Ctrl+D, a finished input script, or a dropped SSH session. The
+    # same clean exit as Ctrl+C: there is nothing wrong, there is just
+    # nobody left to ask. Reaching here is what lets the `finally`
+    # below release the port - the loop that used to spin on EOF never
+    # did, and left /dev/ttyUSB0 held by a client the operator believed
+    # they had closed.
+    except OperatorGone:
         print()
 
         return 0

@@ -317,7 +317,35 @@ def menu_measure(mission, status, view):
 
     except (DeviceError, LinkError) as error:
         print()
-        print("Measurement failed before any spectrum was obtained.")
+
+        # WHICH STAGE, not just "it failed".
+        #
+        # This used to print one sentence for every failure of the
+        # whole out-acquire-back transaction. "Measurement failed
+        # before any spectrum was obtained" is true of all of them and
+        # useful about none: it reads as though nothing happened, and
+        # the case that reached the Linux bench was a 180 degree
+        # transfer that HAD happened and could not be verified.
+        #
+        # The firmware names the stage it was in; the carousel verdict
+        # comes from report_link_error below.
+        stage = (error.data or {}).get("phase")
+
+        STAGE_TEXT = {
+            "PRECHECK": "The measurement was refused before anything "
+                        "moved.",
+            "MOVE_TO_SCANNER": "The carousel was moving the sample to "
+                               "the scanner when this failed.",
+            "ACQUISITION": "The sample reached the scanner and the "
+                           "acquisition failed.",
+        }
+
+        print(STAGE_TEXT.get(
+            stage,
+            "The measurement failed somewhere between the loader and "
+            "the scanner."))
+
+        print("No spectrum was obtained, so none was saved.")
 
         report_link_error(error)
         report_return_move((error.data or {}).get("return_move"))

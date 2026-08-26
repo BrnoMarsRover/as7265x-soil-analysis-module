@@ -662,6 +662,157 @@ checks.equal(sorted(bare), [],
 
 
 # ======================================================================
+checks.section("every silent exception handler is one we have justified")
+
+# `except Exception: pass` is where a programming error becomes
+# legitimate-looking runtime data. The audit of 2026-08-24 walked all
+# 215 handlers in mission code and found every silent one to be
+# best-effort CLEANUP - releasing a port, clearing a buffer, switching
+# a lamp off in a `finally` where the original error must survive.
+#
+# The list is pinned rather than the count, so adding a new silent
+# handler fails here and has to be justified in the same commit that
+# introduces it. That is the whole mechanism: not a ban, a gate.
+
+MISSION_DOMAINS = ("PC", "Science", "BD", "ESP32")
+
+JUSTIFIED_SILENT = {
+    # Releasing the port must never raise: it runs in every finally,
+    # including the ones unwinding a different error.
+    "PC/serial_link.py:close",
+
+    # Clearing the receive buffer after a reset is best effort; failing
+    # to clear it is not a reason to fail the reset.
+    "PC/serial_link.py:hard_reset",
+
+    # Switching the lamps off after an illumination error that has
+    # ALREADY been recorded. If this raised it would replace the
+    # recorded diagnosis with an I2C error about the lamp.
+    "ESP32/protocol.py:handle_led_test",
+    "ESP32/protocol.py:handle_sensor_test_raw",
+
+    # The same, in a `finally` beside a bare `raise`. This one matters
+    # most: raising here would MASK the SensorError being re-raised,
+    # and the operator would be told the lamp failed rather than why
+    # the acquisition did. The lamp state is reported separately, and
+    # read back from the device rather than assumed - see _bulbs_off.
+    "ESP32/sensor.py:acquire_one",
+
+    # The last-resort attempt to tell the host that a response could
+    # not be sent. If even that fails there is nothing further to try,
+    # and the serving loop must not die with it.
+    "ESP32/protocol.py:serve_forever",
+
+    # Returning a UART pin to input while releasing the bus. A pin that
+    # will not reset is not a reason to fail the release.
+    "ESP32/servo.py:release_uart_pins",
+}
+
+
+def enclosing_function(tree, node):
+    """The def a node sits inside, or '<module>'."""
+    best = None
+
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, (ast.FunctionDef,
+                                      ast.AsyncFunctionDef)):
+            continue
+
+        if candidate.lineno <= node.lineno and (
+                best is None or candidate.lineno > best.lineno):
+            end = getattr(candidate, "end_lineno", None)
+
+            if end is None or node.lineno <= end:
+                best = candidate
+
+    return best.name if best else "<module>"
+
+
+silent = []
+
+for path, tree in parsed.items():
+    domain = path.relative_to(FIRMWARE).parts[0]
+
+    if domain not in MISSION_DOMAINS:
+        continue
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+
+        broad = node.type is None or (
+            isinstance(node.type, ast.Name)
+            and node.type.id in ("Exception", "BaseException")
+        )
+
+        if not broad:
+            continue
+
+        if not (len(node.body) == 1 and isinstance(node.body[0], ast.Pass)):
+            continue
+
+        silent.append("{}:{}".format(
+            relative(path), enclosing_function(tree, node)))
+
+unjustified = sorted(set(silent) - JUSTIFIED_SILENT)
+
+checks.equal(unjustified, [],
+             "no `except Exception: pass` outside the justified cleanup "
+             "list - a new one is a new place a programming error can "
+             "become plausible data")
+
+checks.ok(len(silent) <= len(JUSTIFIED_SILENT) + 2,
+          "and there are {} of them in total, all cleanup".format(
+              len(silent)))
+
+
+# ======================================================================
+checks.section("a broad handler always leaves a trace")
+
+# The other half of the same rule. A handler that catches Exception and
+# neither re-raises, records, reports nor returns has swallowed
+# something without telling anyone.
+
+swallowed = []
+
+for path, tree in parsed.items():
+    domain = path.relative_to(FIRMWARE).parts[0]
+
+    if domain not in MISSION_DOMAINS:
+        continue
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler):
+            continue
+
+        if not (isinstance(node.type, ast.Name)
+                and node.type.id in ("Exception", "BaseException")):
+            continue
+
+        where = "{}:{}".format(relative(path),
+                               enclosing_function(tree, node))
+
+        if where in JUSTIFIED_SILENT:
+            continue
+
+        acts = False
+
+        for child in ast.walk(node):
+            if isinstance(child, (ast.Raise, ast.Assign, ast.AugAssign,
+                                  ast.Return, ast.Call)):
+                acts = True
+
+                break
+
+        if not acts:
+            swallowed.append("{}:{}".format(relative(path), node.lineno))
+
+checks.equal(sorted(swallowed), [],
+             "every broad handler either re-raises, records the failure, "
+             "returns a documented value or reports it")
+
+
+# ======================================================================
 checks.section("nothing imports a module that does not exist")
 
 # `from BD.repositories.calibrations import ...` parses perfectly and

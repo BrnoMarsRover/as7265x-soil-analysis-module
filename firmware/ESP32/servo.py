@@ -52,7 +52,7 @@ class ServoError(Exception):
 
     code = "SERVO_ERROR"
 
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, motion=None):
         super().__init__(message)
 
         self.message = str(message)
@@ -60,8 +60,30 @@ class ServoError(Exception):
         if code is not None:
             self.code = str(code)
 
+        # WHAT THE MECHANISM DID BEFORE THIS FAILURE.
+        #
+        # Observed on the Linux bench, 2026-08-24: a measurement's
+        # 180 degree transfer failed with SERVO_POSITION_MISMATCH, and
+        # the operator was told "carousel: nothing was moved" - while
+        # the carousel had visibly turned. The failure had no way to
+        # say otherwise, so every layer above it defaulted to the
+        # safest-sounding sentence rather than the true one.
+        #
+        # "Nothing moved" and "something moved and I cannot prove
+        # where it stopped" call for opposite physical actions from an
+        # operator standing at the rover. They must never collapse
+        # into one message, so every movement failure now carries the
+        # evidence: whether a goal was written, and what the encoder
+        # read before and after.
+        self.motion = dict(motion or {})
+
     def as_dict(self):
-        return {"code": self.code, "message": self.message}
+        report = {"code": self.code, "message": self.message}
+
+        if self.motion:
+            report["motion"] = dict(self.motion)
+
+        return report
 
 
 class ServoNotSupportedError(ServoError):
@@ -1523,21 +1545,51 @@ class ST3215:
         self.last_move = record
 
         if not within:
+            # The goal HAS been written and the poll loop HAS run, so
+            # whatever else is true, this is not a movement that never
+            # started. `travelled` is what the encoder actually saw.
+            travelled = centred_error(position - start, self.counts_per_rev)
+
+            motion = {
+                "commanded": True,
+                "goal_written": True,
+                "start_position": start,
+                "actual_position": position,
+                "expected_position": expected,
+                "travelled_counts": travelled,
+                "travelled_degrees": round(
+                    self.counts_to_degrees(travelled), 2
+                ),
+                "encoder_moved": abs(travelled) > 0,
+                "position_error": error,
+                "tolerance_counts": config.ST3215_POSITION_TOLERANCE,
+                "settled": settled,
+            }
+
             if not settled:
                 raise ST3215MoveTimeoutError(
                     "Servo {} did not reach its target within {} ms: {} "
-                    "counts were requested and the encoder is still {} "
-                    "counts away from position {}.".format(
-                        self.servo_id, timeout_ms, requested, error, expected
-                    )
+                    "counts were requested, the encoder moved {} counts "
+                    "and is still {} counts away from position {}. The "
+                    "carousel HAS moved; its position is now "
+                    "unknown.".format(
+                        self.servo_id, timeout_ms, requested, travelled,
+                        error, expected
+                    ),
+                    motion=motion,
                 )
 
             raise ST3215PositionError(
-                "Servo {} stopped {} counts ({:.2f} deg) away from "
-                "position {}, outside the {} count tolerance.".format(
-                    self.servo_id, error, self.counts_to_degrees(error),
+                "Servo {} was commanded {} counts, the encoder moved {} "
+                "counts ({:.2f} deg), and it stopped at position {} - {} "
+                "counts from the target {}, outside the {} count "
+                "tolerance. THE CAROUSEL HAS MOVED and its position is "
+                "now unknown.".format(
+                    self.servo_id, requested, travelled,
+                    self.counts_to_degrees(travelled), position, error,
                     expected, config.ST3215_POSITION_TOLERANCE
-                )
+                ),
+                motion=motion,
             )
 
         return record

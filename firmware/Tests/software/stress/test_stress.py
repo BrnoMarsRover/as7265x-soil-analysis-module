@@ -102,9 +102,19 @@ try:
                  "every request had its own id, with no wraparound "
                  "collision over {} of them".format(SERIAL_CYCLES))
 
-    numbers = [int(value) for value in ids]
-    checks.equal(numbers, sorted(numbers),
-                 "and the ids only ever increase")
+    # `<nonce>-<counter>`: one nonce for the session, a counter that
+    # only goes up. Split rather than int()-ed, because the id is a
+    # string by design - see _next_request_id.
+    nonces = {value.rsplit("-", 1)[0] for value in ids}
+    counters = [int(value.rsplit("-", 1)[1]) for value in ids]
+
+    checks.equal(len(nonces), 1,
+                 "every request carries the SAME session nonce")
+    checks.equal(counters, sorted(counters),
+                 "and a counter that only ever increases")
+    checks.equal(counters, list(range(1, SERIAL_CYCLES + 1)),
+                 "with no gaps and no repeats across {} of "
+                 "them".format(SERIAL_CYCLES))
 
     checks.ok(link.bytes_read > SERIAL_CYCLES,
               "the byte counter accumulated ({} bytes), so the cost of "

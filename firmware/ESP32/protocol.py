@@ -1621,14 +1621,25 @@ class Protocol:
 
         # Prove the sensor is usable BEFORE moving anything. A sensor
         # fault should not leave a sample stranded at the scanner.
+        #
+        # probe=True because that promise needs evidence, not memory:
+        # without it a connector that came loose since the last
+        # measurement passed this check, and the carousel made the
+        # whole 180 degree journey before anyone found out.
         try:
-            self.sensor.ensure_ready()
+            self.sensor.ensure_ready(probe=True)
 
         except SensorError as error:
+            # `moved: False` IS defensible here and nowhere else in this
+            # handler: the sensor is proved usable BEFORE anything is
+            # commanded, precisely so that a sensor fault cannot strand
+            # a sample at the scanner. Nothing has been asked to move.
             raise self._sensor_error(
                 error,
                 {
                     "moved": False,
+                    "motion": self.carousel.MOTION_NOT_STARTED,
+                    "phase": "PRECHECK",
                     "carousel": self.carousel.status(),
                     "message": "Nothing was moved; the sample is still at "
                                "the loading position.",
@@ -1643,11 +1654,22 @@ class Protocol:
             move = self.carousel.move_selected_to_scanner()
 
         except CarouselError as error:
-            raise CommandError(
-                error.code,
-                error.message,
-                data={"moved": False, "carousel": self.carousel.status()},
-            )
+            # `moved` COMES FROM THE FAILURE, NOT FROM THIS LINE.
+            #
+            # It used to be hardcoded False here. On the Linux bench a
+            # half turn failed its position check after the carousel
+            # had visibly rotated, and this line turned that into
+            # "carousel: nothing was moved" on the operator's screen -
+            # a statement about the physical world that the firmware
+            # was in no position to make, and the opposite of the
+            # truth. The carousel error knows what the encoder saw.
+            detail = dict(error.data or {})
+            detail["carousel"] = self.carousel.status()
+            detail.setdefault("moved", True)
+            detail.setdefault("motion", self.carousel.MOTION_UNKNOWN)
+            detail["phase"] = "MOVE_TO_SCANNER"
+
+            raise CommandError(error.code, error.message, data=detail)
 
         if config.SCAN_SETTLE_TIME > 0:
             time.sleep(config.SCAN_SETTLE_TIME)
@@ -1667,7 +1689,12 @@ class Protocol:
             raise self._sensor_error(
                 error,
                 {
+                    # The transfer succeeded, so the carousel HAS moved
+                    # and the sample was at the scanner when this
+                    # failed. `recovery` says whether it got back.
                     "moved": True,
+                    "motion": self.carousel.MOTION_MOVED,
+                    "phase": "ACQUISITION",
                     "return_move": recovery,
                     "carousel": self.carousel.status(),
                 },

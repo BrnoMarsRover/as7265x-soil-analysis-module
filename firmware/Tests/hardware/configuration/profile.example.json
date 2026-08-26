@@ -1,0 +1,46 @@
+{
+  "name": "freya-1-comp (example - copy this file before editing)",
+  "description": "The Linux main computer. Fill in the USB serial number from the B0 inventory before the first real run; the values below are placeholders and the framework will refuse to open a device it cannot identify.",
+
+  "port": null,
+  "port_by_id": "usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0",
+  "usb_vid": "0x10C4",
+  "usb_pid": "0xEA60",
+  "usb_serial": null,
+
+  "baudrate": 115200,
+  "command_timeout_s": 10.0,
+  "connect_timeout_s": 15.0,
+  "measure_timeout_s": 180.0,
+
+  "limits": {
+    "max_open_cycles": 2000,
+    "max_requests": 20000,
+    "max_measurements": 5000,
+    "max_movements": 5000,
+    "max_missions": 200
+  },
+
+  "mechanism": {
+    "gear_ratio_servo_to_carousel": 1.0,
+    "loading_to_scanner_deg": 180.0,
+    "slot_count": null,
+    "provenance": "ASSUMED"
+  },
+
+  "motion": {
+    "max_degrees_per_leg": 180.0,
+    "safe_speed": null,
+    "safe_acceleration": null
+  },
+
+  "illumination": {
+    "max_hold_ms": 1000,
+    "sources": ["white", "uv", "ir"]
+  },
+
+  "artifacts": null,
+  "operator": null,
+
+  "notes": "gear_ratio_servo_to_carousel is ASSUMED to be 1.0 and is one of the things H-002 exists to settle: if the mechanism has a reduction between the ST3215 output shaft and the carousel plate, every angle in the firmware is wrong by that ratio. Do not change it to make a test pass - change it only from a measurement, and set provenance to MEASURED with the run id in notes when you do. slot_count is null so the production value (4) is used; do not put a second copy of it here."
+}

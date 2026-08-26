@@ -416,6 +416,26 @@ def interactive(link):
             except TimeoutError as error:
                 print("Timeout: {}".format(error))
 
+            # THE SAME SET AS THE MAIN LOOP BELOW, and it has to be.
+            #
+            # These two loops dispatch to OVERLAPPING screens - `t`
+            # reaches the whole tools menu from here, and the main
+            # screen reaches it too - but they were not catching the
+            # same things: the main loop handled StorageError and this
+            # one did not. A tools screen that let a failed write
+            # through would therefore be a diagnosed message from one
+            # screen and a dead client from the other, decided by
+            # whether the carousel happened to be synchronized.
+            #
+            # No screen reachable from here does propagate one today.
+            # That is a fact about the current screens rather than a
+            # property of this loop, and it is not a fact worth
+            # depending on.
+            except StorageError as error:
+                print()
+                print("Storage error: {} ({})".format(
+                    error.message, error.code))
+
             except KeyboardInterrupt:
                 print()
                 print("Cancelled.")

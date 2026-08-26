@@ -43,7 +43,7 @@ firmware/
 ├── PC/         operator workflow and orchestration
 ├── Science/    every scientific formula and the Decision Model
 ├── BD/         calibration, DB1/DB2/DB3, training data, records
-├── Tests/      five suites
+├── Tests/      the software campaign, and the hardware backlog
 ├── tools/      device.py — deploy and verify the ESP32
 └── research/   non-production: experiments, ERC planning, training
 ```
@@ -66,7 +66,7 @@ Tests ───► everything
 tools ───► PC/serial_link.py
 ```
 
-Forbidden, and each enforced by a check in `Tests/test_architecture.py`:
+Forbidden, and each enforced by a check in `Tests/software/static/test_architecture.py`:
 
 ```
 ESP32 ──► Science, BD, PC        the device cannot see a database
@@ -186,11 +186,34 @@ PORT_DENIED         it exists, nothing holds it, and this account may
                     not open it - Linux serial group membership
 PORT_OPEN_FAILED    it exists, is free, and would not open
 PORT_LOST           it disappeared mid-request
+PORT_CLOSED         the link is closed, usually because it was lost.
+                    Every hardware method answers this rather than
+                    raising - see below
 PROTOCOL_TIMEOUT    the port opened; nothing answered
 DEVICE_AT_REPL      MicroPython is at >>>, not serving
 MALFORMED_RESPONSE  something answered and it was not a frame
+INVALID_REQUEST     we were asked to send something that is not legal
+                    JSON, and refused before sending it
 DEVICE_ERROR        the firmware answered "ok": false
 ```
+
+**A closed link is an operational condition, not a programming error.**
+Every method on `SerialLink` answers a closed link with a `PORT_CLOSED`
+LinkError. It used to raise a bare `RuntimeError`, and on the Linux
+bench that ended the application: `/dev/ttyUSB0` disappeared, the link
+correctly closed itself, and the next status refresh from the menu loop
+was an uncaught traceback. 39 places in the PC layer catch `LinkError`;
+exactly one caught `RuntimeError`.
+
+**Matching an answer to its question** needs three things to agree: the
+request id, the presence of `ok`, and the command name. Request ids are
+`<24 random bits>-<counter>`, because two earlier designs collided
+across sessions — a counter from 1, and a clock-seeded counter that
+wrapped every 1000 seconds.
+
+**A movement failure says what the mechanism did.** `NOT_STARTED`,
+`MOVED` or `UNKNOWN` — never a bare "nothing moved", which an operator
+standing at the rover acts on physically.
 
 ---
 

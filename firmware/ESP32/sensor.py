@@ -906,7 +906,7 @@ class SensorRuntime:
 
         return driver
 
-    def ensure_ready(self, force_reinit=False):
+    def ensure_ready(self, force_reinit=False, probe=False):
         """
         Return a working driver, bringing the sensor up if necessary.
 
@@ -914,9 +914,39 @@ class SensorRuntime:
         test and status all come through here, so there is no second
         sensor implementation that can succeed while this one reports a
         failure.
+
+        `probe` costs one register read and turns "I remember this
+        sensor working" into "this sensor answered just now". Callers
+        that are about to MOVE something on the strength of the answer
+        pass it; status displays and repeated reads inside one
+        acquisition do not.
         """
         if self.ready and self.driver is not None and not force_reinit:
-            return self.driver
+            if not probe:
+                return self.driver
+
+            # A CACHED FLAG IS NOT EVIDENCE THE BUS IS STILL THERE.
+            #
+            # `handle_measure_raw` calls this to "prove the sensor is
+            # usable BEFORE moving anything", so that a sensor fault
+            # cannot leave a sample stranded at the scanner. Returning
+            # a remembered driver proves nothing: a connector that came
+            # loose since the last measurement passes, the carousel
+            # turns 180 degrees, and the acquisition fails with the
+            # sample at the far side.
+            #
+            # One register read is enough to tell a live bus from a
+            # dead one, and it costs a few hundred microseconds against
+            # a movement that takes seconds. If it fails, fall through
+            # to the full bring-up below, which is the existing
+            # recovery path and may well succeed.
+            try:
+                self.driver.read_temperatures()
+
+                return self.driver
+
+            except Exception:                          # noqa: BLE001
+                self.ready = False
 
         self.ready = False
         self.driver = None

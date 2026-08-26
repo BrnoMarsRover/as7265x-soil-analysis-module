@@ -626,6 +626,48 @@ class Carousel:
     # movement execution
     # ------------------------------------------------------------------
 
+    # What a failed movement did to the mechanism. Three cases, because
+    # they call for three different physical actions from an operator
+    # standing at the rover.
+    #
+    #   NOT_STARTED   the goal was never written. The carousel is
+    #                 exactly where it was; nothing needs checking.
+    #   MOVED         the encoder measured travel, and the movement
+    #                 could not be verified. The sample is somewhere
+    #                 between where it was and where it was going.
+    #   UNKNOWN       a goal was written and we cannot say whether the
+    #                 mechanism responded. Treated as MOVED for safety.
+    #
+    # These used to collapse into a single "moved: False", which told
+    # an operator on the Linux bench that nothing had moved while the
+    # carousel had visibly turned 180 degrees.
+    MOTION_NOT_STARTED = "NOT_STARTED"
+    MOTION_MOVED = "MOVED"
+    MOTION_UNKNOWN = "UNKNOWN"
+
+    @staticmethod
+    def motion_verdict(error):
+        """
+        What the mechanism did, from the evidence the driver attached.
+
+        Conservative by construction: a failure that carries no
+        evidence is UNKNOWN, never NOT_STARTED. Claiming the carousel
+        did not move is a claim about the physical world, and it may
+        only be made when the driver can support it.
+        """
+        motion = dict(getattr(error, "motion", None) or {})
+
+        if not motion:
+            return Carousel.MOTION_UNKNOWN, motion
+
+        if not motion.get("commanded"):
+            return Carousel.MOTION_NOT_STARTED, motion
+
+        if motion.get("encoder_moved"):
+            return Carousel.MOTION_MOVED, motion
+
+        return Carousel.MOTION_UNKNOWN, motion
+
     def _movement_failed(self, error, reason, requested):
         """
         Turn a backend failure into an invalidated position and a report.
@@ -633,22 +675,53 @@ class Carousel:
         The firmware never falls back to assuming the movement worked, and
         it never falls back from one backend's failure to the other
         backend's method. Losing position is a fault to be reported.
+
+        The report now also says WHAT THE MECHANISM DID, which is a
+        different question from whether the command succeeded. See
+        motion_verdict above.
         """
         measured = self._safe_position_report()
+        verdict, motion = self.motion_verdict(error)
 
         self.invalidate_position(reason)
 
+        if verdict == self.MOTION_NOT_STARTED:
+            consequence = (
+                "Nothing was moved - the movement was refused before the "
+                "servo was commanded, so the carousel is where it was."
+            )
+
+        elif verdict == self.MOTION_MOVED:
+            consequence = (
+                "THE CAROUSEL MOVED and stopped somewhere that could not "
+                "be verified. Look at the mechanism before assuming which "
+                "slot is where."
+            )
+
+        else:
+            consequence = (
+                "The servo was commanded and it is not known whether the "
+                "carousel moved. Treat its position as unknown and look "
+                "at the mechanism."
+            )
+
         return CarouselError(
             error.code,
-            "{} failed ({}). Position tracking has been invalidated; "
+            "{} failed ({}). {} Position tracking has been invalidated; "
             "re-synchronize before moving again.".format(
-                reason, error.message
+                reason, error.message, consequence
             ),
             data={
                 "requested": requested,
                 "measured_travel_deg": measured,
                 "position_valid": False,
                 "position_measurable": measured is not None,
+
+                # The three fields every layer above reads instead of
+                # inventing its own answer.
+                "motion": verdict,
+                "moved": verdict != self.MOTION_NOT_STARTED,
+                "motion_detail": motion,
             },
         )
 

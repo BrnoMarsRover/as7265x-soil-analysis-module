@@ -96,9 +96,17 @@ SUITES = (
      "unit", "zero, NaN, infinity, empty, wrong length"),
     ("unit/test_prompts.py",
      "unit", "operator input, abused"),
+    ("unit/test_display_shapes.py",
+     "unit", "every result shape the operator can be shown"),
+    ("unit/test_fakes.py",
+     "unit", "the test infrastructure, tested"),
+    ("unit/test_science_properties.py",
+     "unit", "invariants, differential checks, floats and JSON"),
 
     ("contracts/test_pc_firmware.py",
      "contracts", "every command, argument and response key"),
+    ("contracts/test_request_identity.py",
+     "contracts", "an answer can only match its own question"),
 
     ("integration/test_esp32.py",
      "integration", "protocol, drivers, carousel, on fake hardware"),
@@ -106,8 +114,14 @@ SUITES = (
      "integration", "serial lifecycle, error kinds, measurement order"),
     ("integration/test_screens.py",
      "integration", "every screen entered, and abused"),
+    ("integration/test_records.py",
+     "integration", "the records browser, through its real flows"),
     ("integration/test_mission.py",
      "integration", "a whole session, PC screens to fake firmware"),
+    ("integration/test_screens_failing.py",
+     "integration", "every screen with the archive refusing to write"),
+    ("integration/test_full_mission.py",
+     "integration", "whole missions: happy, hostile, pressured, long"),
 
     ("fault_injection/test_serial_faults.py",
      "fault", "framing, truncation, noise, disconnect, stale data"),
@@ -115,14 +129,35 @@ SUITES = (
      "fault", "sensor and servo failures, through the firmware"),
     ("fault_injection/test_filesystem_faults.py",
      "fault", "missing, unreadable, malformed and failing writes"),
+    ("fault_injection/test_protocol_limits.py",
+     "fault", "frame sizes, nesting, echoes, unsolicited frames"),
+    ("fault_injection/test_resource_faults.py",
+     "fault", "memory, descriptors, disk, inodes, permissions"),
+    ("fault_injection/test_firmware_faults.py",
+     "fault", "the firmware's own error paths, driven"),
+    ("fault_injection/test_handler_closure.py",
+     "fault", "the handlers nothing had ever entered"),
+    ("fault_injection/test_loader_closure.py",
+     "fault", "loaders, optional layers and the entry point"),
+    ("fault_injection/test_residual_handlers.py",
+     "fault", "the last handlers nothing else reaches"),
 
     ("state_machine/test_carousel_states.py",
      "state", "position validity across every transition"),
     ("state_machine/test_sample_lifecycle.py",
      "state", "a sample from prepared to saved, failing at each step"),
+    ("state_machine/test_reset_recovery.py",
+     "state", "PC and ESP32 restarts, in every combination"),
+    ("state_machine/test_mission_model.py",
+     "state", "a model of the whole mission, walked and compared"),
 
     ("linux/test_linux.py",
      "linux", "ports, permissions, paths, case, working directory"),
+    ("linux/test_linux_runtime.py",
+     "linux", "errno classes, device lifecycle, locale, clock, deps"),
+
+    ("process/test_lifecycle.py",
+     "process", "signals, EOF, interruption and restart"),
 
     ("entrypoints/test_entrypoints.py",
      "entrypoints", "importing and --help must not act"),
@@ -138,6 +173,8 @@ SUITES = (
 
     ("regression/test_regressions.py",
      "regression", "one test per bug that reached the bench"),
+    ("regression/test_linux_bench.py",
+     "regression", "the failures observed on the real Linux bench"),
 )
 
 
@@ -189,7 +226,27 @@ def main(argv=None):
 
         return 0
 
-    pattern = argv[0] if argv else None
+    # --shuffle=N runs the suites in a deterministic scrambled order.
+    #
+    # WHY. Every suite here is a separate process, so a suite cannot
+    # leak an object into the next one - but it CAN leak a file, a
+    # temporary directory, or an assumption about what ran before it.
+    # Running the same set in a different order, and getting the same
+    # count, is what turns "the suites pass" into "the suites pass
+    # independently of each other".
+    #
+    # The seed is required and printed, so a failure is reproducible.
+    seed = None
+    positional = []
+
+    for argument in argv:
+        if argument.startswith("--shuffle="):
+            seed = int(argument.split("=", 1)[1])
+
+        else:
+            positional.append(argument)
+
+    pattern = positional[0] if positional else None
 
     suites = [
         entry for entry in SUITES
@@ -201,9 +258,19 @@ def main(argv=None):
 
         return 2
 
+    if seed is not None:
+        import random
+
+        suites = list(suites)
+        random.Random(seed).shuffle(suites)
+
     print("=" * 72)
     print("Freya science module - SOFTWARE verification (no hardware)")
     print("=" * 72)
+
+    if seed is not None:
+        print("  suite order shuffled with seed {}".format(seed))
+
     print()
 
     before = watch()

@@ -179,13 +179,17 @@ def link_with(port, **kwargs):
     """
     A SerialLink whose open() produces the given fake port.
 
-    The request counter is reset to zero, so the ids are "1", "2", ...
-    and a fixture can script an answer to a known id. Production seeds
-    the counter from the clock instead - see `_request_id` in
-    serial_link.py and the stale-frame section below, which is the
-    check that made that necessary.
+    The session nonce and the counter are both PINNED, so the ids are
+    "T-1", "T-2", ... and a fixture can script an answer to a known id.
+
+    Production draws the nonce from os.urandom and starts the counter
+    at zero - see `_next_request_id` in serial_link.py, and
+    contracts/test_request_identity.py, which is the suite that made
+    the nonce necessary. Pinning it here is what lets these fixtures
+    stay readable; the randomness itself is tested there.
     """
     link = SerialLink("COM_TEST", **kwargs)
+    link.session = "T"
     link._request_id = 0
 
     def fake_serial():
@@ -585,7 +589,7 @@ link_stray.close()
 
 # A device error is the firmware speaking, not a transport failure.
 refuse = FakePort(answer=False, script=[
-    b'{"request_id": "1", "ok": false, "cmd": "select_slot", '
+    b'{"request_id": "T-1", "ok": false, "cmd": "select_slot", '
     b'"error": {"code": "SERVO_NOT_CONNECTED", "message": "no servo"}}\n',
 ])
 link_refuse = link_with(refuse, timeout=0.5)
@@ -1161,11 +1165,48 @@ checks.ok(bench_add_at < bench_analyse_at,
           "same ordering the mission workflow uses")
 
 # ---- saving twice does not write twice -------------------------------
+#
+# THIS CASE DID NOT TEST WHAT IT SAID, and the A.3 EOF fix is what
+# exposed it. The script was ["2", "3"]: "2" chose Save, and "3" was
+# then consumed as the SAMPLE ID, so the record was named "3", the six
+# optional metadata prompts were answered by a script that had run out,
+# and the screen left through the `not selection` branch. It saved
+# ONCE, never revisited the menu, and asserted nothing at all - three
+# ways of not being the test its comment described.
+#
+# It only passed because `ask` turned end-of-input into a blank answer.
+# Once EOF became OperatorGone - because a closed stdin was spinning
+# the real menus forever - this stopped working, which is the correct
+# outcome: the test was relying on the defect.
+#
+# Rewritten to do what it always claimed. The sample is named, the
+# metadata prompts are answered deliberately, Save is chosen a SECOND
+# time, and the screen is left on purpose.
 result, output, script = with_answers(
-    ["2", "3"],
+    ["2", "S-DOUBLE",                       # save, and name it
+     "", "", "", "", "", "",                # six optional metadata fields
+     "2",                                   # save again - the actual test
+     "3"],                                  # and leave deliberately
     lambda: records.offer_measurement_disposition(
         bench, acquisition, {}, measurement_id="M_TEST"),
 )
+
+checks.equal(result[0], "S-DOUBLE",
+             "the acquisition is saved as a Sample under the name given")
+
+checks.ok("ALREADY SAVED" in output,
+          "and choosing Save a second time says ALREADY SAVED rather "
+          "than saving again")
+
+saved_ids = [entry.get("sample_id") for entry in bench.store.summaries()]
+
+checks.equal(saved_ids.count("S-DOUBLE"), 1,
+             "and the archive holds exactly ONE record for it - the "
+             "second Save wrote nothing")
+
+checks.equal(script.answers, [],
+             "and the script was consumed exactly, so the screen asked "
+             "the questions this case thinks it asked")
 
 Path(bench_handle.name).unlink(missing_ok=True)
 

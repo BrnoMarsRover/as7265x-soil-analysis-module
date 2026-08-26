@@ -93,27 +93,62 @@ def paired(measured, reference, channels=None):
     return pairs
 
 
+def _defined(compute):
+    """
+    A distance, or None if it does not exist as a real number.
+
+    `paired()` already drops a channel whose INPUT is not finite. This
+    is the other half: finite inputs can still produce a result that is
+    not.
+
+    Squaring overflows above about 1.3e154, and Python's `**` raises
+    OverflowError rather than returning infinity - so `rmse` and
+    `euclidean` raised out of the metric, while `mae`, which only adds,
+    returned a bare `inf`. Both are wrong in the same way and neither
+    is this module's vocabulary: everywhere else, a value that is not a
+    real number is None, and `_finite` exists to say so.
+
+    An `inf` is the worse of the two. It is a NUMBER, so it ranks, it
+    formats, and it reaches a metric table on an operator's screen as
+    though it were a measurement.
+
+    Values this large do not come from the sensor - a calibrated
+    AS7265x channel is five figures - so this guards corrupted data
+    rather than physics. It cannot change any result in range: a
+    finite answer is returned exactly as computed.
+    """
+    try:
+        value = compute()
+
+    except (OverflowError, ValueError, ZeroDivisionError):
+        return None
+
+    return value if _finite(value) else None
+
+
 def rmse(pairs):
     if not pairs:
         return None
 
-    total = sum((left - right) ** 2 for _c, left, right in pairs)
-
-    return math.sqrt(total / len(pairs))
+    return _defined(lambda: math.sqrt(
+        sum((left - right) ** 2 for _c, left, right in pairs) / len(pairs)
+    ))
 
 
 def mae(pairs):
     if not pairs:
         return None
 
-    return sum(abs(left - right) for _c, left, right in pairs) / len(pairs)
+    return _defined(lambda: sum(
+        abs(left - right) for _c, left, right in pairs) / len(pairs))
 
 
 def euclidean(pairs):
     if not pairs:
         return None
 
-    return math.sqrt(sum((left - right) ** 2 for _c, left, right in pairs))
+    return _defined(lambda: math.sqrt(
+        sum((left - right) ** 2 for _c, left, right in pairs)))
 
 
 def weighted_euclidean(pairs, weights):
@@ -128,36 +163,45 @@ def weighted_euclidean(pairs, weights):
     if not pairs:
         return None
 
-    total = 0.0
-    total_weight = 0.0
+    # THE WHOLE COMPUTATION INSIDE THE GUARD, not just the return: the
+    # squares are accumulated in the loop, so that is where an overflow
+    # happens and where it has to be caught.
+    def compute():
+        total = 0.0
+        total_weight = 0.0
 
-    for channel, left, right in pairs:
-        weight = float((weights or {}).get(channel, 1.0))
+        for channel, left, right in pairs:
+            weight = float((weights or {}).get(channel, 1.0))
 
-        if weight <= 0:
-            continue
+            if weight <= 0:
+                continue
 
-        total += weight * (left - right) ** 2
-        total_weight += weight
+            total += weight * (left - right) ** 2
+            total_weight += weight
 
-    if total_weight <= 0:
-        return None
+        if total_weight <= 0:
+            return None
 
-    return math.sqrt(total / total_weight)
+        return math.sqrt(total / total_weight)
+
+    return _defined(compute)
 
 
 def cosine(pairs):
     if not pairs:
         return None
 
-    dot = sum(left * right for _c, left, right in pairs)
-    left_norm = math.sqrt(sum(left * left for _c, left, _r in pairs))
-    right_norm = math.sqrt(sum(right * right for _c, _l, right in pairs))
+    def compute():
+        dot = sum(left * right for _c, left, right in pairs)
+        left_norm = math.sqrt(sum(left * left for _c, left, _r in pairs))
+        right_norm = math.sqrt(sum(right * right for _c, _l, right in pairs))
 
-    if left_norm <= 0 or right_norm <= 0:
-        return None
+        if left_norm <= 0 or right_norm <= 0:
+            return None
 
-    return max(-1.0, min(1.0, dot / (left_norm * right_norm)))
+        return max(-1.0, min(1.0, dot / (left_norm * right_norm)))
+
+    return _defined(compute)
 
 
 def spectral_angle_degrees(pairs):
@@ -182,20 +226,26 @@ def pearson_r(pairs):
     if len(pairs) < 3:
         return None
 
-    n = float(len(pairs))
-    left_mean = sum(left for _c, left, _r in pairs) / n
-    right_mean = sum(right for _c, _l, right in pairs) / n
+    def compute():
+        n = float(len(pairs))
+        left_mean = sum(left for _c, left, _r in pairs) / n
+        right_mean = sum(right for _c, _l, right in pairs) / n
 
-    covariance = sum(
-        (left - left_mean) * (right - right_mean) for _c, left, right in pairs
-    )
-    left_variance = sum((left - left_mean) ** 2 for _c, left, _r in pairs)
-    right_variance = sum((right - right_mean) ** 2 for _c, _l, right in pairs)
+        covariance = sum(
+            (left - left_mean) * (right - right_mean)
+            for _c, left, right in pairs
+        )
+        left_variance = sum(
+            (left - left_mean) ** 2 for _c, left, _r in pairs)
+        right_variance = sum(
+            (right - right_mean) ** 2 for _c, _l, right in pairs)
 
-    if left_variance <= 0 or right_variance <= 0:
-        return None
+        if left_variance <= 0 or right_variance <= 0:
+            return None
 
-    return covariance / math.sqrt(left_variance * right_variance)
+        return covariance / math.sqrt(left_variance * right_variance)
+
+    return _defined(compute)
 
 
 def all_metrics(measured, reference, channels=None, weights=None):

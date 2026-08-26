@@ -309,23 +309,22 @@ finally:
 #
 # Before the fix, step 4 returned the previous session's measurement as
 # the answer to the new session's first command.
+#
+# THE ID IS FORGED TO MATCH ON PURPOSE. Session nonces now make a real
+# collision vanishingly unlikely, so the stale frame here is built with
+# the exact id the link is ABOUT to use. That keeps the second defence
+# - the command-name check - under test instead of letting the nonce
+# quietly make this case unreachable and the check untested.
 # ----------------------------------------------------------------------
 
 link, port, clock, installed = linked(link_kwargs={"timeout": 2.0})
-first_id = str(link._request_id + 1)
 
-stale = (json.dumps({"request_id": first_id, "ok": True,
-                     "cmd": "measure_raw",
-                     "data": {"illuminations": {}, "stale": True}})
-         + "\n").encode("utf-8")
+# The id the next request will carry, without consuming it.
+colliding_id = "{}-{}".format(link.session, link._request_id + 1)
 
-installed.restore()
-link.close()
-
-link, port, clock, installed = linked(link_kwargs={"timeout": 2.0})
-link._request_id = 0
 port._enqueue(
-    (json.dumps({"request_id": "1", "ok": True, "cmd": "measure_raw",
+    (json.dumps({"request_id": colliding_id, "ok": True,
+                 "cmd": "measure_raw",
                  "data": {"illuminations": {}, "stale": True}})
      + "\n").encode("utf-8"))
 
@@ -354,11 +353,14 @@ link, port, clock, installed = linked()
 other, _p, _c, other_installed = linked()
 
 try:
-    checks.ok(link._request_id >= 1,
-              "the request counter is seeded from the clock, so two "
-              "sessions started at different times do not number their "
-              "first request the same")
-    checks.ok(str(link._request_id + 1) != "1",
+    checks.ok(link.session != other.session,
+              "two sessions built moments apart have DIFFERENT nonces - "
+              "the previous design seeded the counter from the clock "
+              "modulo a million, which wrapped every 1000 seconds and "
+              "gave two clients started 16 minutes apart identical ids")
+    checks.ok(link.session and len(link.session) >= 6,
+              "the session carries a random nonce")
+    checks.ok(link._next_request_id() != "1",
               "and no session's first request is ever id \"1\" - the id "
               "that every session used before this, and therefore the "
               "one most likely to be lying in the buffer")

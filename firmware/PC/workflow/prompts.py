@@ -18,19 +18,70 @@ import sys
 import textwrap
 
 
-def ask(prompt, default=""):
+class OperatorGone(BaseException):
+    """
+    There is no operator any more: stdin reached end of input.
+
+    A BaseException, deliberately, and for the same reason
+    KeyboardInterrupt is one. This is not a failure of anything - it is
+    the terminal closing - and it must unwind every menu it passes
+    through rather than being caught by a handler written for an
+    operational error. `except Exception` around a save or an analysis
+    should not be able to swallow the fact that the session has ended.
+    """
+
+
+def ask(prompt, default="", eof_ends_session=False):
+    """
+    One question. A bare Enter gives `default`.
+
+    `eof_ends_session` separates the two things Ctrl+D can mean. At a
+    free-text field it means "leave this blank", and returning the
+    default is right. At a MENU it means the terminal is gone, and
+    returning the default is what produced the defect below.
+    """
     try:
         answer = input("{}: ".format(prompt)).strip()
 
     except EOFError:
+        if eof_ends_session:
+            raise OperatorGone(
+                "stdin reached end of input; no menu selection can "
+                "follow"
+            )
+
         return default
 
     return answer or default
 
 
 def choose(prompt="Select"):
-    """Menu input, normalized. A bare Enter is not an unknown option."""
-    return ask(prompt).strip().lower()
+    """
+    Menu input, normalized. A bare Enter is not an unknown option.
+
+    THE DEFECT THIS RAISES FOR.
+
+    Every menu in the application is a `while True` around this
+    function, and each one leaves by its own key - "q" at the top level,
+    "0" in every submenu. `ask` used to return "" on EOF, and "" matches
+    none of those keys, so a closed stdin meant: print the menu, read
+    nothing, print the menu again, forever.
+
+    Measured: Ctrl+D at the main screen produced 3,001 prompts without
+    exiting and would have continued indefinitely, at full CPU.
+
+    The consequence is worse than the spin. `main()` releases the serial
+    port in a `finally`, and a loop that never returns never reaches it -
+    so the client that the operator thought they had closed goes on
+    holding /dev/ttyUSB0, and the next one is refused with PORT_BUSY
+    for a reason that has nothing to do with the board.
+
+    Returning a sentinel instead would not fix it: there is no single
+    key that leaves all of these menus, so a submenu handed "q" would
+    print "Unknown option" and loop exactly as before. The session has
+    ended, so the exception unwinds all of them at once.
+    """
+    return ask(prompt, eof_ends_session=True).strip().lower()
 
 
 def ask_int(prompt, minimum=None, maximum=None, default=None):

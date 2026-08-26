@@ -47,6 +47,21 @@ from BD.samples import (
 
 
 def report_link_error(error):
+    """
+    A refusal, and what it means for the mechanism.
+
+    THE SECOND HALF IS THE MISSION-CRITICAL HALF.
+
+    The operator is standing at the rover. What they do next - open the
+    lid, reach for a slot, assume the sample is still under the loader -
+    depends entirely on whether the carousel moved. This screen once
+    printed "carousel: nothing was moved" whenever the firmware did not
+    explicitly say otherwise, which on the Linux bench meant it printed
+    it after a half turn that had visibly happened.
+
+    So the claim is only made when the firmware makes it. Silence is
+    reported as uncertainty, never as stillness.
+    """
     print()
     print("Module refused the command:")
     print("  code   : {}".format(error.code))
@@ -54,11 +69,45 @@ def report_link_error(error):
 
     data = error.data or {}
 
+    if data.get("phase"):
+        print("  stage  : {}".format(data["phase"]))
+
     if data.get("recovery"):
         print("  carousel: {}".format(data["recovery"].get("message")))
 
-    elif data.get("moved") is False:
-        print("  carousel: nothing was moved.")
+        return
+
+    motion = data.get("motion")
+    detail = data.get("motion_detail") or {}
+
+    if motion == "NOT_STARTED" or (motion is None
+                                   and data.get("moved") is False):
+        print("  carousel: nothing was moved - the command was refused "
+              "before the servo was commanded.")
+
+        return
+
+    if motion == "MOVED":
+        print("  carousel: THE CAROUSEL MOVED. It stopped somewhere that "
+              "could not be verified.")
+
+        travelled = detail.get("travelled_degrees")
+
+        if travelled is not None:
+            print("            the encoder measured {} deg of travel"
+                  .format(travelled))
+
+        print("            LOOK AT THE MECHANISM before assuming which "
+              "slot is where.")
+        print("            Re-sync the carousel before the next movement.")
+
+        return
+
+    if motion == "UNKNOWN" or data.get("moved"):
+        print("  carousel: the servo was commanded and it is NOT known "
+              "whether the carousel moved.")
+        print("            Treat its position as unknown, look at the "
+              "mechanism, and re-sync.")
 
 
 def report_failure(error):
@@ -525,7 +574,7 @@ def print_metric_table(matches, limit=None):
         rmse_value = match.get("rmse")
 
         print("{:<3} {:<26} {:>8} {:>9} {:>8} {:>8}".format(
-            match.get("combined_rank", match.get("rank")),
+            rank_of(match),
             str(match.get("material"))[:26],
             "{}/{}/{}".format(
                 match.get("cosine_rank"),
@@ -565,6 +614,37 @@ def print_agreement(agreement):
     print("  best by Pearson: {}".format(agreement.get("pearson_best")))
 
 
+def rank_of(match):
+    """
+    A match's rank, as something that can always be printed.
+
+    THE DEFECT THIS EXISTS FOR.
+
+    Three tables formatted `match.get("rank")` straight into a `{:<4}`
+    field. `"{:<4}".format(None)` raises TypeError, and None is exactly
+    what that lookup returns for a record MIGRATED from the old flat
+    schema: `reference_matches` there was whatever the previous
+    software stored, and it has no rank. So opening a legacy sample in
+    the records browser crashed the screen.
+
+    `score()` and `number()` beside this already return "-" for
+    anything that is not a number; rank simply never got the same
+    treatment. Note that `.get("combined_rank", match.get("rank"))`
+    does NOT protect against this on its own - the default only applies
+    when the key is absent, not when it is present and null.
+    """
+    for key in ("combined_rank", "rank"):
+        value = match.get(key)
+
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:6]
+
+    return "-"
+
+
 def print_matches(matches, limit=None):
     if not matches:
         print("No reference materials were compared.")
@@ -577,7 +657,7 @@ def print_matches(matches, limit=None):
 
     for match in shown:
         print("{:<4} {:<32} {:>12}".format(
-            match.get("rank"),
+            rank_of(match),
             str(match.get("material"))[:32],
             score(match.get("similarity_percent")),
         ))
@@ -752,7 +832,7 @@ def print_cross_database(cross, limit=5):
 
         for match in matches[:limit]:
             print("    {:<3} {:<30} {:>8}   rmse {}".format(
-                match.get("combined_rank", match.get("rank")),
+                rank_of(match),
                 str(match.get("material"))[:30],
                 score(match.get("cosine_similarity_percent")),
                 "{:.4f}".format(match["rmse"])
@@ -922,10 +1002,18 @@ def print_decision(decision, detail=False):
         print("  Candidates:")
 
         for index, candidate in enumerate(candidates, start=1):
+            # `or "-"`, not `.get(key, "-")`. The default form only
+            # applies when the KEY IS ABSENT; a key that is present and
+            # null still returns None, and `"{:<7}".format(None)`
+            # raises. Decisions are rendered from STORED AnalysisRuns
+            # as well as fresh ones, so a field an older Science
+            # version left null reaches this line years later - the
+            # same blind spot that crashed the match tables on
+            # migrated records.
             print("    {}. {:<30} {:<7} {}".format(
                 index,
                 str(candidate.get("material"))[:30],
-                candidate.get("evidence_level", "-"),
+                candidate.get("evidence_level") or "-",
                 candidate.get("family") or "",
             ))
 

@@ -170,17 +170,21 @@ try:
     # exactly this command - so refusing it before an origin exists
     # would make the origin impossible to establish. What it must NOT
     # do is invent a position out of a blind movement.
+    # THE EXACT CODE, not merely "not OK".
+    #
+    # `code != "OK"` passed while `Carousel.require_position` was
+    # mutated into a no-op, because the command then failed for some
+    # other reason and the assertion could not tell the difference.
+    # Mutation verification found that; asserting the code kills it.
     for label, call in (
         ("select_slot", lambda: link.select_slot(2)),
         ("measure_raw", lambda: link.measure_raw(2)),
     ):
         code, _ = attempt(call)
 
-        checks.ok(code != "OK",
-                  "{} needs an origin and is refused without one "
-                  "({})".format(label, code))
-        checks.ok(not code.startswith("CRASH"),
-                  "and refused by name, not by exception")
+        checks.equal(code, "POSITION_NOT_SYNCHRONIZED",
+                     "{} needs an origin and is refused with the code "
+                     "that names the reason".format(label))
 
     code, _ = attempt(lambda: link.move_slots("cw", 1))
 
@@ -198,9 +202,9 @@ try:
                  "and still offers no slot numbers")
 
     code, _ = attempt(lambda: link.select_slot(2))
-    checks.ok(code != "OK",
-              "so an absolute command is still refused afterwards "
-              "({})".format(code))
+    checks.equal(code, "POSITION_NOT_SYNCHRONIZED",
+                 "so an absolute command is still refused afterwards, "
+                 "and for the same named reason")
 
 finally:
     installed.restore()
@@ -363,9 +367,10 @@ for label, lose in LOSSES:
                      "and no slot number survives it")
 
         code, _ = attempt(lambda: link.measure_raw(1))
-        checks.ok(code != "OK",
-                  "and a measurement is refused until an operator "
-                  "re-declares the origin ({})".format(code))
+        checks.equal(code, "POSITION_NOT_SYNCHRONIZED",
+                     "and a measurement is refused as "
+                     "POSITION_NOT_SYNCHRONIZED until an operator "
+                     "re-declares the origin ({})".format(label))
 
     finally:
         installed.restore()
