@@ -25,7 +25,7 @@ That is the piece that silently rots between campaigns, and it costs
 nothing to check.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import Automation, Requirement, Safety
 
 
 CAMPAIGN = "B10"
@@ -45,6 +45,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B10-001", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-001",),
         title="The operator client is present and unchanged",
         objective="Check the entry point and every screen the B10 "
                   "procedure names still exist, before an operator is "
@@ -71,6 +72,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B10-002", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-002",),
         title="Startup, connect and carousel setup",
         objective="Have an operator take the real client from launch to "
                   "a synchronized carousel.",
@@ -107,6 +109,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B10-003", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-003", "HW-REQ-FLOW-006"),
         title="Two samples, end to end, through the real client",
         objective="Check sample-to-slot association, measurement "
                   "identity and persistence across more than one "
@@ -144,6 +147,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B10-004", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-005",),
         title="The client stays usable after a recoverable failure",
         objective="Check that a fault during a session leaves an "
                   "application the operator can carry on with.",
@@ -176,6 +180,90 @@ def register(registry):
         requires=("workflow.client",),
         run=_recoverable_failure, cleanup=_close,
         prerequisites=("B9",),
+        defect_prefix="HW-MISSION",
+    )
+
+    registry.test(
+        test_id="HW-B10-005", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-004", "HW-REQ-FLOW-006"),
+        title="Records persist across a client restart, and protected "
+              "data is untouched",
+        objective="Machine-verify that a saved measurement survives the "
+                  "client closing and reopening, and that the reference "
+                  "libraries were not modified.",
+        hardware_setup="The complete module. One measurement will be "
+                       "taken and saved through the production client.",
+        preconditions="HW-B10-003 passed.",
+        procedure=(
+            "hash every protected reference file BEFORE the session",
+            "the operator runs the client, measures one sample and "
+            "saves it, noting its measurement id",
+            "the operator QUITS the client completely",
+            "the operator starts the client again and opens Records",
+            "the operator confirms the measurement is still listed",
+            "the harness reads the device's retained buffer read-only",
+            "hash every protected reference file again and compare",
+        ),
+        expected="The record is present after the restart, its id is "
+                 "non-empty, and every protected file hashes "
+                 "identically.",
+        failure_criteria="A record that did not survive the restart, an "
+                         "empty measurement id, or ANY protected "
+                         "reference file whose hash changed. The "
+                         "reference libraries are read-only by design "
+                         "and a test that modifies them costs more than "
+                         "the bug it was looking for.",
+        captures=("protected file hashes before and after",
+                  "the measurement id, and that it is non-empty",
+                  "the operator's confirmation after the restart",
+                  "the device's retained buffer"),
+        safety=Safety.FULL_SYSTEM,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("workflow.client", "workflow.records"),
+        run=_persistence_across_restart, cleanup=_close,
+        defect_prefix="HW-MISSION",
+    )
+
+    registry.test(
+        test_id="HW-B10-006", campaign=CAMPAIGN, layer="B10",
+        requirements=("HW-REQ-FLOW-007",),
+        title="Raw acquisition survives an analysis failure",
+        objective="Confirm that when analysis cannot complete, the raw "
+                  "54-feature acquisition is still stored and "
+                  "retrievable.",
+        hardware_setup="The complete module. The operator will induce "
+                       "an analysis failure by the least destructive "
+                       "means available - typically running without an "
+                       "active calibration.",
+        preconditions="HW-B10-003 passed. The operator knows how to "
+                      "reach a state where analysis fails but "
+                      "acquisition does not.",
+        procedure=(
+            "ask the operator how they will make analysis fail, and "
+            "record it",
+            "the operator measures one sample in that state",
+            "the operator reports whether the client showed an analysis "
+            "error",
+            "the operator reports whether the raw measurement was still "
+            "saved",
+            "the harness reads the device's retained buffer and checks "
+            "the acquisition is complete and correctly shaped",
+        ),
+        expected="Analysis fails, and the raw acquisition is still "
+                 "stored with all 54 features intact.",
+        failure_criteria="A raw acquisition discarded because the "
+                         "analysis that came after it failed. The "
+                         "acquisition is the expensive part - it needs "
+                         "the carousel, the illumination and the time - "
+                         "and the analysis can always be redone later.",
+        captures=("how the analysis failure was induced",
+                  "what the client reported",
+                  "whether the raw record was saved",
+                  "the retained acquisition and its shape"),
+        safety=Safety.FULL_SYSTEM,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("workflow.client", "workflow.records"),
+        run=_raw_survives_analysis_failure, cleanup=_close,
         defect_prefix="HW-MISSION",
     )
 
@@ -339,15 +427,28 @@ def _two_samples(ctx):
 
     _take_back(ctx)
 
-    ctx.check(first_id != second_id or not (first_id and second_id),
-              "the two measurements have different ids",
-              evidence={"first": first_id, "second": second_id},
-              kind="OPERATOR")
+    # THE DEFECT THIS REPLACES: `first_id != second_id or not (first_id
+    # and second_id)` passed when BOTH ids were empty, because two
+    # empty strings are "not (first and second)". Two missing ids
+    # counted as two distinct ids.
+    ctx.require_observation("the first measurement id", first_id)
+    ctx.require_observation("the second measurement id", second_id)
 
-    ctx.check(first_slot != second_slot or first_slot is None,
-              "the two samples were measured in different slots",
-              evidence={"first": first_slot, "second": second_slot},
-              kind="OPERATOR")
+    if first_id and second_id:
+        ctx.check(first_id != second_id,
+                  "the two measurements have different ids",
+                  evidence={"first": first_id, "second": second_id},
+                  kind="OPERATOR")
+
+    ctx.require_observation("the first sample's slot", first_slot)
+    ctx.require_observation("the second sample's slot", second_slot)
+
+    if first_slot is not None and second_slot is not None:
+        ctx.check(first_slot != second_slot,
+                  "the two samples were measured in different slots",
+                  evidence={"first": first_slot,
+                            "second": second_slot},
+                  kind="OPERATOR")
 
     retained = None
 
@@ -406,3 +507,230 @@ def _recoverable_failure(ctx):
     ctx.record("after_recovery", printed=printed, **status)
 
     ctx.operator_note("Anything the client did that surprised you")
+
+
+def _protected_hashes():
+    """
+    Every protected reference file, hashed.
+
+    BD/ holds the reference libraries and is read-only by design. The
+    one writable thing under it is samples/, which is the run's own
+    output and is excluded here - hashing it would report every
+    measurement as a violation.
+    """
+    import hashlib
+
+    from ..configuration.profile import FIRMWARE_DIR
+
+    protected = FIRMWARE_DIR / "BD"
+
+    digest = {}
+
+    if not protected.is_dir():
+        return digest
+
+    for path in sorted(protected.rglob("*")):
+        if not path.is_file():
+            continue
+
+        if "__pycache__" in path.parts or "samples" in path.parts:
+            continue
+
+        digest[path.relative_to(FIRMWARE_DIR).as_posix()] = (
+            hashlib.sha256(path.read_bytes()).hexdigest())
+
+    return digest
+
+
+def _persistence_across_restart(ctx):
+    ctx.require("workflow.client", "workflow.records")
+
+    before = _protected_hashes()
+
+    ctx.record("protected_before", files=len(before))
+
+    ctx.check(bool(before),
+              "the protected reference files were found and hashed",
+              evidence={"files": len(before)})
+
+    _hand_over(ctx)
+
+    ctx.instruct(
+        "Measure ONE sample through the client and save it. Write down "
+        "its measurement id exactly as the client shows it.")
+
+    measurement_id = ctx.operator_note(
+        "The measurement id, exactly as shown")
+
+    ctx.require_observation("the measurement id", measurement_id)
+
+    slot = ctx.ask_number(
+        "Which slot did you measure it in",
+        minimum=1, maximum=ctx.carousel.slot_count())
+
+    ctx.require_observation("the slot the sample was measured in", slot)
+
+    ctx.instruct(
+        "Now QUIT the client completely with [q]. Then start it again "
+        "and open Records.")
+
+    still_there = ctx.ask(
+        "Is measurement {} still listed after the "
+        "restart".format(measurement_id))
+
+    ctx.check(bool(still_there),
+              "the saved measurement survived a full client restart",
+              evidence={"measurement_id": measurement_id},
+              kind="OPERATOR")
+
+    right_slot = ctx.ask(
+        "Does the record still show it against slot {}".format(slot))
+
+    ctx.check(bool(right_slot),
+              "the record still carries the slot it was measured in",
+              evidence={"slot": slot}, kind="OPERATOR")
+
+    _take_back(ctx)
+
+    retained = None
+
+    try:
+        retained = ctx.workflow.saved_samples()["data"]
+
+    except Exception as error:
+        ctx.note("the device's retained buffer could not be read: "
+                 "{}: {}".format(type(error).__name__, error))
+
+    after = _protected_hashes()
+
+    changed = sorted(
+        name for name in set(before) | set(after)
+        if before.get(name) != after.get(name))
+
+    ctx.check(not changed,
+              "every protected reference file hashes identically before "
+              "and after the workflow session",
+              evidence={"changed": changed, "files": len(after)})
+
+    ctx.record("persistence", measurement_id=measurement_id, slot=slot,
+               retained=retained, protected_changed=changed)
+
+    ctx.measure(stage="persistence", measurement_id=measurement_id or "",
+                slot=slot, survived_restart=bool(still_there),
+                protected_files=len(after),
+                protected_changed=len(changed))
+
+    if changed:
+        ctx.defect(
+            title="a protected reference file was modified by a "
+                  "workflow session",
+            observed="changed: {}".format(", ".join(changed[:10])),
+            expected="the reference libraries are read-only and hash "
+                     "identically",
+            reproduction=("run HW-B10-005",),
+            suspected_layer="the PC persistence layer",
+            evidence={"changed": changed},
+        )
+
+
+def _raw_survives_analysis_failure(ctx):
+    ctx.require("workflow.client", "workflow.records")
+
+    method = ctx.operator_note(
+        "How will you make ANALYSIS fail without preventing the "
+        "acquisition (for example: no active calibration selected)")
+
+    ctx.require_observation(
+        "a described way to induce an analysis failure", method)
+
+    _hand_over(ctx)
+
+    ctx.instruct(
+        "Put the client into that state, then measure one sample.")
+
+    analysis_failed = ctx.ask(
+        "Did the client report that ANALYSIS failed or could not be "
+        "produced")
+
+    ctx.check(bool(analysis_failed),
+              "the analysis failure was actually induced - otherwise "
+              "this test proves nothing",
+              evidence={"method": method}, kind="OPERATOR")
+
+    if not analysis_failed:
+        _take_back(ctx)
+
+        ctx.inconclusive(
+            "analysis did not fail, so whether a raw acquisition "
+            "survives an analysis failure was never exercised",
+            missing=("an induced analysis failure",),
+            evidence={"method": method})
+
+    saved = ctx.ask(
+        "Was the RAW measurement still saved despite the analysis "
+        "failure")
+
+    measurement_id = ctx.operator_note(
+        "The measurement id of that record, if it has one")
+
+    _take_back(ctx)
+
+    ctx.check(bool(saved),
+              "the raw acquisition was still saved after the analysis "
+              "failed",
+              evidence={"measurement_id": measurement_id},
+              kind="OPERATOR")
+
+    retained = None
+    shape_problems = None
+
+    try:
+        retained = ctx.workflow.saved_samples()["data"]
+
+        samples = (retained or {}).get("samples") or []
+
+        ctx.check(bool(samples),
+                  "the device's retained buffer holds at least one "
+                  "acquisition after the failure",
+                  evidence={"count": len(samples)})
+
+        if samples and measurement_id:
+            detail = ctx.workflow.saved_sample(measurement_id)["data"]
+
+            blocks = ((detail or {}).get("sample")
+                      or {}).get("illuminations")
+
+            if blocks:
+                shape_problems = ctx.sensor.validate_triad(
+                    {"illuminations": blocks})
+
+                ctx.check(not shape_problems,
+                          "the retained raw acquisition is complete and "
+                          "correctly shaped",
+                          evidence={"problems": shape_problems})
+
+    except Exception as error:
+        ctx.note("the retained buffer could not be inspected: {}: "
+                 "{}".format(type(error).__name__, error))
+
+    ctx.record("analysis_failure", method=method,
+               measurement_id=measurement_id, saved=bool(saved),
+               retained=retained, shape_problems=shape_problems)
+
+    ctx.measure(stage="analysis_failure",
+                method=(method or "")[:120],
+                measurement_id=measurement_id or "",
+                raw_saved=bool(saved),
+                shape_problems=len(shape_problems or []))
+
+    if not saved:
+        ctx.defect(
+            title="the raw acquisition is discarded when analysis fails",
+            observed="the operator reports the measurement was not "
+                     "saved after analysis failed ({})".format(method),
+            expected="the raw 54-feature acquisition is stored "
+                     "regardless of what happens downstream of it",
+            reproduction=("run HW-B10-006",),
+            suspected_layer="the PC measurement/persistence path",
+            evidence={"method": method},
+        )

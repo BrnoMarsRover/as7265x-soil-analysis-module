@@ -114,10 +114,17 @@ def run():
 
     checks.section("the tests that must be BLOCKED today are BLOCKED")
 
+    # The three original blockers now name the DIAGNOSTIC AGENT, not a
+    # gap in the competition firmware. That is the point of the agent:
+    # they moved from "blocked by something nobody may add" to "blocked
+    # until somebody deploys the thing that exists".
     expected_blocked = {
-        "HW-B2-006": "servo.raw_packet",
-        "HW-B3-004": "servo.raw_packet",
-        "HW-B6-001": "sensor.i2c_scan_on_demand",
+        "HW-B2-006": "diagnostic.servo_raw",
+        "HW-B3-004": "diagnostic.servo_raw",
+        "HW-B6-001": "diagnostic.i2c_scan",
+        "HW-B2-011": "diagnostic.agent",
+        "HW-B0-008": "bench.multimeter",
+        "HW-B11-007": "bench.thermal_probe",
     }
 
     for test_id, capability in sorted(expected_blocked.items()):

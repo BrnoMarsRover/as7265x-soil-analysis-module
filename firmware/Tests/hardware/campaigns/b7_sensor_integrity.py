@@ -29,7 +29,8 @@ requirements say RED; there is no red illuminator on this module, and IR
 is what the RED requirement is served by.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
 from ..core.analysis import failure_rate, outliers, summarize
 
 
@@ -50,6 +51,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-001", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-006",),
         title="The 54-feature contract",
         objective="Check every way a spectrum can be the wrong shape, "
                   "against the real device.",
@@ -81,6 +83,10 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-002", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-009",),
+        iteration_kind=IterationKind.MEASUREMENT,
+        qualification_min_iterations=100,
+        characterization_min_iterations=30,
         title="A hundred repeated static measurements",
         objective="Establish that repeated acquisition of an unchanging "
                   "target is stable in shape and bounded in time.",
@@ -112,6 +118,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-003", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-END-002",),
+        iteration_kind=IterationKind.MEASUREMENT,
+        characterization_min_iterations=100,
         title="Sensor endurance",
         objective="Run long enough to see heating, drift or an "
                   "intermittent failure that a hundred acquisitions "
@@ -143,6 +152,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-004", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-004",),
         title="Sensor disconnect and recovery",
         objective="Pull the sensor, prove the failure is named "
                   "correctly, then reconnect and prove it recovers "
@@ -184,6 +194,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-005", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-008",),
+        iteration_kind=IterationKind.MEASUREMENT,
+        characterization_min_iterations=10,
         title="Data-ready latency across the three illuminations",
         objective="Measure the real ready latency, which is H-003.",
         hardware_setup="AS7265x connected.",
@@ -212,6 +225,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-006", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-012",),
         title="The right lamp lights, and only the right lamp",
         objective="Have a human confirm which illuminator is actually "
                   "on during each phase.",
@@ -247,6 +261,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-007", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-013",),
         title="Illumination is off after a measurement",
         objective="Confirm, by eye, that no bulb is left on when an "
                   "acquisition finishes.",
@@ -274,6 +289,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B7-008", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-013", "HW-REQ-SENSOR-014"),
         title="Illumination after a failed acquisition",
         objective="Check the lamps go off on the ERROR path too, and "
                   "record explicitly when that cannot be confirmed.",
@@ -300,6 +316,157 @@ def register(registry):
         requires=("sensor.acquire_block", "sensor.status"),
         run=_off_after_failure, cleanup=_release,
         defect_prefix="HW-SENSOR",
+    )
+
+    registry.test(
+        test_id="HW-B7-009", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-007",),
+        title="The shape validator is exercised, not just satisfied",
+        objective="Prove every malformed-spectrum case is actually "
+                  "DETECTED, by running the detector against each one "
+                  "beside a real acquisition.",
+        hardware_setup="AS7265x connected, stable target.",
+        preconditions="HW-B7-001 passed.",
+        procedure=(
+            "acquire one real triad and confirm it is well formed",
+            "take that real spectrum and derive each malformed case "
+            "from it: a missing channel, a duplicate, an extra, a NaN, "
+            "an infinity, a string, a short acquisition list, a "
+            "mismatched wait list, and two identical illuminations",
+            "run the validator against each derived case",
+            "check every one is caught, and named",
+        ),
+        expected="The real acquisition passes and every derived "
+                 "malformation is detected and named.",
+        failure_criteria="A malformation the validator does not catch. "
+                         "A valid real acquisition proves the DEVICE is "
+                         "well; it proves nothing about the detector, "
+                         "and the detector is what stands between a "
+                         "communication fault and a scientific "
+                         "mystery.",
+        captures=("the real spectrum",
+                  "each derived malformation and whether it was caught",
+                  "the problem text the validator produced"),
+        safety=Safety.ILLUMINATION, automation=Automation.AUTOMATIC,
+        requires=("sensor.acquire_triad",),
+        run=_validator_exercised, cleanup=_release,
+        defect_prefix="HW-SENSOR",
+    )
+
+    registry.test(
+        test_id="HW-B7-010", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-010",),
+        title="Saturation, zero and negative channel values",
+        objective="Establish that clipping and degenerate values are "
+                  "observable, by driving the sensor toward saturation "
+                  "and toward darkness.",
+        hardware_setup="AS7265x connected. A bright reflective surface "
+                       "and a way to cover the head completely.",
+        preconditions="HW-B7-001 passed.",
+        procedure=(
+            "acquire against the normal target and record the channel "
+            "range",
+            "ask the operator to present the brightest available "
+            "surface, acquire, and look for clipped channels",
+            "ask the operator to cover the head completely, acquire, "
+            "and look for zero or negative channels",
+            "record which channels clipped and which read zero",
+            "confirm no value is NaN or infinite in any case",
+        ),
+        expected="Clipping and darkness are both observable and "
+                 "distinguishable from a normal reading, and no value "
+                 "is NaN or infinite.",
+        failure_criteria="A NaN or infinity in any condition, or a "
+                         "saturated channel indistinguishable from a "
+                         "valid reading. A saturated channel that looks "
+                         "like a number corrupts every downstream "
+                         "ratio.",
+        captures=("channel values in each condition",
+                  "which channels clipped",
+                  "which channels read zero or negative",
+                  "the operator's description of each surface"),
+        safety=Safety.ILLUMINATION,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("sensor.acquire_block",),
+        run=_saturation_and_dark, cleanup=_release,
+        defect_prefix="HW-SENSOR",
+    )
+
+    registry.test(
+        test_id="HW-B7-011", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-SENSOR-011",),
+        title="Dark acquisition and ambient light leakage",
+        objective="Measure how much room light reaches the sample, "
+                  "because reflectance from a leaking enclosure is "
+                  "partly a measurement of the room.",
+        hardware_setup="AS7265x connected, carousel in its normal "
+                       "operating position with the enclosure as it "
+                       "will be on the field.",
+        preconditions="HW-B7-001 passed. The operator can change the "
+                      "room lighting.",
+        procedure=(
+            "with the room lit normally, acquire a DARK block - no "
+            "illumination",
+            "ask the operator to darken the room as far as possible",
+            "acquire a DARK block again",
+            "compare the two per channel",
+            "acquire a WHITE block in each lighting condition and "
+            "compare those too",
+        ),
+        expected="The dark readings are close to identical in both "
+                 "lighting conditions - the enclosure admits little "
+                 "room light.",
+        failure_criteria="A dark reading that changes materially with "
+                         "the room lights. The enclosure leaks, and "
+                         "every field measurement carries the ambient "
+                         "conditions with it. The MAGNITUDE is "
+                         "characterization: no leakage limit is "
+                         "recorded in this repository.",
+        captures=("dark spectrum lit and darkened",
+                  "white spectrum lit and darkened",
+                  "the per-channel difference",
+                  "the operator's description of the lighting"),
+        safety=Safety.ILLUMINATION,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("sensor.acquire_block",),
+        run=_ambient_leakage, cleanup=_release,
+        defect_prefix="HW-SENSOR",
+    )
+
+    registry.test(
+        test_id="HW-B7-012", campaign=CAMPAIGN, layer="B7",
+        requirements=("HW-REQ-PWR-003",),
+        title="Illumination current, and leakage when off",
+        objective="Measure what each source draws, and what the "
+                  "illumination draws when it is supposed to be off.",
+        hardware_setup="A current probe or a multimeter in a safe "
+                       "current path. AS7265x connected.",
+        preconditions="HW-B0-008 recorded the idle rails. HW-B7-007 "
+                      "passed.",
+        procedure=(
+            "with everything off, measure the baseline current",
+            "run a bounded illumination hold for each source in turn "
+            "and measure the current during each",
+            "after each, measure the current again with the source off",
+            "compare the off-state current against the baseline",
+        ),
+        expected="Each source draws a measurable current, and the "
+                 "off-state current returns to the baseline.",
+        failure_criteria="An off-state current materially above the "
+                         "baseline. A source that is not fully off "
+                         "heats the sensor and biases the next "
+                         "measurement, and on a rover it costs power "
+                         "nobody budgeted. The ABSOLUTE currents are "
+                         "characterization.",
+        captures=("baseline current",
+                  "current during each illumination",
+                  "off-state current after each",
+                  "the measuring instrument"),
+        safety=Safety.ILLUMINATION,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("sensor.led_test", "bench.multimeter"),
+        run=_illumination_current, cleanup=_release,
+        defect_prefix="HW-PWR",
     )
 
 
@@ -727,9 +894,13 @@ def _off_after_measurement(ctx):
 
     bulbs_off = report.get("bulbs_off")
 
-    ctx.check(bulbs_off is not False,
-              "the firmware reports the bulbs off after the triad",
-              evidence={"bulbs_off": bulbs_off})
+    # REQUIRED and explicitly True - see HW-REQ-SENSOR-014. `is not
+    # False` also passed None, which is "the firmware did not say", and
+    # an unconfirmable off-state must be reported as unconfirmed rather
+    # than assumed.
+    ctx.observed("the firmware reports the bulbs off after the triad",
+                 bulbs_off, expected=True,
+                 requirement=Requirement.REQUIRED)
 
     ctx.confirm_observation(
         "Is every illumination source OFF now, immediately after the "
@@ -806,3 +977,413 @@ def _off_after_failure(ctx):
                 error_code=(error_detail or {}).get("code") or "",
                 operator_saw_light=lit,
                 firmware_confirmable=confirmable)
+
+
+def _validator_exercised(ctx):
+    ctx.require("sensor.acquire_triad")
+
+    from ..adapters.sensor import CHANNELS, SensorAdapter
+
+    import copy
+    import math
+
+    repeats = ctx.profile.production["sensor"]["sample_repeats"]
+
+    transaction = ctx.sensor.triad(repeats=repeats)
+
+    report = transaction["data"] or {}
+
+    problems = ctx.sensor.validate_triad(report, expected_repeats=repeats)
+
+    ctx.check(not problems,
+              "the real acquisition is well formed - the baseline every "
+              "derived case is built from",
+              evidence={"problems": problems})
+
+    if problems:
+        ctx.inconclusive(
+            "the real acquisition is already malformed, so a derived "
+            "malformation would prove nothing about the detector",
+            missing=("a well-formed baseline spectrum",),
+            evidence={"problems": problems})
+
+    def derive(mutate):
+        copied = copy.deepcopy(report)
+
+        mutate(copied["illuminations"])
+
+        return copied
+
+    def drop_channel(blocks):
+        blocks["white"]["acquisitions"][0].pop(CHANNELS[0])
+
+    def duplicate_channel(blocks):
+        spectrum = blocks["uv"]["acquisitions"][0]
+
+        spectrum.pop(CHANNELS[1])
+        spectrum["ZZ"] = 1.0
+
+    def add_channel(blocks):
+        blocks["ir"]["acquisitions"][0]["QQ"] = 1.0
+
+    def make_nan(blocks):
+        blocks["white"]["acquisitions"][0][CHANNELS[2]] = float("nan")
+
+    def make_inf(blocks):
+        blocks["uv"]["acquisitions"][0][CHANNELS[3]] = float("inf")
+
+    def make_string(blocks):
+        blocks["ir"]["acquisitions"][0][CHANNELS[4]] = "1.0"
+
+    def short_list(blocks):
+        blocks["white"]["acquisitions"] = (
+            blocks["white"]["acquisitions"][:1])
+
+    def mismatched_waits(blocks):
+        blocks["uv"]["data_ready_wait_ms"] = [1]
+
+    def identical_illuminations(blocks):
+        blocks["uv"]["acquisitions"] = copy.deepcopy(
+            blocks["white"]["acquisitions"])
+        blocks["ir"]["acquisitions"] = copy.deepcopy(
+            blocks["white"]["acquisitions"])
+
+    cases = (
+        ("a missing channel", drop_channel),
+        ("a duplicate/renamed channel", duplicate_channel),
+        ("an extra channel", add_channel),
+        ("a NaN value", make_nan),
+        ("an infinite value", make_inf),
+        ("a string where a number belongs", make_string),
+        ("a short acquisition list", short_list),
+        ("a mismatched data-ready wait list", mismatched_waits),
+        ("two illuminations returning identical spectra",
+         identical_illuminations),
+    )
+
+    caught = {}
+
+    for description, mutate in cases:
+        derived = derive(mutate)
+
+        found = SensorAdapter.validate_triad(derived,
+                                             expected_repeats=repeats)
+
+        caught[description] = found
+
+        ctx.check(bool(found),
+                  "the validator catches {}".format(description),
+                  evidence={"problems": found[:3]})
+
+        ctx.measure(stage="validator", case=description,
+                    caught=bool(found),
+                    problems=len(found),
+                    first_problem=(found[0][:120] if found else ""))
+
+    ctx.record("validator_exercised",
+               baseline_problems=problems,
+               cases={k: v[:3] for k, v in caught.items()})
+
+
+def _saturation_and_dark(ctx):
+    ctx.require("sensor.acquire_block")
+
+    from ..adapters.sensor import CHANNELS
+
+    import math
+
+    def acquire(label):
+        transaction = ctx.sensor.acquire("white", repeats=1)
+
+        block = transaction["data"] or {}
+
+        acquisitions = block.get("acquisitions") or []
+
+        spectrum = acquisitions[0] if acquisitions else {}
+
+        problems = ctx.sensor.validate_block(
+            block, expected_repeats=1, illumination="white")
+
+        ctx.check(not problems,
+                  "the {} acquisition is well formed".format(label),
+                  evidence={"problems": problems})
+
+        values = [spectrum.get(c) for c in CHANNELS]
+
+        numeric = [v for v in values if isinstance(v, (int, float))]
+
+        bad = [c for c in CHANNELS
+               if isinstance(spectrum.get(c), float)
+               and (math.isnan(spectrum[c]) or math.isinf(spectrum[c]))]
+
+        ctx.check(not bad,
+                  "no channel is NaN or infinite in the {} "
+                  "condition".format(label),
+                  evidence={"bad": bad})
+
+        ctx.event("spectrum", condition=label, spectrum=spectrum)
+
+        ctx.measure(stage="condition", condition=label,
+                    minimum=min(numeric) if numeric else None,
+                    maximum=max(numeric) if numeric else None,
+                    zero_channels=len([v for v in numeric if v == 0]),
+                    negative_channels=len([v for v in numeric if v < 0]))
+
+        return spectrum, numeric
+
+    normal, normal_values = acquire("normal target")
+
+    ctx.instruct(
+        "Present the BRIGHTEST reflective surface you have to the "
+        "sensor head - a white reference, foil, anything strongly "
+        "reflective.")
+
+    bright_description = ctx.operator_note(
+        "What did you present to the head")
+
+    bright, bright_values = acquire("bright surface")
+
+    ctx.instruct(
+        "Now cover the sensor head completely so no light reaches it.")
+
+    dark, dark_values = acquire("covered head")
+
+    clipped = []
+
+    if normal_values and bright_values:
+        ceiling = max(bright_values)
+
+        clipped = [c for c in CHANNELS
+                   if isinstance(bright.get(c), (int, float))
+                   and bright[c] >= ceiling]
+
+    zeros = [c for c in CHANNELS
+             if isinstance(dark.get(c), (int, float)) and dark[c] == 0]
+
+    negatives = [c for c in CHANNELS
+                 if isinstance(dark.get(c), (int, float)) and dark[c] < 0]
+
+    ctx.record("saturation_and_dark",
+               bright_description=bright_description,
+               normal=normal, bright=bright, dark=dark,
+               clipped_candidates=clipped, zero_channels=zeros,
+               negative_channels=negatives)
+
+    ctx.check(
+        bool(bright_values) and bool(dark_values)
+        and max(bright_values) > max(dark_values),
+        "the bright and covered conditions are distinguishable - the "
+        "sensor responds to what is in front of it",
+        evidence={"bright_max": max(bright_values) if bright_values
+                  else None,
+                  "dark_max": max(dark_values) if dark_values else None})
+
+    ctx.check(not negatives,
+              "no channel reads negative with the head covered",
+              evidence={"negative": negatives})
+
+    if zeros:
+        ctx.note(
+            "{} channel(s) read exactly zero with the head covered: {}. "
+            "Zero is a legitimate dark reading, but a channel that "
+            "reads zero in NORMAL conditions is a dead channel, and "
+            "HW-B7-002's per-channel spread is where that would "
+            "show.".format(len(zeros), ", ".join(zeros)))
+
+    ctx.characterize(
+        "channel response measured across normal, bright and covered "
+        "conditions. No saturation limit is recorded in this "
+        "repository, so the clipping candidates ({}) are reported for a "
+        "human rather than judged.".format(", ".join(clipped) or "none"))
+
+
+def _ambient_leakage(ctx):
+    ctx.require("sensor.acquire_block")
+
+    from ..adapters.sensor import CHANNELS
+
+    def acquire(illumination, label):
+        transaction = ctx.sensor.acquire(illumination, repeats=3)
+
+        block = transaction["data"] or {}
+
+        acquisitions = block.get("acquisitions") or []
+
+        problems = ctx.sensor.validate_block(
+            block, expected_repeats=3, illumination=illumination)
+
+        ctx.check(not problems,
+                  "the {} {} acquisition is well formed".format(
+                      label, illumination),
+                  evidence={"problems": problems})
+
+        if not acquisitions:
+            return {}
+
+        # The mean of the repeats, per channel, so a single noisy
+        # reading does not decide anything.
+        averaged = {}
+
+        for channel in CHANNELS:
+            values = [a.get(channel) for a in acquisitions
+                      if isinstance(a.get(channel), (int, float))]
+
+            if values:
+                averaged[channel] = sum(values) / len(values)
+
+        ctx.event("spectrum", condition=label,
+                  illumination=illumination, spectrum=averaged)
+
+        return averaged
+
+    lighting = ctx.operator_note(
+        "Describe the room lighting as it is right now")
+
+    lit_dark = acquire("dark", "room lit")
+    lit_white = acquire("white", "room lit")
+
+    ctx.instruct(
+        "Darken the room as far as you can - lights off, blinds closed, "
+        "screens turned away from the sensor.")
+
+    darkened = ctx.operator_note(
+        "Describe how dark the room is now")
+
+    dim_dark = acquire("dark", "room darkened")
+    dim_white = acquire("white", "room darkened")
+
+    differences = {}
+
+    for channel in CHANNELS:
+        if channel in lit_dark and channel in dim_dark:
+            differences[channel] = round(
+                lit_dark[channel] - dim_dark[channel], 4)
+
+    values = list(differences.values())
+
+    ctx.record("ambient_leakage", lighting=lighting, darkened=darkened,
+               lit_dark=lit_dark, dim_dark=dim_dark,
+               lit_white=lit_white, dim_white=dim_white,
+               dark_difference=differences,
+               difference=summarize([abs(v) for v in values]))
+
+    ctx.check(bool(differences),
+              "dark spectra were obtained in both lighting conditions",
+              evidence={"channels": len(differences)})
+
+    for channel in sorted(differences):
+        ctx.measure(stage="ambient", channel=channel,
+                    lit=lit_dark.get(channel),
+                    darkened=dim_dark.get(channel),
+                    difference=differences[channel])
+
+    if values:
+        worst = max(abs(v) for v in values)
+
+        ctx.note(
+            "The largest per-channel difference between a lit and a "
+            "darkened room, with no illumination on, is {}. That is "
+            "how much of a dark reading is the room rather than the "
+            "sample.".format(round(worst, 4)))
+
+    ctx.characterize(
+        "ambient leakage measured. No leakage limit is recorded in this "
+        "repository, so this establishes how much room light the "
+        "enclosure admits rather than judging it.")
+
+
+def _illumination_current(ctx):
+    ctx.require("sensor.led_test", "bench.multimeter")
+
+    meter = ctx.bench.require_instrument("multimeter")
+
+    ctx.record("instrument", **meter)
+
+    ctx.instruct(
+        "Put the instrument in the illumination supply path safely. Do "
+        "not break a live circuit and do not probe anything you cannot "
+        "reach without shorting.")
+
+    baseline = ctx.ask_number(
+        "With every source off, measure the baseline current",
+        minimum=0, maximum=10000, unit="mA")
+
+    if baseline is None:
+        ctx.result.record_missing_required(
+            "the illumination baseline current was not measured")
+
+    hold = min(800, ctx.profile.data["illumination"]["max_hold_ms"])
+
+    readings = {}
+
+    for illumination in ("white", "uv", "ir"):
+        ctx.instruct(
+            "The {} source is about to be held on for {} ms. Watch the "
+            "current and note the value while it is lit.".format(
+                illumination.upper(), hold))
+
+        ctx.sensor.acquire(illumination, repeats=3)
+
+        during = ctx.ask_number(
+            "What current did you see while {} was lit".format(
+                illumination.upper()),
+            minimum=0, maximum=10000, unit="mA")
+
+        after = ctx.ask_number(
+            "And now, with it off again",
+            minimum=0, maximum=10000, unit="mA")
+
+        readings[illumination] = {"during": during, "after": after}
+
+        ctx.measure(stage="illumination_current",
+                    illumination=illumination, during=during,
+                    after=after, baseline=baseline,
+                    instrument=meter.get("model") or "")
+
+        if during is None:
+            ctx.result.record_missing_required(
+                "the current during {} illumination was not "
+                "measured".format(illumination))
+
+    ctx.record("illumination_current", baseline_ma=baseline,
+               **readings)
+
+    if baseline is not None:
+        leakage = []
+
+        for illumination, entry in sorted(readings.items()):
+            after = entry.get("after")
+
+            if after is None:
+                continue
+
+            excess = after - baseline
+
+            if excess > max(1.0, baseline * 0.1):
+                leakage.append({"illumination": illumination,
+                                "excess_ma": round(excess, 3)})
+
+        ctx.check(not leakage,
+                  "the off-state current returns to the baseline after "
+                  "every source",
+                  evidence={"baseline_ma": baseline,
+                            "leakage": leakage})
+
+        if leakage:
+            ctx.defect(
+                title="an illumination source draws current when it is "
+                      "supposed to be off",
+                observed="off-state excess over baseline: {}".format(
+                    leakage),
+                expected="off-state current equal to the baseline",
+                reproduction=("run HW-B7-012",),
+                suspected_layer="sensor LED driver or its control bit",
+                evidence={"baseline_ma": baseline,
+                          "readings": readings, "instrument": meter},
+            )
+
+    ctx.characterize(
+        "illumination current measured per source against a {} mA "
+        "baseline. No power budget for the illumination is recorded in "
+        "this repository, so the absolute currents are a baseline "
+        "rather than a judgement.".format(baseline))

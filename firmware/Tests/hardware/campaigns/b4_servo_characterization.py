@@ -25,9 +25,10 @@ was hiding - and which of those it is comes from the SHAPE of the
 distribution, not from wanting the test to pass.
 """
 
-from ..core.model import Automation, Safety
-from ..core.analysis import (counts_to_degrees, failure_rate, outliers,
-                               summarize)
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
+from ..core.analysis import (counts_to_degrees, failure_rate,
+                             outliers, summarize)
 
 
 CAMPAIGN = "B4"
@@ -48,6 +49,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-001", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-014",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=5,
         title="One slot forward and one slot back",
         objective="Compare the two directions at the smallest movement "
                   "the carousel ever makes.",
@@ -75,6 +79,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-002", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-014",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=5,
         title="Movements of 45, 90 and 180 degrees",
         objective="Establish whether the error depends on the size of "
                   "the movement.",
@@ -102,6 +109,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-003", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-011",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=30,
         title="Closing-error distribution over repeated half turns",
         objective="MEASURE the number ST3215_POSITION_TOLERANCE should "
                   "be. This is H-001.",
@@ -139,6 +149,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-004", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-012",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=10,
         title="Movement timing distribution",
         objective="Measure how long a real movement takes, so "
                   "ST3215_MOVE_TIMEOUT_MS can be argued about with "
@@ -168,6 +181,10 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-005", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-013",),
+        iteration_kind=IterationKind.MOVEMENT,
+        qualification_min_iterations=20,
+        characterization_min_iterations=10,
         title="Lost responses, checksums and timeouts during movement",
         objective="Count the transport faults that occur while the "
                   "servo bus is busy, which is when they are most "
@@ -199,6 +216,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B4-006", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-011", "HW-REQ-END-003"),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=100,
         title="Bounded servo endurance series",
         objective="Look for drift, heating and intermittent failure "
                   "over a longer run than any single-figure test.",
@@ -226,6 +246,93 @@ def register(registry):
         default_iterations=200, max_iterations=5000,
         prerequisites=("HW-B4-003",),
         defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B4-007", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-SERVO-015",),
+        title="Loaded and warmed characterization",
+        objective="Measure the closing error and timing under a "
+                  "bounded representative load, cold and warm, so the "
+                  "tolerance is set from the mechanism that will "
+                  "actually be operated.",
+        hardware_setup="Carousel attached with the profile's declared "
+                       "representative load. A bounded, documented "
+                       "mass - NOT a jam or stall fixture. If the "
+                       "profile declares no load fixture this test is "
+                       "BLOCKED rather than improvised.",
+        preconditions="HW-B4-003 measured the unloaded distribution.",
+        procedure=(
+            "confirm the declared load is fitted",
+            "from cold, run the symmetrical movement series and record "
+            "every closing error",
+            "run a warming series without recording",
+            "immediately repeat the measured series while warm",
+            "compare cold against warm, and both against the unloaded "
+            "figures from HW-B4-003",
+        ),
+        expected="Distributions for cold-loaded and warm-loaded, "
+                 "recorded beside the unloaded baseline.",
+        failure_criteria="A movement that cannot complete under the "
+                         "declared load. The DISTRIBUTIONS are "
+                         "characterization: a tolerance measured only "
+                         "cold and only unloaded is a tolerance for a "
+                         "mechanism nobody will operate, and this test "
+                         "exists to supply the other three corners "
+                         "rather than to judge them.",
+        captures=("cold-loaded closing errors",
+                  "warm-loaded closing errors",
+                  "timing for each", "the declared load fixture",
+                  "servo temperature where observable"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("servo.test_move", "servo.connect",
+                  "bench.representative_load"),
+        run=_loaded_and_warm, cleanup=_stop_and_release,
+        iteration_kind=IterationKind.MOVEMENT,
+        default_iterations=30, max_iterations=500,
+        characterization_min_iterations=15,
+        assumption="H-001", defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B4-008", campaign=CAMPAIGN, layer="B4",
+        requirements=("HW-REQ-PWR-002",),
+        title="Supply droop during motion, and brownout correlation",
+        objective="Measure how far the supply falls while the servo "
+                  "moves, and whether any ESP32 reset coincides with "
+                  "it.",
+        hardware_setup="A multimeter or oscilloscope on the servo "
+                       "supply, with safe access. Carousel attached and "
+                       "empty.",
+        preconditions="HW-B0-008 recorded the idle rails. HW-B4-001 "
+                      "passed.",
+        procedure=(
+            "record the idle supply voltage",
+            "record the module uptime",
+            "command a movement series while the operator watches the "
+            "supply",
+            "record the minimum voltage the instrument showed",
+            "read the uptime again and check the board did not reset",
+            "compare the droop against the idle baseline",
+        ),
+        expected="The board does not reset, and the droop is recorded "
+                 "against the idle baseline.",
+        failure_criteria="An ESP32 reset during movement. That is a "
+                         "brownout, it will look exactly like a "
+                         "firmware fault, and it invalidates any "
+                         "movement result taken around it. The DROOP "
+                         "itself is characterization - no "
+                         "schematic-derived minimum is recorded in this "
+                         "repository.",
+        captures=("idle supply voltage", "minimum voltage under motion",
+                  "the droop", "uptime before and after",
+                  "whether any reset occurred",
+                  "the measuring instrument"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("servo.test_move", "servo.connect", "link.status",
+                  "bench.multimeter"),
+        run=_supply_droop, cleanup=_stop_and_release,
+        defect_prefix="HW-PWR",
     )
 
 
@@ -670,3 +777,160 @@ def _endurance(ctx):
                   evidence={"first_tenth": first_tenth,
                             "last_tenth": last_tenth,
                             "drift": round(drift, 3)})
+
+
+def _loaded_and_warm(ctx):
+    ctx.require("servo.connect", "servo.test_move",
+                "bench.representative_load")
+
+    _connect(ctx)
+
+    load = ctx.profile.fixture("representative_load")
+
+    ctx.record("load_fixture", fixture=load)
+
+    ctx.confirm_observation(
+        "Is the declared representative load ({}) fitted to the "
+        "carousel".format(load))
+
+    ctx.confirm_observation(
+        "Is the load BOUNDED and free to move - this test must never "
+        "stall or jam the mechanism")
+
+    repeats = ctx.iterations()
+
+    cold, cold_outcomes = _run_series(
+        ctx, "out_and_back", repeats, "loaded_cold")
+
+    ctx.check(failure_rate(cold_outcomes)["all_passed"],
+              "every cold-loaded movement completed",
+              evidence=failure_rate(cold_outcomes))
+
+    ctx.say("warming the mechanism - these movements are not recorded")
+
+    _run_series(ctx, "out_and_back", max(5, repeats // 3), "warming")
+
+    warm, warm_outcomes = _run_series(
+        ctx, "out_and_back", repeats, "loaded_warm")
+
+    ctx.check(failure_rate(warm_outcomes)["all_passed"],
+              "every warm-loaded movement completed",
+              evidence=failure_rate(warm_outcomes))
+
+    def closing_of(records):
+        return [abs(r["closing_error"]) for r in records
+                if r.get("ok") and r.get("closing_error") is not None]
+
+    cold_distribution = summarize(closing_of(cold))
+    warm_distribution = summarize(closing_of(warm))
+
+    ctx.record("loaded_characterization", load=load,
+               cold=cold_distribution, warm=warm_distribution)
+
+    if cold_distribution and warm_distribution:
+        ctx.measure(
+            stage="loaded_summary", load=str(load),
+            cold_mean=cold_distribution["mean"],
+            cold_worst=cold_distribution["worst_abs"],
+            warm_mean=warm_distribution["mean"],
+            warm_worst=warm_distribution["worst_abs"],
+            drift=round(warm_distribution["mean"]
+                        - cold_distribution["mean"], 3))
+
+    ctx.characterize(
+        "closing error under the declared load: cold {}, warm {}. "
+        "Together with HW-B4-003's unloaded figures this gives the "
+        "corners a tolerance should be argued from. Nothing here is a "
+        "pass or a failure, because no authoritative closing-error "
+        "requirement exists.".format(
+            cold_distribution, warm_distribution))
+
+
+def _supply_droop(ctx):
+    ctx.require("servo.connect", "servo.test_move", "link.status",
+                "bench.multimeter")
+
+    meter = ctx.bench.require_instrument("multimeter")
+
+    ctx.record("instrument", **meter)
+
+    _connect(ctx)
+
+    def uptime():
+        data = ctx.link.request("get_status", retries=1)["data"] or {}
+
+        for key in ("uptime_ms", "esp_uptime_ms"):
+            if key in data:
+                return data[key]
+
+        return None
+
+    before_uptime = uptime()
+
+    idle = ctx.ask_number(
+        "With the module idle, measure the servo supply voltage",
+        minimum=0, maximum=30, unit="V")
+
+    if idle is None:
+        ctx.result.record_missing_required(
+            "the idle supply voltage was not measured")
+
+    ctx.instruct(
+        "Watch the supply on the instrument. A movement series is about "
+        "to run - note the LOWEST voltage you see, then press Enter.")
+
+    records, outcomes = _run_series(
+        ctx, "slot_out_and_back", 10, "droop")
+
+    minimum = ctx.ask_number(
+        "What was the lowest supply voltage during the movements",
+        minimum=0, maximum=30, unit="V")
+
+    if minimum is None:
+        ctx.result.record_missing_required(
+            "the minimum voltage under motion was not measured")
+
+    after_uptime = uptime()
+
+    ctx.check(failure_rate(outcomes)["all_passed"],
+              "every movement in the droop series completed",
+              evidence=failure_rate(outcomes))
+
+    if before_uptime is not None and after_uptime is not None:
+        ctx.check(after_uptime >= before_uptime,
+                  "the ESP32 did not reset during the movement series",
+                  evidence={"before": before_uptime,
+                            "after": after_uptime})
+
+        if after_uptime < before_uptime:
+            ctx.defect(
+                title="the ESP32 reset during servo motion",
+                observed="uptime fell from {} to {} across a movement "
+                         "series with the supply reaching {} V".format(
+                             before_uptime, after_uptime, minimum),
+                expected="no reset; uptime only increases",
+                reproduction=("run HW-B4-008",),
+                suspected_layer="power - a brownout under motion "
+                                "current",
+                evidence={"idle_v": idle, "minimum_v": minimum,
+                          "instrument": meter},
+            )
+
+    droop = None
+
+    if idle is not None and minimum is not None:
+        droop = round(idle - minimum, 3)
+
+    ctx.record("droop", idle_v=idle, minimum_v=minimum, droop_v=droop,
+               uptime_before=before_uptime, uptime_after=after_uptime)
+
+    ctx.measure(stage="droop", idle_v=idle, minimum_v=minimum,
+                droop_v=droop, uptime_before=before_uptime,
+                uptime_after=after_uptime,
+                instrument=meter.get("model") or "")
+
+    ctx.characterize(
+        "supply droop under motion measured: idle {} V, minimum {} V, "
+        "droop {} V. No schematic-derived minimum supply voltage is "
+        "recorded in this repository, so this is the baseline a later "
+        "brownout is compared against.".format(idle, minimum, droop))

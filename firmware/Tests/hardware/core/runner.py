@@ -38,8 +38,10 @@ import json
 import traceback
 from pathlib import Path
 
-from .model import (Aborted, Blocked, Evidence, EVIDENCE_FOR_MODE, Failure,
-                    Mode, Safety, Skip, Status, TestResult, now)
+from .model import (Aborted, Blocked, Characterization, Evidence,
+                    EVIDENCE_FOR_MODE, Execution, Failure,
+                    Inconclusive, Mode, Safety, Skip, Status,
+                    TestResult, Verdict, now)
 from .context import HardwareNotPermitted
 
 
@@ -209,6 +211,33 @@ class Runner:
             result.status = Status.SKIPPED
             result.reason = skip.reason
 
+        except Inconclusive as unsettled:
+            # The procedure RAN. Nothing was observed to be wrong, and
+            # the thing the test exists to establish was not
+            # established. That is neither a pass nor a failure and the
+            # old vocabulary had no word for it.
+            for description in unsettled.missing:
+                result.record_missing_required(description)
+
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.INCONCLUSIVE,
+                          reason=unsettled.reason)
+
+            context.event("inconclusive", test_id=definition.test_id,
+                          reason=unsettled.reason,
+                          missing=list(unsettled.missing),
+                          evidence=unsettled.evidence)
+
+        except Characterization as characterized:
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.CHARACTERIZATION,
+                          reason=characterized.reason)
+
+            context.event("characterization",
+                          test_id=definition.test_id,
+                          reason=characterized.reason,
+                          measurements=characterized.measurements)
+
         except Failure as failure:
             result.status = Status.FAIL
             result.reason = failure.reason
@@ -243,7 +272,12 @@ class Runner:
                           traceback=traceback.format_exc())
 
         else:
-            result.status = self._verdict(result)
+            # `_verdict` settles the axes itself. Assigning its return
+            # value back through the legacy `status` setter would
+            # re-derive the axes from the coarse projection and throw
+            # away the distinction it had just made - a CHARACTERIZATION
+            # became NOT_EVALUATED that way.
+            self._verdict(result)
 
         finally:
             self._cleanup(definition, result)
@@ -256,14 +290,27 @@ class Runner:
 
     def _verdict(self, result):
         """
-        PASS needs three things, and the third is the one people forget.
+        PASS needs five things now, and each one was a way to fake it.
 
-        The body must have completed, every check must have passed, and
-        THERE MUST HAVE BEEN AT LEAST ONE CHECK. A test that ran, made
-        no observation and returned is not a pass - it is a test that
-        forgot to look.
+            the body completed
+            at least one check was made        - a test that looked at
+                                                 nothing is not a pass
+            every check passed
+            every REQUIRED observation was
+                obtained                       - a test cannot pass on
+                                                 evidence it never got
+            the run met its qualification
+                minimum                        - `--iterations 10` may
+                                                 not satisfy a criterion
+                                                 that says 100
+
+        The last two are new, and both were reachable before: eight test
+        bodies accepted a missing field as a pass, and any repeated test
+        could be run below its own stated sample size.
         """
         if not result.checks:
+            result.settle(execution=Execution.ERROR)
+
             result.reason = (
                 "the procedure completed without making a single check. "
                 "That is not a pass; it is a test that did not look.")
@@ -273,27 +320,89 @@ class Runner:
         failed = result.failed_checks()
 
         if failed:
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.FAIL)
+
             result.reason = "{} of {} checks failed: {}".format(
                 len(failed), len(result.checks),
                 "; ".join(c.description for c in failed[:3]))
 
             return Status.FAIL
 
+        if result.missing_required:
+            # The procedure ran and a REQUIRED observation was never
+            # obtained. Nothing is wrong with the hardware as far as
+            # anybody can tell - and the objective was not met.
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.INCONCLUSIVE)
+
+            result.reason = (
+                "{} required observation{} were not obtained: {}".format(
+                    len(result.missing_required),
+                    "" if len(result.missing_required) == 1 else "s",
+                    "; ".join(m["description"]
+                              for m in result.missing_required[:3])))
+
+            return Status.SKIPPED
+
+        under = self._under_qualified(result)
+
+        if under is not None:
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.CHARACTERIZATION)
+
+            result.reason = under
+
+            return Status.SKIPPED
+
         if not result.hardware_evidence:
-            # Reachable only in SELFTEST. The status is computed for the
-            # framework's own assertions; `reported_status` renders it
-            # as SELFTEST_PASS and `TestResult` refuses to hold PASS
-            # with a non-hardware evidence class, so this is the branch
-            # that keeps that invariant true.
+            # Reachable only in SELFTEST. `TestResult` refuses to hold
+            # PASS with a non-hardware evidence class, so this is the
+            # branch that keeps that invariant true.
+            result.settle(execution=Execution.COMPLETED,
+                          verdict=Verdict.NOT_EVALUATED)
+
             result.reason = "{} checks passed against a fake transport; " \
                             "this says nothing about the hardware".format(
                                 len(result.checks))
 
             return Status.SKIPPED
 
+        result.settle(execution=Execution.COMPLETED,
+                      verdict=Verdict.PASS)
+
         result.reason = "{} checks passed".format(len(result.checks))
 
-        return Status.PASS
+        return result.status
+
+    def _under_qualified(self, result):
+        """
+        Why this run cannot claim a qualification, or None.
+
+        A test that declares `qualification_min_iterations` is stating
+        its own sample size. Running fewer produces measurements - which
+        are worth having - but not a qualification, and the difference
+        has to be in the verdict rather than in a footnote.
+        """
+        definition = result.definition
+
+        minimum = definition.qualification_min_iterations
+
+        if minimum is None or result.iterations is None:
+            return None
+
+        if result.iterations >= minimum:
+            result.qualified = True
+
+            return None
+
+        result.qualified = False
+
+        return (
+            "{} iterations were run and this test's own acceptance "
+            "criterion needs at least {}. The measurements are kept as "
+            "characterization; a qualification PASS is not available "
+            "at this sample size.".format(result.iterations, minimum))
 
     # ------------------------------------------------------------------
     # gates

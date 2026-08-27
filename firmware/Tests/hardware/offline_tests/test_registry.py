@@ -89,6 +89,7 @@ def run():
             title="t", objective="o", hardware_setup="h",
             preconditions="p", procedure=("s",), expected="e",
             failure_criteria="f", captures=("c",),
+            requirements=("HW-REQ-FW-001",),
             safety=Safety.READ_ONLY, automation=Automation.AUTOMATIC,
             run=nothing, prerequisites=prerequisites)
 
@@ -111,7 +112,8 @@ def run():
             test_id="HW-X-003", campaign="X", layer="X", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=(), expected="e", failure_criteria="f",
-            captures=("c",), safety=Safety.READ_ONLY,
+            captures=("c",), requirements=("HW-REQ-FW-001",),
+            safety=Safety.READ_ONLY,
             automation=Automation.AUTOMATIC, run=nothing),
         "a test with an empty procedure is refused")
 
@@ -121,7 +123,8 @@ def run():
             test_id="HW-X-004", campaign="X", layer="X", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=("s",), expected="e", failure_criteria="f",
-            captures=(), safety=Safety.READ_ONLY,
+            captures=(), requirements=("HW-REQ-FW-001",),
+            safety=Safety.READ_ONLY,
             automation=Automation.AUTOMATIC, run=nothing),
         "a test that says nothing about what to capture is refused")
 
@@ -131,7 +134,8 @@ def run():
             test_id="HW-X-005", campaign="X", layer="X", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=("s",), expected="e", failure_criteria="f",
-            captures=("c",), safety="NOT_A_SAFETY_CLASS",
+            captures=("c",), requirements=("HW-REQ-FW-001",),
+            safety="NOT_A_SAFETY_CLASS",
             automation=Automation.AUTOMATIC, run=nothing),
         "an unknown safety class is refused")
 
@@ -141,7 +145,8 @@ def run():
             test_id="HW-X-006", campaign="X", layer="X", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=("s",), expected="e", failure_criteria="f",
-            captures=("c",), safety=Safety.ENDURANCE,
+            captures=("c",), requirements=("HW-REQ-FW-001",),
+            safety=Safety.ENDURANCE,
             automation=Automation.AUTOMATIC, run=nothing),
         "an ENDURANCE test with no iteration ceiling is refused")
 

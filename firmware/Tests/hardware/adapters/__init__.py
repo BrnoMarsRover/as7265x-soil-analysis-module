@@ -14,7 +14,9 @@ firmware command table by parsing `protocol.py` with `ast` - so
 """
 
 from .base import Adapter, AdapterError, Capability
+from .bench import BenchAdapter
 from .carousel import CarouselAdapter
+from .diagnostic import DiagnosticAdapter
 from .link import LinkAdapter
 from .sensor import SensorAdapter
 from .servo import ServoAdapter
@@ -22,6 +24,6 @@ from .workflow import WorkflowAdapter
 
 __all__ = [
     "Adapter", "AdapterError", "Capability",
-    "CarouselAdapter", "LinkAdapter", "SensorAdapter", "ServoAdapter",
-    "WorkflowAdapter",
+    "BenchAdapter", "CarouselAdapter", "DiagnosticAdapter",
+    "LinkAdapter", "SensorAdapter", "ServoAdapter", "WorkflowAdapter",
 ]

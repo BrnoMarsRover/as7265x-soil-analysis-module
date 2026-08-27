@@ -5,17 +5,50 @@ AS7265x, and a carousel that turns.
 
 > ## Status: NO HARDWARE HAS BEEN EXECUTED
 >
-> Every one of the **78 registered tests** is `NOT_RUN`. 75 are
-> `READY_FOR_HARDWARE` — their definitions, prerequisites, capabilities
-> and configuration have all been checked offline and they will execute
-> the moment a board is connected. 3 are `BLOCKED` on a production
-> interface that does not exist yet; each names the exact change that
-> would unblock it.
+> Every one of the **107 registered tests** is `NOT_RUN`, across **13
+> campaigns** and **113 requirements**. 94 are `READY_FOR_HARDWARE` —
+> their definitions, prerequisites, capabilities and configuration have
+> all been checked offline and they will execute the moment a board is
+> connected. 13 are `BLOCKED`, and every one of them is blocked on
+> something you can supply: a field in the bench profile, an instrument,
+> a fixture, or the test-side diagnostic agent.
 >
 > **Nothing in this directory is evidence about the hardware.** The
-> framework's own test suite passes — 943 checks against a fake
+> framework's own test suite passes — 1,678 checks against a fake
 > transport — and that says the harness is ready. It says nothing about
 > a carousel.
+>
+> Start at [RUNBOOK.md](RUNBOOK.md) when the module is on the bench.
+
+---
+
+## What a result says now
+
+A single status could not tell these apart, so there are three
+independent axes and `status` is a projection of them:
+
+| Axis | Values | Question it answers |
+| --- | --- | --- |
+| readiness | `READY` `BLOCKED` | could the procedure start? |
+| execution | `NOT_RUN` `RUNNING` `COMPLETED` `ABORTED` `ERROR` | what happened once it did? |
+| verdict | `NOT_EVALUATED` `PASS` `FAIL` `INCONCLUSIVE` `CHARACTERIZATION` | what does the evidence say about the hardware? |
+
+The two the old model could not express are the ones that matter most:
+
+- **`INCONCLUSIVE`** — the procedure ran and a required observation was
+  missing or ambiguous. An operator who answered UNKNOWN; a field the
+  firmware did not return; a fault injected outside its target window.
+  Not a failure, and emphatically not a pass.
+- **`CHARACTERIZATION`** — measurements were collected and no
+  authoritative requirement exists to judge them. Most of B4 is this
+  until somebody writes down what the closing error is allowed to be.
+  Of 113 requirements, **33 have no authoritative source** and say so;
+  those can only ever characterize.
+
+**A `PASS` needs five things**, and each was a way to fake one before:
+the body completed, at least one check was made, every check passed,
+every `REQUIRED` observation was actually obtained, and the run met its
+own declared qualification sample size.
 
 ---
 
@@ -41,9 +74,14 @@ never be reachable by reflex.** So:
 - The only files under `Tests/hardware/` named `test_*.py` are in
   `offline_tests/`, and every one of them runs on a fake transport.
 
-A tripwire around `serial.Serial` and `list_ports.comports` confirms
-that `--list`, `--describe`, `--capabilities`, every campaign dry run
-and the entire offline suite perform **zero** port operations.
+Tripwires around `serial.Serial`, `serial.serial_for_url`,
+`list_ports.comports`, `SerialLink.open`, `SerialLink.hard_reset`,
+`SerialLink.available_ports`, `os.open` on any device path, and
+`subprocess` invocation of mpremote, esptool, ampy, rshell or the
+diagnostic agent confirm that import, `--help`, `--list`,
+`--describe`, `--capabilities`, every campaign dry run and the entire
+offline suite perform **zero** hardware operations. Each tripwire
+raises; one that merely counted could be called and ignored.
 
 ---
 
@@ -390,18 +428,28 @@ it is re-run.
 
 ---
 
-## The three tests that are BLOCKED today
+## The thirteen tests that are BLOCKED today
 
-| Test | Missing | What would unblock it |
+None is blocked on a gap nobody can close. Every one names a thing you
+can supply.
+
+| Missing | Tests | How to unblock |
 | --- | --- | --- |
-| `HW-B2-006` | `servo.raw_packet` | a bounded read-only `servo_raw_read` command in `firmware/ESP32/protocol.py` |
-| `HW-B3-004` | `servo.raw_packet` | the same command |
-| `HW-B6-001` | `sensor.i2c_scan_on_demand` | a read-only `i2c_scan` command wrapping the existing `sensor.scan_bus` |
+| the test-side diagnostic agent | `HW-B2-006` `HW-B2-008` `HW-B2-011` `HW-B3-004` `HW-B6-001` | deploy it per [test_side_firmware/DEPLOYMENT.md](test_side_firmware/DEPLOYMENT.md) |
+| `unit.module_id` | `HW-B0-006` | name the physical module in the bench profile |
+| `instruments.multimeter` | `HW-B0-008` `HW-B4-008` `HW-B7-012` | declare it with model, serial and calibration date |
+| `instruments.oscilloscope` | `HW-B0-010` | the same |
+| `instruments.thermal_probe` | `HW-B11-007` | the same |
+| `fixtures.representative_load` | `HW-B4-007` `HW-B5-007` | a bounded, documented mass — never a jam fixture |
 
-Neither has been added. **Adding an unverified diagnostic command to
-production firmware to make a test green is exactly the thing this
-framework exists to avoid.** Both are recommendations for an engineer to
-decide on, and `--capabilities` prints the full text of each.
+**The competition firmware was not changed to unblock anything.** The
+three original blockers needed raw servo bytes and an on-demand I2C
+scan; adding either to a build that can reach a competition is a worse
+defect than the gap it fills. They are provided instead by a read-only,
+whitelisted, manually deployed agent under `test_side_firmware/`, which
+never runs at boot and has no movement command at all.
+
+`--capabilities` prints the full reason and recommendation for each.
 
 ---
 

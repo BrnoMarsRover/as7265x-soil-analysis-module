@@ -31,7 +31,9 @@ if str(HERE.parent.parent) not in sys.path:
 SUITES = (
     ("test_registry", "the catalogue: ids, completeness, layer gates"),
     ("test_support", "statistics, operator, profile, ports, data shape"),
+    ("test_verdicts", "the three axes, requirements and iteration kinds"),
     ("test_adapters", "capability detection and error normalization"),
+    ("test_diagnostic", "the test-side agent, its safety and its adapter"),
     ("test_evidence", "manifests, events, CSV, summaries, defects"),
     ("test_runner", "verdicts, cleanup, aborts, blocks, iterations"),
     ("test_safety", "the gates, end to end, through the real CLI"),

@@ -25,7 +25,8 @@ has been tested. It is a test of the whole instrument in the hands of
 the person who will use it.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
 from ..core.analysis import summarize
 
 
@@ -38,13 +39,22 @@ def register(registry):
         purpose="Run the mission the way it will be run, with the "
                 "operator who will run it, and record what actually "
                 "happened.",
-        prerequisites=("B10",),
-        gate_note="Gated by B10 and therefore by the whole chain. This "
-                  "must never be the first hardware test executed.",
+        prerequisites=("B10", "B11"),
+        gate_note="Gated by B10 AND B11, explicitly. B10 alone would "
+                  "reach B8 transitively but never B11: a mission "
+                  "rehearsal on a system whose endurance was never "
+                  "measured is one long run away from the failure "
+                  "nobody looked for. This must never be the first "
+                  "hardware test executed.",
     )
 
     registry.test(
         test_id="HW-B12-001", campaign=CAMPAIGN, layer="B12",
+        requirements=(
+            "HW-REQ-MISSION-001",
+            "HW-REQ-MISSION-002",
+            "HW-REQ-MISSION-003",
+        ),
         title="One complete mission rehearsal",
         objective="Take the instrument through a full competition "
                   "sequence - setup, every slot, analysis, records - "
@@ -91,6 +101,10 @@ def register(registry):
 
     registry.test(
         test_id="HW-B12-002", campaign=CAMPAIGN, layer="B12",
+        requirements=("HW-REQ-MISSION-004",),
+        iteration_kind=IterationKind.MISSION,
+        qualification_min_iterations=3,
+        characterization_min_iterations=2,
         title="Repeated mission rehearsals",
         objective="Establish that the mission is repeatable and that "
                   "its duration is predictable enough to plan around.",

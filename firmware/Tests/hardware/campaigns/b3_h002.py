@@ -44,10 +44,11 @@ writes to config.py, and nothing here may be used to argue for widening
 it. That number comes from HW-B4-003's measured distribution.
 """
 
-from ..core.model import Automation, Safety
-from ..core.analysis import (byte_order_interpretations, centred_error,
-                               counts_to_degrees, degrees_to_counts,
-                               summarize)
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
+from ..core.analysis import (byte_order_interpretations,
+                             centred_error, counts_to_degrees,
+                             degrees_to_counts, summarize)
 
 
 CAMPAIGN = "B3"
@@ -74,6 +75,11 @@ def register(registry):
 
     registry.test(
         test_id="HW-B3-001", campaign=CAMPAIGN, layer="B3",
+        requirements=(
+            "HW-REQ-H002-001",
+            "HW-REQ-H002-004",
+            "HW-REQ-H002-006",
+        ),
         title="Commanded angle versus encoder versus protractor",
         objective="Measure, for each of +10, +45, +90, +180 and +360 "
                   "degrees and each reverse, what was commanded, what "
@@ -133,6 +139,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B3-002", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-H002-002",),
         title="Encoder resolution from a measured full revolution",
         objective="Establish how many counts one physical revolution of "
                   "the output shaft actually is, rather than assuming "
@@ -170,6 +177,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B3-003", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-H002-003",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=5,
         title="Is the position answer fresh, or left over?",
         objective="Separate 'the encoder did not move' from 'we were "
                   "given an old answer'.",
@@ -206,6 +216,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B3-004", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-SERVO-007",),
         title="Byte-order interpretation of the raw position register",
         objective="Read the position register as bytes and check "
                   "whether an alternative byte order would explain the "
@@ -227,17 +238,19 @@ def register(registry):
         captures=("raw bytes", "each interpretation",
                   "the commanded count compared against"),
         safety=Safety.COMMUNICATION, automation=Automation.AUTOMATIC,
-        requires=("servo.raw_packet",),
+        requires=("diagnostic.servo_raw",),
         run=_byte_order, cleanup=_stop_and_release,
         assumption="H-002", defect_prefix="HW-SERVO",
-        notes="BLOCKED: no raw servo register access in the shipped "
-              "firmware. HW-B3-001 records the same interpretations "
-              "against the PARSED value as a diagnostic hint, which is "
-              "weaker but needs no firmware change.",
+        notes="BLOCKED until the test-side diagnostic agent is "
+              "deployed. HW-B3-001 meanwhile records the same "
+              "interpretations against the PARSED value as a hint - "
+              "weaker, because it cannot see the wire, but it needs no "
+              "deployment at all.",
     )
 
     registry.test(
         test_id="HW-B3-005", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-H002-005",),
         title="Servo-to-carousel ratio from measured angles",
         objective="Derive the ratio between the servo's reported "
                   "movement and the carousel's physical movement, so "
@@ -878,18 +891,103 @@ def _reading_freshness(ctx):
 
 
 def _byte_order(ctx):
-    ctx.require("servo.raw_packet")
+    """
+    Does an alternative byte order explain the contradiction?
 
-    transaction = ctx.link.request(                     # pragma: no cover
-        "servo_raw_read", register=56, length=2)
+    Reads the position register as bytes before and after a small
+    commanded movement, and asks which interpretation moved by the
+    commanded amount. Diagnostic, not authoritative: the little-endian
+    reading is the ST3215 memory-table order and the one the driver
+    uses, and the others are here so a swap is visible to a human.
+    """
+    ctx.require("diagnostic.servo_raw", "servo.test_move",
+                "servo.connect")
 
-    answer = transaction["data"] or {}                  # pragma: no cover
+    ctx.diagnostic.identify()
 
-    ctx.record("raw_position", **answer)                # pragma: no cover
+    _connect_servo(ctx)
 
-    ctx.check(bool(answer.get("bytes")),                # pragma: no cover
-              "the raw position bytes were captured",
-              evidence=answer)
+    counts_per_rev = ctx.profile.counts_per_rev
+
+    before = ctx.diagnostic.servo_raw_read(register=56,
+                                           length=2)["data"] or {}
+
+    before_bytes = before.get("bytes")
+
+    ctx.require_observation("the raw position bytes before the movement",
+                            before_bytes, evidence={"answer": before})
+
+    commanded_degrees = 45.0
+
+    commanded_counts = degrees_to_counts(commanded_degrees,
+                                         counts_per_rev)
+
+    ctx.servo.move("degrees", repeat=1, degrees=commanded_degrees)
+
+    after = ctx.diagnostic.servo_raw_read(register=56,
+                                          length=2)["data"] or {}
+
+    after_bytes = after.get("bytes")
+
+    ctx.require_observation("the raw position bytes after the movement",
+                            after_bytes, evidence={"answer": after})
+
+    if not (before_bytes and after_bytes):
+        return
+
+    first = ctx.diagnostic.interpret_bytes(before_bytes)
+    second = ctx.diagnostic.interpret_bytes(after_bytes)
+
+    deltas = {}
+
+    for reading in ("little_endian", "big_endian"):
+        deltas[reading] = centred_error(
+            second[reading] - first[reading], counts_per_rev)
+
+    tolerance = ctx.profile.production["servo"]["position_tolerance"]
+
+    matching = [name for name, delta in sorted(deltas.items())
+                if delta is not None
+                and abs(delta - commanded_counts) <= tolerance]
+
+    ctx.record("byte_order", before=first, after=second,
+               commanded_counts=commanded_counts,
+               commanded_degrees=commanded_degrees,
+               deltas=deltas, matching=matching, tolerance=tolerance)
+
+    ctx.measure(stage="byte_order",
+                commanded_counts=commanded_counts,
+                before_hex=first["hex"], after_hex=second["hex"],
+                little_delta=deltas.get("little_endian"),
+                big_delta=deltas.get("big_endian"),
+                matching=";".join(matching))
+
+    ctx.check(
+        "little_endian" in matching,
+        "the little-endian reading - the ST3215 memory-table order, and "
+        "the one the driver uses - moved by the commanded {} "
+        "counts".format(commanded_counts),
+        evidence={"deltas": deltas, "commanded": commanded_counts,
+                  "tolerance": tolerance})
+
+    if "little_endian" not in matching and "big_endian" in matching:
+        ctx.defect(
+            title="the position register reads correctly only when "
+                  "byte-swapped",
+            observed="a commanded {} counts moved the big-endian "
+                     "reading by {} and the little-endian reading by "
+                     "{}".format(commanded_counts,
+                                 deltas.get("big_endian"),
+                                 deltas.get("little_endian")),
+            expected="the little-endian reading moves by the commanded "
+                     "count",
+            reproduction=("run HW-B3-004 with the diagnostic agent "
+                          "deployed",),
+            suspected_layer="the position register byte order - "
+                            "hypothesis 8 of H-002",
+            evidence={"before": first, "after": second,
+                      "deltas": deltas},
+        )
 
 
 def _gear_ratio(ctx):

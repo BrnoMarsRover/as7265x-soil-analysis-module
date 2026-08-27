@@ -18,7 +18,8 @@ is generated from the production slot count, so the campaign is correct
 for this plate and would still be correct for an eight-slot one.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
 from ..core.analysis import failure_rate, summarize
 
 
@@ -39,6 +40,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-001", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-001", "HW-REQ-CAR-002"),
         title="Every adjacent slot transition, both directions",
         objective="Prove each neighbouring transition lands where the "
                   "firmware says it did.",
@@ -71,6 +73,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-002", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-001",),
         title="Non-adjacent slot transitions",
         objective="Check the movements that cross more than one slot, "
                   "including the one that must take the shorter way "
@@ -99,6 +102,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-003", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-003",),
         title="Loader to scanner geometry",
         objective="Verify the physical relationship the whole "
                   "measurement depends on: the slot at the loading hole "
@@ -132,6 +136,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-004", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-004",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=5,
         title="Backlash: approaching one slot from both directions",
         objective="Measure whether the resting position of a slot "
                   "depends on which way it was approached.",
@@ -162,6 +169,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-005", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-005",),
+        iteration_kind=IterationKind.ROTATION,
+        characterization_min_iterations=3,
         title="Accumulated drift over full rotations",
         objective="Establish whether position drifts after many "
                   "consecutive slot movements in one direction.",
@@ -192,6 +202,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B5-006", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-006",),
         title="Re-sync after a deliberate hand turn",
         objective="Prove the operator can recover a known position "
                   "after the plate has been moved by hand.",
@@ -223,6 +234,155 @@ def register(registry):
         run=_resync, cleanup=_park,
         defect_prefix="HW-CAR",
         notes="Replaces HW-402.",
+    )
+
+    registry.test(
+        test_id="HW-B5-007", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-007",),
+        title="Samples are retained and the plate stays clear",
+        objective="Move a loaded carousel through every transition and "
+                  "confirm nothing is displaced, spilled or fouled.",
+        hardware_setup="Carousel attached with the profile's declared "
+                       "representative load in every slot. A bounded, "
+                       "documented mass - never a jam fixture.",
+        preconditions="HW-B5-001 passed with an empty plate.",
+        procedure=(
+            "confirm the declared load is in every slot",
+            "record the mass and how it is contained",
+            "walk every adjacent transition in both directions",
+            "after each, ask whether anything moved within its slot or "
+            "left it",
+            "after the round, ask whether the plate still turns freely "
+            "and clears everything around it",
+        ),
+        expected="No sample displaced, nothing spilled, clearance "
+                 "maintained throughout.",
+        failure_criteria="Any displacement or spillage. An empty "
+                         "carousel is not the carousel that will be "
+                         "operated, and a plate that throws its sample "
+                         "on the field loses the measurement and "
+                         "contaminates the next slot.",
+        captures=("the declared load and its containment",
+                  "per-transition retention observation",
+                  "any displacement, with which slot",
+                  "the final clearance observation"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("carousel.select_slot", "carousel.sync",
+                  "bench.representative_load"),
+        run=_sample_retention, cleanup=_park,
+        defect_prefix="HW-CAR",
+    )
+
+    registry.test(
+        test_id="HW-B5-008", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-008",),
+        title="Settling and ringing after a movement",
+        objective="Establish how long the plate keeps moving after the "
+                  "driver reports the movement complete, and whether "
+                  "the configured settle time covers it.",
+        hardware_setup="Carousel attached. The operator can see the "
+                       "plate clearly, ideally against a reference "
+                       "mark.",
+        preconditions="HW-B5-001 passed.",
+        procedure=(
+            "command a slot movement",
+            "ask the operator to watch the plate as it arrives",
+            "ask whether it overshot and came back",
+            "ask how long visible motion continued after it first "
+            "reached the slot",
+            "read the encoder immediately and again after the "
+            "configured settle time",
+            "repeat several times",
+            "compare the observed ringing against SCAN_SETTLE_TIME",
+        ),
+        expected="Visible motion stops within the configured settle "
+                 "time, and the encoder agrees between the immediate "
+                 "and settled reads.",
+        failure_criteria="Ringing that outlasts the settle time. The "
+                         "sensor would then be reading a sample that is "
+                         "still moving, and every spectrum would carry "
+                         "that as noise nobody could attribute.",
+        captures=("per-repetition observed ringing duration",
+                  "whether overshoot was seen",
+                  "immediate and settled encoder readings",
+                  "the configured settle time"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("carousel.select_slot", "servo.read_position"),
+        run=_settling, cleanup=_park,
+        iteration_kind=IterationKind.MOVEMENT,
+        default_iterations=5, max_iterations=100,
+        characterization_min_iterations=3,
+        defect_prefix="HW-CAR",
+    )
+
+    registry.test(
+        test_id="HW-B5-009", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-009",),
+        title="Sensor head centering and sample gap",
+        objective="Measure where the slot actually sits under the "
+                  "sensor head, and how far below it, so a spectral "
+                  "repeatability figure has a geometry attached.",
+        hardware_setup="Carousel attached and empty. The operator can "
+                       "see the sensor head and the slot beneath it, "
+                       "and has something to measure the gap with.",
+        preconditions="HW-B5-003 passed.",
+        procedure=(
+            "move each slot in turn to the scanner position",
+            "ask the operator whether the slot is centred under the "
+            "head",
+            "ask for the offset from centre if it is not",
+            "measure the head-to-sample gap",
+            "record all of it per slot",
+        ),
+        expected="Every slot arrives centred under the head, and the "
+                 "gap is the same for each.",
+        failure_criteria="A slot that is consistently off-centre, or a "
+                         "gap that varies between slots. Both change "
+                         "the illumination geometry, and a spectrum "
+                         "taken off-centre is partly a measurement of "
+                         "the carousel.",
+        captures=("per-slot centering observation",
+                  "per-slot offset from centre where measurable",
+                  "per-slot head-to-sample gap"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("carousel.select_slot", "carousel.sync"),
+        run=_head_geometry, cleanup=_park,
+        defect_prefix="HW-CAR",
+    )
+
+    registry.test(
+        test_id="HW-B5-010", campaign=CAMPAIGN, layer="B5",
+        requirements=("HW-REQ-CAR-010",),
+        title="Fine adjust is bounded and preserves the logical slot",
+        objective="Check a fine adjustment stays inside its configured "
+                  "envelope and does not change which slot the firmware "
+                  "believes is loaded.",
+        hardware_setup="Carousel attached and empty, synchronized.",
+        preconditions="HW-B5-001 passed.",
+        procedure=(
+            "record the reported slot and encoder position",
+            "apply a small fine adjustment and read both back",
+            "check the slot number did not change",
+            "apply the opposite adjustment and check it returns",
+            "attempt an adjustment beyond MAX_FINE_ADJUST_DEG and check "
+            "it is refused",
+            "confirm the slot is still what it was at the start",
+        ),
+        expected="Small adjustments move the plate without changing the "
+                 "slot, and an over-large one is refused.",
+        failure_criteria="A fine adjustment that changes the logical "
+                         "slot - the firmware and the plate would then "
+                         "disagree with nobody noticing - or an "
+                         "over-large adjustment that is accepted.",
+        captures=("slot and position at each step",
+                  "the refusal for the over-large attempt",
+                  "the configured maximum",
+                  "the net position change across the pair"),
+        safety=Safety.MOTION, automation=Automation.AUTOMATIC,
+        requires=("carousel.fine_adjust", "carousel.status",
+                  "servo.read_position"),
+        run=_fine_adjust_bounds, cleanup=_park,
+        defect_prefix="HW-CAR",
     )
 
 
@@ -338,12 +498,13 @@ def _adjacent(ctx):
         outcomes.append(bool(row.get("ok")))
 
         if row.get("ok"):
-            landed = row.get("reported_load_slot")
-
-            ctx.check(landed in (None, target),
-                      "{} -> {}: the firmware reports slot {}".format(
-                          source, target, landed),
-                      evidence=row)
+            # REQUIRED: a transition whose destination the firmware
+            # will not report has not been shown to land anywhere.
+            ctx.observed(
+                "{} -> {}: the firmware reports the requested "
+                "slot".format(source, target),
+                row.get("reported_load_slot"), expected=target,
+                requirement=Requirement.REQUIRED, evidence=row)
 
     rate = failure_rate(outcomes)
 
@@ -659,3 +820,297 @@ def _resync(ctx):
     ctx.confirm_observation(
         "Did the plate move exactly one slot, and is slot {} now at the "
         "loading hole".format(next_slot))
+
+
+def _sample_retention(ctx):
+    ctx.require("carousel.select_slot", "carousel.sync",
+                "bench.representative_load")
+
+    load = ctx.profile.fixture("representative_load")
+
+    ctx.record("load_fixture", fixture=load)
+
+    ctx.confirm_observation(
+        "Is the declared representative load ({}) in every "
+        "slot".format(load))
+
+    containment = ctx.operator_note(
+        "How is the load contained - loose powder, a capsule, "
+        "something else")
+
+    _prepare(ctx)
+
+    transitions = ctx.carousel.adjacent_transitions()
+
+    displaced = []
+
+    for source, target in transitions:
+        ctx.carousel.select_slot(source)
+
+        row = _select(ctx, target, "retention")
+
+        retained = ctx.ask(
+            "{} -> {}: did everything stay in its slot".format(
+                source, target))
+
+        if not retained:
+            displaced.append({"from": source, "to": target})
+
+        ctx.measure(stage="retention", from_slot=source, to_slot=target,
+                    ok=row.get("ok"), retained=bool(retained))
+
+    ctx.check(not displaced,
+              "no sample was displaced by any transition",
+              evidence={"displaced": displaced}, kind="OPERATOR")
+
+    ctx.confirm_observation(
+        "After the whole round, does the plate still turn freely and "
+        "clear everything around it")
+
+    ctx.confirm_observation(
+        "Is there any spillage anywhere on or under the carousel")
+
+    ctx.record("retention", load=load, containment=containment,
+               transitions=len(transitions), displaced=displaced)
+
+    if displaced:
+        ctx.defect(
+            title="the carousel displaces its samples when it moves",
+            observed="displacement at {}".format(displaced),
+            expected="every sample stays in its slot through every "
+                     "transition",
+            reproduction=("run HW-B5-007 with the same load",),
+            suspected_layer="mechanism - slot geometry, acceleration or "
+                            "containment",
+            evidence={"load": load, "containment": containment,
+                      "displaced": displaced},
+        )
+
+
+def _settling(ctx):
+    ctx.require("carousel.select_slot", "servo.read_position")
+
+    import time
+
+    _prepare(ctx)
+
+    repeats = ctx.iterations()
+
+    settle_s = ctx.profile.production["carousel"].get(
+        "scan_settle_time", 0.5)
+
+    count = ctx.carousel.slot_count()
+
+    observations = []
+
+    for index in range(1, repeats + 1):
+        target = index % count + 1
+
+        _select(ctx, target, "settling")
+
+        immediate = ctx.servo.position()
+
+        overshot = ctx.ask(
+            "Repetition {}: did the plate overshoot and come "
+            "back".format(index))
+
+        ringing = ctx.ask_number(
+            "Repetition {}: how long did visible motion continue after "
+            "it first reached the slot (0 if it stopped dead, UNKNOWN "
+            "if you could not tell)".format(index),
+            minimum=0, maximum=60, unit="s")
+
+        time.sleep(settle_s)
+
+        settled = ctx.servo.position()
+
+        drift = (settled - immediate
+                 if None not in (settled, immediate) else None)
+
+        entry = {"repetition": index, "target": target,
+                 "immediate": immediate, "settled": settled,
+                 "drift": drift, "overshot": bool(overshot),
+                 "ringing_s": ringing}
+
+        observations.append(entry)
+
+        ctx.measure(stage="settling", **entry)
+
+    drifts = [o["drift"] for o in observations
+              if o["drift"] is not None]
+
+    ctx.check(all(d == 0 for d in drifts),
+              "the encoder agrees between the immediate and the settled "
+              "read",
+              evidence={"drifts": drifts})
+
+    measured = [o["ringing_s"] for o in observations
+                if o["ringing_s"] is not None]
+
+    ctx.check(bool(measured),
+              "the operator was able to judge the ringing on at least "
+              "one repetition",
+              evidence={"observations": observations}, kind="OPERATOR")
+
+    if measured:
+        worst = max(measured)
+
+        ctx.check(worst <= settle_s,
+                  "visible motion stopped within the configured settle "
+                  "time of {} s (worst observed {} s)".format(
+                      settle_s, worst),
+                  evidence={"worst": worst, "settle_s": settle_s},
+                  kind="OPERATOR")
+
+    ctx.record("settling", observations=observations,
+               settle_s=settle_s, ringing=summarize(measured))
+
+
+def _head_geometry(ctx):
+    ctx.require("carousel.select_slot", "carousel.sync")
+
+    _prepare(ctx)
+
+    count = ctx.carousel.slot_count()
+
+    per_slot = []
+
+    for slot in range(1, count + 1):
+        _select(ctx, slot, "head_geometry")
+
+        status = ctx.carousel.status()
+
+        scan_slot = status.get("current_scan_slot")
+
+        centred = ctx.ask(
+            "With slot {} at the loader, is slot {} centred under the "
+            "sensor head".format(slot, scan_slot))
+
+        offset = None
+
+        if not centred:
+            offset = ctx.ask_number(
+                "How far off centre is it",
+                minimum=-100, maximum=100, unit="mm")
+
+        gap = ctx.ask_number(
+            "Measure the gap between the sensor head and the sample "
+            "surface", minimum=0, maximum=200, unit="mm")
+
+        entry = {"load_slot": slot, "scan_slot": scan_slot,
+                 "centred": bool(centred), "offset_mm": offset,
+                 "gap_mm": gap}
+
+        per_slot.append(entry)
+
+        ctx.measure(stage="head_geometry", **entry)
+
+        if gap is None:
+            ctx.result.record_missing_required(
+                "the head-to-sample gap at slot {} was not "
+                "measured".format(scan_slot))
+
+    off_centre = [e for e in per_slot if not e["centred"]]
+
+    ctx.check(not off_centre,
+              "every slot arrives centred under the sensor head",
+              evidence={"off_centre": off_centre}, kind="OPERATOR")
+
+    gaps = [e["gap_mm"] for e in per_slot if e["gap_mm"] is not None]
+
+    ctx.check(len(gaps) == count,
+              "the gap was measured at every slot",
+              evidence={"measured": len(gaps), "slots": count})
+
+    distribution = summarize(gaps)
+
+    ctx.record("head_geometry", per_slot=per_slot, gap=distribution)
+
+    if distribution and distribution["range"] > 2.0:
+        ctx.note(
+            "The head-to-sample gap varies by {} mm between slots. That "
+            "changes the illumination geometry from slot to slot, and "
+            "any spectral difference between slots carries it.".format(
+                distribution["range"]))
+
+
+def _fine_adjust_bounds(ctx):
+    ctx.require("carousel.fine_adjust", "carousel.status",
+                "servo.read_position")
+
+    _prepare(ctx)
+
+    maximum = ctx.profile.production["carousel"]["max_fine_adjust_deg"]
+
+    before = ctx.carousel.status()
+    start_position = ctx.servo.position()
+
+    slot_before = before.get("current_load_slot")
+
+    ctx.record("fine_adjust_before", slot=slot_before,
+               position=start_position, maximum=maximum)
+
+    small = min(2.0, maximum / 3.0)
+
+    ctx.carousel.fine_adjust(small)
+
+    after_one = ctx.carousel.status()
+    position_one = ctx.servo.position()
+
+    ctx.observed("the logical slot is unchanged by a fine adjustment",
+                 after_one.get("current_load_slot"),
+                 expected=slot_before,
+                 requirement=Requirement.REQUIRED)
+
+    ctx.check(after_one.get("position_valid") is True,
+              "the position is still valid after a fine adjustment",
+              evidence=after_one)
+
+    moved = (position_one - start_position
+             if None not in (position_one, start_position) else None)
+
+    ctx.check(moved not in (None, 0),
+              "the fine adjustment actually moved the plate",
+              evidence={"moved_counts": moved})
+
+    ctx.carousel.fine_adjust(-small)
+
+    after_two = ctx.carousel.status()
+    position_two = ctx.servo.position()
+
+    net = (position_two - start_position
+           if None not in (position_two, start_position) else None)
+
+    tolerance = ctx.profile.production["servo"]["position_tolerance"]
+
+    ctx.check(net is not None and abs(net) <= tolerance,
+              "the opposite adjustment returns the plate to where it "
+              "started, within the position tolerance",
+              evidence={"net_counts": net, "tolerance": tolerance})
+
+    refused = False
+    code = None
+
+    try:
+        ctx.carousel.fine_adjust(maximum * 2 + 1)
+
+    except Exception as error:
+        refused = True
+        code = getattr(error, "code", None)
+
+    ctx.check(refused,
+              "an adjustment beyond MAX_FINE_ADJUST_DEG ({}) is "
+              "refused".format(maximum),
+              evidence={"attempted": maximum * 2 + 1, "code": code})
+
+    final = ctx.carousel.status()
+
+    ctx.observed("the logical slot is what it was at the start",
+                 final.get("current_load_slot"), expected=slot_before,
+                 requirement=Requirement.REQUIRED)
+
+    ctx.measure(stage="fine_adjust", slot_before=slot_before,
+                slot_after=final.get("current_load_slot"),
+                moved_counts=moved, net_counts=net,
+                maximum_deg=maximum, over_limit_refused=refused,
+                code=code or "")

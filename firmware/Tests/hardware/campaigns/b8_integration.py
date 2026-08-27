@@ -18,7 +18,7 @@ H-002 if it reappears - and with the carousel campaigns above it staying
 blocked when it does.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import Automation, Requirement, Safety
 from ..core.analysis import failure_rate, summarize
 
 
@@ -39,6 +39,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B8-001", campaign=CAMPAIGN, layer="B8",
+        requirements=("HW-REQ-INT-001",),
         title="The complete measurement transaction",
         objective="Run measure_raw end to end and check every stage.",
         hardware_setup="Carousel attached and synchronized, a sample or "
@@ -74,6 +75,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B8-002", campaign=CAMPAIGN, layer="B8",
+        requirements=("HW-REQ-INT-002",),
         title="RF-001 regression: slot 1 loaded, measure, half turn, "
               "return",
         objective="Reproduce the exact bench failure that opened H-002, "
@@ -115,6 +117,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B8-003", campaign=CAMPAIGN, layer="B8",
+        requirements=("HW-REQ-INT-003",),
         title="Repeated measurements across every slot",
         objective="Check that measuring each slot in turn leaves no "
                   "state behind and no accumulated position error.",
@@ -148,6 +151,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B8-004", campaign=CAMPAIGN, layer="B8",
+        requirements=("HW-REQ-INT-004",),
         title="The measurement's data survives the transport intact",
         objective="Check the 54 features that come back through the "
                   "integrated path are the same shape as the ones the "
@@ -172,6 +176,49 @@ def register(registry):
         safety=Safety.FULL_SYSTEM, automation=Automation.AUTOMATIC,
         requires=("carousel.measure", "sensor.acquire_triad"),
         run=_data_survives, cleanup=_park,
+        defect_prefix="HW-INT",
+    )
+
+    registry.test(
+        test_id="HW-B8-005", campaign=CAMPAIGN, layer="B8",
+        requirements=("HW-REQ-INT-005",),
+        title="Every slot is physically centred at the moment of "
+              "acquisition",
+        objective="Confirm, per slot, that the sample really is under "
+                  "the head while the spectrum is being taken - not "
+                  "merely that the encoder agrees.",
+        hardware_setup="Carousel attached, every slot loaded or with a "
+                       "stable target. The operator can see the head "
+                       "and the slot beneath it during the "
+                       "measurement.",
+        preconditions="HW-B5-009 measured the head geometry. HW-B8-001 "
+                      "passed.",
+        procedure=(
+            "for each slot, start a measurement",
+            "while the carousel is at the scanner, ask the operator "
+            "whether the slot is centred under the head",
+            "record the encoder position at the scanner alongside the "
+            "observation",
+            "let the measurement complete and validate the spectrum",
+            "compare the operator's observation with what the firmware "
+            "believed",
+        ),
+        expected="Every slot is observed centred while its spectrum is "
+                 "acquired, and the firmware's belief matches.",
+        failure_criteria="A slot the operator sees off-centre while the "
+                         "firmware reports it in position. Mechanical "
+                         "slip after the encoder is invisible to the "
+                         "encoder, and that is the whole reason H-002 "
+                         "is open.",
+        captures=("per-slot centering observation at acquisition time",
+                  "the encoder position at the scanner",
+                  "what the firmware believed",
+                  "the spectrum shape per slot"),
+        safety=Safety.FULL_SYSTEM,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("carousel.measure", "carousel.sync",
+                  "carousel.status", "servo.read_position"),
+        run=_acquisition_centering, cleanup=_park,
         defect_prefix="HW-INT",
     )
 
@@ -438,10 +485,14 @@ def _every_slot(ctx):
             if white and isinstance(white[0], dict):
                 firsts[slot] = tuple(sorted(white[0].items()))
 
-            ctx.check(row["reported_slot"] in (None, slot),
-                      "the answer for slot {} names slot {}".format(
-                          slot, row["reported_slot"]),
-                      evidence=row)
+            # REQUIRED: an answer that does not name its slot cannot
+            # show that state did not leak between measurements, which
+            # is the whole objective.
+            ctx.observed(
+                "the answer for slot {} names the slot it was asked "
+                "for".format(slot),
+                row["reported_slot"], expected=slot,
+                requirement=Requirement.REQUIRED, evidence=row)
 
             if problems:
                 ctx.check(False,
@@ -550,3 +601,115 @@ def _data_survives(ctx):
     )
 
     ctx.record("counters", **ctx.link.counters())
+
+
+def _acquisition_centering(ctx):
+    ctx.require("carousel.measure", "carousel.sync", "carousel.status",
+                "servo.read_position")
+
+    _prepare(ctx)
+
+    count = ctx.carousel.slot_count()
+
+    observations = []
+
+    ctx.instruct(
+        "Watch the sensor head for the whole of this test. After each "
+        "measurement you will be asked what you saw while the plate "
+        "was at the scanner.")
+
+    for slot in range(1, count + 1):
+        row = {"slot": slot}
+
+        try:
+            transaction = ctx.carousel.measure(
+                slot, sample_id="HW-B8-005-slot{}".format(slot))
+
+            answer = transaction["data"] or {}
+
+            blocks = _spectra_from(answer)
+
+            problems = ctx.sensor.validate_triad(
+                {"illuminations": blocks} if blocks else answer)
+
+            carousel = answer.get("carousel") or {}
+
+            row.update({
+                "ok": not problems,
+                "elapsed_ms": transaction["elapsed_ms"],
+                "believed_scan_slot": carousel.get("current_scan_slot"),
+                "position_valid": carousel.get("position_valid"),
+                "problems": len(problems),
+            })
+
+            ctx.check(not problems,
+                      "slot {}: the spectrum is well formed".format(slot),
+                      evidence={"problems": problems})
+
+        except Exception as error:
+            row.update({"ok": False,
+                        "error": str(error)[:200],
+                        "error_type": type(error).__name__})
+
+            ctx.check(False,
+                      "slot {}: the measurement completed".format(slot),
+                      evidence=row)
+
+        position = ctx.servo.position()
+
+        row["encoder_after"] = position
+
+        centred = ctx.ask(
+            "Slot {}: while the plate was at the scanner, was the slot "
+            "centred under the sensor head".format(slot))
+
+        row["observed_centred"] = bool(centred)
+
+        offset = None
+
+        if not centred:
+            offset = ctx.ask_number(
+                "How far off centre was it",
+                minimum=-100, maximum=100, unit="mm")
+
+        row["observed_offset_mm"] = offset
+
+        observations.append(row)
+
+        ctx.measure(stage="acquisition_centering", **row)
+
+    off_centre = [o for o in observations
+                  if not o.get("observed_centred")]
+
+    ctx.check(not off_centre,
+              "every slot was observed centred under the head at the "
+              "moment its spectrum was acquired",
+              evidence={"off_centre": off_centre}, kind="OPERATOR")
+
+    ctx.record("acquisition_centering", observations=observations,
+               off_centre=len(off_centre))
+
+    disagreements = [
+        o for o in observations
+        if not o.get("observed_centred") and o.get("position_valid")
+    ]
+
+    if disagreements:
+        ctx.defect(
+            title="the firmware believes the plate is in position while "
+                  "the operator sees it off-centre",
+            observed="slots {} were observed off-centre with the "
+                     "firmware reporting a valid position".format(
+                         [o["slot"] for o in disagreements]),
+            expected="the operator's observation and the firmware's "
+                     "belief agree",
+            reproduction=("run HW-B8-005",),
+            suspected_layer="mechanical slip after the encoder - H-002",
+            evidence={"observations": disagreements},
+        )
+
+        ctx.note(
+            "This is exactly the class of fault H-002 is about: the "
+            "encoder cannot see slip that happens after it. Do not "
+            "treat any slot-addressed result above this layer as valid "
+            "until it is explained.")

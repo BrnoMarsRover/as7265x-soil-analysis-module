@@ -3,15 +3,17 @@
 The order the hardware campaign is climbed, and what every test in it is
 for.
 
-**Nothing here has been run.** 78 tests, all `NOT_RUN`. See `README.md`
-for status and for how to run anything safely.
+**Nothing here has been run.** 107 tests across 13 campaigns, carrying 113
+requirements, all `NOT_RUN`. See `README.md` for status, and
+[RUNBOOK.md](RUNBOOK.md) for what to do on the day the module is on the
+bench.
 
 ---
 
 ## The pyramid
 
 ```text
-B12  competition mission rehearsal          gated by B10
+B12  competition mission rehearsal          gated by B10 AND B11
 B11  endurance                              gated by B8
 B10  the production operator workflow       gated by B8
 B9   Linux / USB / reset / recovery         gated by B1
@@ -49,7 +51,10 @@ while the encoder question is still open.
 9. **B9** — take things away and see what is admitted.
 10. **B10** — a human, the real client, the real archive.
 11. **B11** — the long runs.
-12. **B12** — the rehearsal. Never first.
+12. **B12** — the rehearsal. Never first, and gated on B11 as well
+    as B10: a mission rehearsal on a system whose endurance was
+    never measured is one long run away from the failure nobody
+    looked for.
 
 ---
 
@@ -210,86 +215,249 @@ forced re-initialization, which is heavier but needs no firmware change.
 
 ## Traceability
 
-Generated from the live registry; `offline_tests/test_registry.py` fails
-the build if any row here would be incomplete.
+Generated from the live registry and requirement catalogue.
+`offline_tests/test_verdicts.py` fails the build if either direction
+breaks: a test naming a requirement that does not exist, or a
+requirement no test claims.
 
-| Test ID | Campaign | Layer | Objective | Automation | Safety | Prerequisites | Required capability | Readiness |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `HW-B0-001` | B0 | B0 | Record the machine the campaign ran on, and prove the Python and pyserial available are ones the production client can use. | AUTOMATIC | READ_ONLY | - | - | READY_FOR_HARDWARE |
-| `HW-B0-002` | B0 | B0 | Tie the campaign to an exact commit and to the exact production constants it is qualifying. | AUTOMATIC | READ_ONLY | - | - | READY_FOR_HARDWARE |
-| `HW-B0-003` | B0 | B0 | Prove the profile that will select the device is complete and internally consistent BEFORE a campaign depends on it. | AUTOMATIC | READ_ONLY | - | - | READY_FOR_HARDWARE |
-| `HW-B0-004` | B0 | B0 | Record every serial device the machine can see, and establish a STABLE identity for the science module that survives a replug. | AUTOMATIC | READ_ONLY | - | `link.enumerate` | READY_FOR_HARDWARE |
-| `HW-B0-005` | B0 | B0 | Have a human confirm the physical assumptions every later campaign is built on, one at a time. | OPERATOR_ASSISTED | READ_ONLY | - | - | READY_FOR_HARDWARE |
-| `HW-B1-001` | B1 | B1 | Establish that the resolved device is the science module and that it answers the protocol. | AUTOMATIC | COMMUNICATION | - | `link.open`, `link.ping` | READY_FOR_HARDWARE |
-| `HW-B1-002` | B1 | B1 | Prove the DTR/RTS discipline in SerialLink.open() works on this board, so starting the client does not reboot an instrument holding a synchronized ... | AUTOMATIC | COMMUNICATION | - | `link.open`, `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B1-003` | B1 | B1 | Check that the status the whole PC layer depends on carries every section it promises. | AUTOMATIC | COMMUNICATION | - | `link.status` | READY_FOR_HARDWARE |
-| `HW-B1-004` | B1 | B1 | Prove the port is released cleanly and a new session can take it without the board noticing. | AUTOMATIC | COMMUNICATION | - | `link.open`, `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B1-005` | B1 | B1 | Bound or reproduce RF-002: the bridge wedging, or the device node disappearing, after repeated opens. | AUTOMATIC | ENDURANCE | - | `link.open`, `link.ping` | READY_FOR_HARDWARE |
-| `HW-B1-006` | B1 | B1 | Prove one open port survives a thousand requests without accumulating corruption. | AUTOMATIC | ENDURANCE | - | `link.ping`, `link.status`, `link.counters` | READY_FOR_HARDWARE |
-| `HW-B1-007` | B1 | B1 | Measure what a command actually costs, so a later timeout can be set from evidence rather than from a guess. | AUTOMATIC | COMMUNICATION | - | `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B1-008` | B1 | B1 | Establish whether the device node changes when the cable is pulled and pushed back, and whether the stable identity survives it. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | - | `link.enumerate` | READY_FOR_HARDWARE |
-| `HW-B2-001` | B2 | B2 | Bring the ST3215 driver up over the real UART and confirm the servo answers a ping. | AUTOMATIC | COMMUNICATION | - | `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B2-002` | B2 | B2 | Read every register the driver's assumptions rest on, and compare each with what config.py expects. | AUTOMATIC | COMMUNICATION | - | `servo.diagnostics` | READY_FOR_HARDWARE |
-| `HW-B2-003` | B2 | B2 | Turn 'no answer from servo 1' into a table that says which of the four assumptions is wrong. | AUTOMATIC | COMMUNICATION | - | `servo.bus_scan` | READY_FOR_HARDWARE |
-| `HW-B2-004` | B2 | B2 | Establish whether the reported position is stable when the mechanism is standing still. | AUTOMATIC | COMMUNICATION | - | `servo.read_position` | READY_FOR_HARDWARE |
-| `HW-B2-005` | B2 | B2 | Prove the numbers the servo is being driven with are the numbers in config.py. | AUTOMATIC | COMMUNICATION | - | `servo.calibration` | READY_FOR_HARDWARE |
-| `HW-B2-006` | B2 | B2 | Capture the bytes of a position read exactly as they came off the servo bus, so the driver's parsing can be checked against the wire. | AUTOMATIC | COMMUNICATION | - | `servo.raw_packet` | **BLOCKED** |
-| `HW-B2-007` | B2 | B2 | Check the error path is a structured refusal rather than a movement or a crash. | OPERATOR_ASSISTED | COMMUNICATION | - | `servo.test_move` | READY_FOR_HARDWARE |
-| `HW-B3-001` | B3 | B3 | Measure, for each of +10, +45, +90, +180 and +360 degrees and each reverse, what was commanded, what the encoder reported, and what a human measure... | OPERATOR_ASSISTED | MOTION | - | `servo.test_move`, `servo.read_position`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B3-002` | B3 | B3 | Establish how many counts one physical revolution of the output shaft actually is, rather than assuming 4096. | OPERATOR_ASSISTED | MOTION | - | `servo.test_move`, `servo.read_position`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B3-003` | B3 | B3 | Separate 'the encoder did not move' from 'we were given an old answer'. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.read_position`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B3-004` | B3 | B3 | Read the position register as bytes and check whether an alternative byte order would explain the observed contradiction. | AUTOMATIC | COMMUNICATION | - | `servo.raw_packet` | **BLOCKED** |
-| `HW-B3-005` | B3 | B3 | Derive the ratio between the servo's reported movement and the carousel's physical movement, so hypothesis 7 is a number rather than a suspicion. | OPERATOR_ASSISTED | MOTION | - | `servo.test_move`, `servo.read_position`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B4-001` | B4 | B4 | Compare the two directions at the smallest movement the carousel ever makes. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B4-002` | B4 | B4 | Establish whether the error depends on the size of the movement. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B4-003` | B4 | B4 | MEASURE the number ST3215_POSITION_TOLERANCE should be. This is H-001. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B4-004` | B4 | B4 | Measure how long a real movement takes, so ST3215_MOVE_TIMEOUT_MS can be argued about with numbers. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B4-005` | B4 | B4 | Count the transport faults that occur while the servo bus is busy, which is when they are most likely. | AUTOMATIC | MOTION | - | `servo.test_move`, `servo.diagnostics`, `link.counters` | READY_FOR_HARDWARE |
-| `HW-B4-006` | B4 | B4 | Look for drift, heating and intermittent failure over a longer run than any single-figure test. | AUTOMATIC | ENDURANCE | HW-B4-003 | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B5-001` | B5 | B5 | Prove each neighbouring transition lands where the firmware says it did. | OPERATOR_ASSISTED | MOTION | - | `carousel.select_slot`, `carousel.sync`, `carousel.status`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B5-002` | B5 | B5 | Check the movements that cross more than one slot, including the one that must take the shorter way round. | AUTOMATIC | MOTION | - | `carousel.select_slot`, `carousel.sync`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B5-003` | B5 | B5 | Verify the physical relationship the whole measurement depends on: the slot at the loading hole arrives under the sensor after the transfer. | OPERATOR_ASSISTED | MOTION | - | `carousel.sync`, `carousel.status`, `carousel.select_slot` | READY_FOR_HARDWARE |
-| `HW-B5-004` | B5 | B5 | Measure whether the resting position of a slot depends on which way it was approached. | AUTOMATIC | MOTION | - | `carousel.select_slot`, `carousel.status`, `servo.read_position` | READY_FOR_HARDWARE |
-| `HW-B5-005` | B5 | B5 | Establish whether position drifts after many consecutive slot movements in one direction. | AUTOMATIC | MOTION | - | `carousel.select_slot`, `carousel.status`, `servo.read_position` | READY_FOR_HARDWARE |
-| `HW-B5-006` | B5 | B5 | Prove the operator can recover a known position after the plate has been moved by hand. | OPERATOR_ASSISTED | MOTION | - | `carousel.sync`, `carousel.status`, `carousel.select_slot` | READY_FOR_HARDWARE |
-| `HW-B6-001` | B6 | B6 | Enumerate every address answering on the I2C bus without disturbing a sensor that is already working. | AUTOMATIC | READ_ONLY | - | `sensor.i2c_scan_on_demand` | **BLOCKED** |
-| `HW-B6-002` | B6 | B6 | Force a full initialization and observe the bus scan it performs. | AUTOMATIC | ILLUMINATION | - | `sensor.init`, `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B6-003` | B6 | B6 | Check that get_status answers at the same speed whether the sensor is present, missing or half dead. | AUTOMATIC | READ_ONLY | - | `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B6-004` | B6 | B6 | Take a single reading under WHITE, under UV and under IR, and check each returns eighteen channels. | AUTOMATIC | ILLUMINATION | - | `sensor.acquire_block` | READY_FOR_HARDWARE |
-| `HW-B6-005` | B6 | B6 | Establish whether initialization is reliable or intermittent - the AS7265X_NOT_FOUND question. | AUTOMATIC | ILLUMINATION | - | `sensor.init`, `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B6-006` | B6 | B6 | Check the sensor comes up from a genuine cold start, with the post-reset settling the driver waits out. | AUTOMATIC | RESET | - | `link.hard_reset`, `sensor.init`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B6-007` | B6 | B6 | Run the exact triad the measurement uses, and check all 54 features arrive. | AUTOMATIC | ILLUMINATION | - | `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B6-008` | B6 | B6 | Run long enough to catch the intermittent fault, and record exactly what the firmware said when it happened. | AUTOMATIC | ENDURANCE | - | `sensor.init`, `sensor.status`, `sensor.acquire_block` | READY_FOR_HARDWARE |
-| `HW-B7-001` | B7 | B7 | Check every way a spectrum can be the wrong shape, against the real device. | AUTOMATIC | ILLUMINATION | - | `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B7-002` | B7 | B7 | Establish that repeated acquisition of an unchanging target is stable in shape and bounded in time. | AUTOMATIC | ILLUMINATION | - | `sensor.acquire_block` | READY_FOR_HARDWARE |
-| `HW-B7-003` | B7 | B7 | Run long enough to see heating, drift or an intermittent failure that a hundred acquisitions would miss. | AUTOMATIC | ENDURANCE | HW-B7-002 | `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B7-004` | B7 | B7 | Pull the sensor, prove the failure is named correctly, then reconnect and prove it recovers without a reboot. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | - | `sensor.init`, `sensor.acquire_block`, `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B7-005` | B7 | B7 | Measure the real ready latency, which is H-003. | AUTOMATIC | ILLUMINATION | - | `sensor.acquire_block` | READY_FOR_HARDWARE |
-| `HW-B7-006` | B7 | B7 | Have a human confirm which illuminator is actually on during each phase. | OPERATOR_ASSISTED | ILLUMINATION | - | `sensor.led_test`, `sensor.acquire_block` | READY_FOR_HARDWARE |
-| `HW-B7-007` | B7 | B7 | Confirm, by eye, that no bulb is left on when an acquisition finishes. | OPERATOR_ASSISTED | ILLUMINATION | - | `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B7-008` | B7 | B7 | Check the lamps go off on the ERROR path too, and record explicitly when that cannot be confirmed. | OPERATOR_ASSISTED | FAULT_INJECTION | - | `sensor.acquire_block`, `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B8-001` | B8 | B8 | Run measure_raw end to end and check every stage. | AUTOMATIC | FULL_SYSTEM | - | `carousel.measure`, `carousel.sync`, `carousel.status`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B8-002` | B8 | B8 | Reproduce the exact bench failure that opened H-002, deliberately, and record what happens now. | AUTOMATIC | FULL_SYSTEM | HW-B3-001 | `carousel.measure`, `carousel.sync`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B8-003` | B8 | B8 | Check that measuring each slot in turn leaves no state behind and no accumulated position error. | AUTOMATIC | FULL_SYSTEM | - | `carousel.measure`, `carousel.sync`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B8-004` | B8 | B8 | Check the 54 features that come back through the integrated path are the same shape as the ones the sensor produces on its own. | AUTOMATIC | FULL_SYSTEM | - | `carousel.measure`, `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B9-001` | B9 | B9 | Check the link fails as PORT_LOST, the client survives, and every later command is a clean PORT_CLOSED rather than a traceback. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | B1 | `link.open`, `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B9-002` | B9 | B9 | Check the link fails as PORT_LOST, the client survives, and every later command is a clean PORT_CLOSED rather than a traceback. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | B1 | `link.open`, `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B9-003` | B9 | B9 | Check the link fails as PORT_LOST, the client survives, and every later command is a clean PORT_CLOSED rather than a traceback. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | B1 | `link.open`, `link.ping`, `link.status` | READY_FOR_HARDWARE |
-| `HW-B9-004` | B9 | B9 | Check that a movement interrupted by a lost link leaves the position UNKNOWN rather than assumed. | OPERATOR_ASSISTED | MANUAL_DISCONNECT | B5 | `carousel.select_slot`, `carousel.status`, `carousel.sync` | READY_FOR_HARDWARE |
-| `HW-B9-005` | B9 | B9 | Check a measurement interrupted by a lost link fails cleanly and leaves nothing illuminated. | OPERATOR_ASSISTED | FAULT_INJECTION | B8 | `carousel.measure`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B9-006` | B9 | B9 | Reset the board deliberately and check the position reference does not survive it. | AUTOMATIC | RESET | - | `link.hard_reset`, `carousel.status`, `carousel.sync` | READY_FOR_HARDWARE |
-| `HW-B9-007` | B9 | B9 | Remove power entirely and check the same thing a reset checks, plus that the port comes back. | OPERATOR_ASSISTED | POWER_CYCLE | - | `link.enumerate`, `carousel.status`, `carousel.sync` | READY_FOR_HARDWARE |
-| `HW-B9-008` | B9 | B9 | Remove the servo from the bus and check the failure is named and the position invalidated. | OPERATOR_ASSISTED | FAULT_INJECTION | B2 | `servo.diagnostics`, `servo.connect`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B9-009` | B9 | B9 | Fail the acquisition in the middle of the triad and check the answer names WHICH illumination failed. | OPERATOR_ASSISTED | FAULT_INJECTION | HW-B7-004 | `sensor.acquire_triad`, `sensor.status` | READY_FOR_HARDWARE |
-| `HW-B9-010` | B9 | B9 | Prove the science data survives a failed return, and that the position is admitted to be uncertain. | OPERATOR_ASSISTED | FAULT_INJECTION | B8 | `carousel.measure`, `carousel.status`, `carousel.saved_samples` | READY_FOR_HARDWARE |
-| `HW-B10-001` | B10 | B10 | Check the entry point and every screen the B10 procedure names still exist, before an operator is asked to follow instructions that mention them. | AUTOMATIC | READ_ONLY | - | - | READY_FOR_HARDWARE |
-| `HW-B10-002` | B10 | B10 | Have an operator take the real client from launch to a synchronized carousel. | OPERATOR_ASSISTED | FULL_SYSTEM | - | `workflow.client`, `workflow.screens`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B10-003` | B10 | B10 | Check sample-to-slot association, measurement identity and persistence across more than one sample. | OPERATOR_ASSISTED | FULL_SYSTEM | - | `workflow.client`, `workflow.records` | READY_FOR_HARDWARE |
-| `HW-B10-004` | B10 | B10 | Check that a fault during a session leaves an application the operator can carry on with. | OPERATOR_ASSISTED | FAULT_INJECTION | B9 | `workflow.client` | READY_FOR_HARDWARE |
-| `HW-B11-001` | B11 | B11 | Very many requests on one open port, looking for accumulated corruption. | AUTOMATIC | ENDURANCE | HW-B1-006 | `link.ping`, `link.status`, `link.counters` | READY_FOR_HARDWARE |
-| `HW-B11-002` | B11 | B11 | Very many acquisitions, looking for heating, drift and the intermittent initialization fault. | AUTOMATIC | ENDURANCE | HW-B7-003 | `sensor.acquire_triad` | READY_FOR_HARDWARE |
-| `HW-B11-003` | B11 | B11 | Very many movements, looking for wear, a loosening coupling and thermal drift. | AUTOMATIC | ENDURANCE | HW-B4-006 | `servo.test_move`, `servo.connect` | READY_FOR_HARDWARE |
-| `HW-B11-004` | B11 | B11 | Many full rotations, looking for accumulated position drift. | AUTOMATIC | ENDURANCE | HW-B5-005 | `carousel.select_slot`, `carousel.status`, `servo.read_position` | READY_FOR_HARDWARE |
-| `HW-B11-005` | B11 | B11 | The complete measurement transaction, repeated, which is the only test that stresses everything at once. | AUTOMATIC | ENDURANCE | HW-B8-001 | `carousel.measure`, `carousel.status`, `carousel.sync` | READY_FOR_HARDWARE |
-| `HW-B12-001` | B12 | B12 | Take the instrument through a full competition sequence - setup, every slot, analysis, records - and time it. | OPERATOR_ASSISTED | FULL_SYSTEM | - | `workflow.client`, `workflow.records`, `carousel.status` | READY_FOR_HARDWARE |
-| `HW-B12-002` | B12 | B12 | Establish that the mission is repeatable and that its duration is predictable enough to plan around. | OPERATOR_ASSISTED | FULL_SYSTEM | HW-B12-001 | `workflow.client`, `carousel.status` | READY_FOR_HARDWARE |
+Six requirements are marked *offline suite* rather than *hardware test*.
+Those are about the FRAMEWORK - that evidence is complete, that a stale
+ledger cannot open a gate, that an offline path opens no port - and the
+offline suite is the only place they can be established. Saying so is
+more honest than inventing a hardware test that would not test them.
+
+**33 of the 113 requirements have no authoritative source.** Those can
+only ever produce CHARACTERIZATION: a measurement recorded and judged by
+nobody, because nothing in this repository says what the right answer
+is. That is an accurate statement about the project, not a defect in the
+requirement.
+
+## Requirement to tests
+
+| Requirement | Title | Source | Verified by | Tests |
+| --- | --- | --- | --- | --- |
+| `HW-REQ-CAR-001` | Every slot transition lands correctly | PRODUCTION_CONFIG | hardware test | `HW-B5-001`, `HW-B5-002` |
+| `HW-REQ-CAR-002` | The plate is physically where the slot says | DESIGN | hardware test | `HW-B5-001` |
+| `HW-REQ-CAR-003` | The loader and scanner are 180 degrees apart | PRODUCTION_CONFIG | hardware test | `HW-B5-003` |
+| `HW-REQ-CAR-004` | Backlash is characterized | NONE | hardware test | `HW-B5-004` |
+| `HW-REQ-CAR-005` | Drift does not accumulate with rotations | NONE | hardware test | `HW-B5-005` |
+| `HW-REQ-CAR-006` | A disturbed carousel can be recovered | PROTOCOL | hardware test | `HW-B5-006` |
+| `HW-REQ-CAR-007` | Samples are retained through movement | DESIGN | hardware test | `HW-B5-007` |
+| `HW-REQ-CAR-008` | The mechanism settles before acquisition | PRODUCTION_CONFIG | hardware test | `HW-B5-008` |
+| `HW-REQ-CAR-009` | Sensor-to-sample geometry is recorded | NONE | hardware test | `HW-B5-009` |
+| `HW-REQ-CAR-010` | Fine adjust is bounded and preserves the slot | PRODUCTION_CONFIG | hardware test | `HW-B5-010` |
+| `HW-REQ-DIAG-001` | The diagnostic agent is never the flight build | DESIGN | hardware test | `HW-B2-011` |
+| `HW-REQ-DIAG-002` | The agent is read-only by default | DESIGN | hardware test | `HW-B2-011` |
+| `HW-REQ-DIAG-003` | Production firmware is restored and verified | DESIGN | hardware test | `HW-B2-012` |
+| `HW-REQ-END-001` | Sustained operation does not degrade the link | NONE | hardware test | `HW-B11-001` |
+| `HW-REQ-END-002` | Sustained acquisition does not drift | NONE | hardware test | `HW-B7-003`, `HW-B11-002` |
+| `HW-REQ-END-003` | Sustained movement does not degrade | NONE | hardware test | `HW-B4-006`, `HW-B11-003` |
+| `HW-REQ-END-004` | Rotational drift is bounded over many rotations | NONE | hardware test | `HW-B11-004` |
+| `HW-REQ-END-005` | The whole system survives sustained operation | NONE | hardware test | `HW-B11-005` |
+| `HW-REQ-END-006` | Partial evidence survives an interruption | DESIGN | hardware test | `HW-B11-006` |
+| `HW-REQ-END-007` | A zero-failure run states its confidence | DESIGN | hardware test | `HW-B11-001` |
+| `HW-REQ-ENV-001` | The host can run the production client | DESIGN | hardware test | `HW-B0-001` |
+| `HW-REQ-ENV-002` | The campaign is tied to an exact revision | DESIGN | hardware test | `HW-B0-002` |
+| `HW-REQ-ENV-003` | The shipped geometry is self-consistent | PRODUCTION_CONFIG | hardware test | `HW-B0-002` |
+| `HW-REQ-ENV-004` | The bench profile identifies exactly one device | DESIGN | hardware test | `HW-B0-003`, `HW-B0-004` |
+| `HW-REQ-ENV-005` | The wiring matches the configuration | PRODUCTION_CONFIG | hardware test | `HW-B0-005` |
+| `HW-REQ-ENV-006` | The physical unit under test is identified | DESIGN | hardware test | `HW-B0-006` |
+| `HW-REQ-ENV-007` | Measurement instruments are identified | DESIGN | hardware test | `HW-B0-007` |
+| `HW-REQ-ENV-008` | The power topology is recorded | DESIGN | hardware test | `HW-B0-008` |
+| `HW-REQ-ENV-009` | Power isolation and emergency stop are reachable | DESIGN | hardware test | `HW-B0-005` |
+| `HW-REQ-ENV-010` | The repository does not contradict itself | PRODUCTION_CONFIG | hardware test | `HW-B0-009` |
+| `HW-REQ-FLOW-001` | The shipped client is the client under test | DESIGN | hardware test | `HW-B10-001` |
+| `HW-REQ-FLOW-002` | An operator can take the module from cold to ready | DESIGN | hardware test | `HW-B10-002` |
+| `HW-REQ-FLOW-003` | Records are machine-verifiable | DESIGN | hardware test | `HW-B10-003` |
+| `HW-REQ-FLOW-004` | Records persist across a client restart | DESIGN | hardware test | `HW-B10-005` |
+| `HW-REQ-FLOW-005` | The application survives a recoverable fault | DESIGN | hardware test | `HW-B10-004` |
+| `HW-REQ-FLOW-006` | Protected reference data is never modified | DESIGN | hardware test | `HW-B10-003`, `HW-B10-005` |
+| `HW-REQ-FLOW-007` | Raw data survives an analysis failure | DESIGN | hardware test | `HW-B10-006` |
+| `HW-REQ-FW-001` | Evidence is complete and reproducible | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-FW-002` | A prerequisite PASS belongs to the same system | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-FW-003` | Two harness runs cannot share one module | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-FW-004` | Offline paths touch no hardware | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-FW-005` | Iteration counts are bounded by what is repeated | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-FW-006` | A qualification claim needs its sample size | DESIGN | offline suite | _offline suite_ |
+| `HW-REQ-H002-001` | Commanded, reported and physical agree | PRODUCTION_CONFIG | hardware test | `HW-B3-001` |
+| `HW-REQ-H002-002` | Encoder resolution is measured, not assumed | NONE | hardware test | `HW-B3-002` |
+| `HW-REQ-H002-003` | A position read is fresh | NONE | hardware test | `HW-B3-003` |
+| `HW-REQ-H002-004` | Every segment is judged, not just the endpoint | DESIGN | hardware test | `HW-B3-001` |
+| `HW-REQ-H002-005` | Shaft and carousel are measured separately | NONE | hardware test | `HW-B3-005` |
+| `HW-REQ-H002-006` | Failed movements keep their telemetry | DESIGN | hardware test | `HW-B3-001` |
+| `HW-REQ-INT-001` | The complete measurement transaction works | PROTOCOL | hardware test | `HW-B8-001` |
+| `HW-REQ-INT-002` | RF-001 does not recur | PRODUCTION_CONFIG | hardware test | `HW-B8-002` |
+| `HW-REQ-INT-003` | No state leaks between measurements | DESIGN | hardware test | `HW-B8-003` |
+| `HW-REQ-INT-004` | The integrated path does not damage data | PROTOCOL | hardware test | `HW-B8-004` |
+| `HW-REQ-INT-005` | Acquisition happens with the slot centred | DESIGN | hardware test | `HW-B8-005` |
+| `HW-REQ-LINK-001` | The device is the science module | PROTOCOL | hardware test | `HW-B1-001` |
+| `HW-REQ-LINK-002` | Opening the port does not reset the board | DESIGN | hardware test | `HW-B1-002` |
+| `HW-REQ-LINK-003` | get_status answers completely and cheaply | PROTOCOL | hardware test | `HW-B1-003`, `HW-B6-003` |
+| `HW-REQ-LINK-004` | A session's answers cannot reach another session | PROTOCOL | hardware test | `HW-B1-004` |
+| `HW-REQ-LINK-005` | The bridge survives repeated open cycles | NONE | hardware test | `HW-B1-005` |
+| `HW-REQ-LINK-006` | One open port survives sustained traffic | NONE | hardware test | `HW-B1-006` |
+| `HW-REQ-LINK-007` | Response latency is characterized | NONE | hardware test | `HW-B1-007` |
+| `HW-REQ-LINK-008` | The device is identifiable across a replug | DESIGN | hardware test | `HW-B0-004`, `HW-B1-008` |
+| `HW-REQ-LINK-009` | Damaged frames are captured, not just counted | MEASURED_BASELINE | hardware test | `HW-B1-009` |
+| `HW-REQ-LINK-010` | Payload size does not break the link | PROTOCOL | hardware test | `HW-B1-010` |
+| `HW-REQ-LINK-011` | Only one client owns the port | DESIGN | hardware test | `HW-B1-011` |
+| `HW-REQ-LINK-012` | Device memory does not drift under load | NONE | hardware test | `HW-B1-012` |
+| `HW-REQ-MISSION-001` | A mission measures every required slot | DESIGN | hardware test | `HW-B12-001` |
+| `HW-REQ-MISSION-002` | A mission needs no workarounds | DESIGN | hardware test | `HW-B12-001` |
+| `HW-REQ-MISSION-003` | Mission duration is measured | NONE | hardware test | `HW-B12-001` |
+| `HW-REQ-MISSION-004` | The mission is repeatable | NONE | hardware test | `HW-B12-002` |
+| `HW-REQ-PWR-001` | Supply rails are within their limits | NONE | hardware test | `HW-B0-008` |
+| `HW-REQ-PWR-002` | Voltage droop does not reset the board | NONE | hardware test | `HW-B4-008` |
+| `HW-REQ-PWR-003` | Illumination draws nothing when off | NONE | hardware test | `HW-B7-012` |
+| `HW-REQ-PWR-004` | Bus signals are electrically valid | NONE | hardware test | `HW-B0-010` |
+| `HW-REQ-REC-001` | A lost link is named, not crashed on | PROTOCOL | hardware test | `HW-B9-001`, `HW-B9-002`, `HW-B9-003` |
+| `HW-REQ-REC-002` | A fault lands inside the phase it targets | DESIGN | hardware test | `HW-B9-001`, `HW-B9-002`, `HW-B9-003`, `HW-B9-004`, `HW-B9-005` |
+| `HW-REQ-REC-003` | Position does not survive uncertainty | PROTOCOL | hardware test | `HW-B6-006`, `HW-B9-004`, `HW-B9-006`, `HW-B9-007`, `HW-B9-008` |
+| `HW-REQ-REC-004` | Recovery time is measured from the right moment | DESIGN | hardware test | `HW-B9-007` |
+| `HW-REQ-REC-005` | The module that returns is the module that left | DESIGN | hardware test | `HW-B9-007` |
+| `HW-REQ-REC-006` | Science data and mechanical position fail separately | DESIGN | hardware test | `HW-B9-010` |
+| `HW-REQ-REC-007` | A failing illumination names itself | PROTOCOL | hardware test | `HW-B9-009` |
+| `HW-REQ-SENSOR-001` | The AS7265x answers at its configured address | PRODUCTION_CONFIG | hardware test | `HW-B6-002` |
+| `HW-REQ-SENSOR-002` | The sensor configuration reads back | PRODUCTION_CONFIG | hardware test | `HW-B6-002` |
+| `HW-REQ-SENSOR-003` | Initialization is reliable | NONE | hardware test | `HW-B6-005`, `HW-B6-008` |
+| `HW-REQ-SENSOR-004` | The sensor recovers without a reboot | DESIGN | hardware test | `HW-B7-004` |
+| `HW-REQ-SENSOR-005` | A cold power-up is distinguished from a reset | DESIGN | hardware test | `HW-B6-006` |
+| `HW-REQ-SENSOR-006` | Every acquisition carries 54 well-formed features | PROTOCOL | hardware test | `HW-B6-004`, `HW-B6-007`, `HW-B7-001` |
+| `HW-REQ-SENSOR-007` | Malformed shapes are actually detected | DESIGN | hardware test | `HW-B7-009` |
+| `HW-REQ-SENSOR-008` | Data-ready latency is inside the driver budget | PRODUCTION_CONFIG | hardware test | `HW-B6-004`, `HW-B7-005` |
+| `HW-REQ-SENSOR-009` | Spectral output is stable and characterized | NONE | hardware test | `HW-B7-002` |
+| `HW-REQ-SENSOR-010` | Saturation and degenerate values are observable | DESIGN | hardware test | `HW-B7-010` |
+| `HW-REQ-SENSOR-011` | Ambient light does not reach the sample | NONE | hardware test | `HW-B7-011` |
+| `HW-REQ-SENSOR-012` | The named illumination is the one that lights | DESIGN | hardware test | `HW-B7-006` |
+| `HW-REQ-SENSOR-013` | Illumination is off after success AND failure | DESIGN | hardware test | `HW-B6-007`, `HW-B7-007`, `HW-B7-008`, `HW-B9-005` |
+| `HW-REQ-SENSOR-014` | An unconfirmable off-state is reported as such | DESIGN | hardware test | `HW-B7-008` |
+| `HW-REQ-SENSOR-015` | The I2C bus is electrically sane | NONE | hardware test | `HW-B0-010` |
+| `HW-REQ-SENSOR-016` | The bus can be enumerated on demand | NONE | hardware test | `HW-B6-001` |
+| `HW-REQ-SERVO-001` | The servo driver comes up | PROTOCOL | hardware test | `HW-B2-001` |
+| `HW-REQ-SERVO-002` | The servo is the configured servo | PRODUCTION_CONFIG | hardware test | `HW-B2-002`, `HW-B2-003` |
+| `HW-REQ-SERVO-003` | The servo is in the mode the driver assumes | PRODUCTION_CONFIG | hardware test | `HW-B2-002` |
+| `HW-REQ-SERVO-004` | A stationary servo reports a stable position | NONE | hardware test | `HW-B2-004` |
+| `HW-REQ-SERVO-005` | The deployed firmware is the shipped firmware | PRODUCTION_CONFIG | hardware test | `HW-B2-005` |
+| `HW-REQ-SERVO-006` | A malformed servo command is refused, not obeyed | PROTOCOL | hardware test | `HW-B2-007` |
+| `HW-REQ-SERVO-007` | Raw servo bytes are observable | NONE | hardware test | `HW-B2-006`, `HW-B3-004` |
+| `HW-REQ-SERVO-008` | Servo telemetry is observable | NONE | hardware test | `HW-B2-008` |
+| `HW-REQ-SERVO-009` | Torque and stop behave as commanded | PROTOCOL | hardware test | `HW-B2-009` |
+| `HW-REQ-SERVO-010` | The servo mode survives a reset | PRODUCTION_CONFIG | hardware test | `HW-B2-010` |
+| `HW-REQ-SERVO-011` | Closing error is characterized | NONE | hardware test | `HW-B4-003`, `HW-B4-006` |
+| `HW-REQ-SERVO-012` | Movement timing is characterized | PRODUCTION_CONFIG | hardware test | `HW-B4-004` |
+| `HW-REQ-SERVO-013` | The servo bus is clean under load | DESIGN | hardware test | `HW-B4-005` |
+| `HW-REQ-SERVO-014` | Direction and angle behave symmetrically | NONE | hardware test | `HW-B4-001`, `HW-B4-002` |
+| `HW-REQ-SERVO-015` | Thermal and load effects are characterized | NONE | hardware test | `HW-B4-007` |
+| `HW-REQ-THERM-001` | Component temperatures are bounded | NONE | hardware test | `HW-B11-007` |
+
+## Test to requirements, with readiness
+
+| Test | Campaign | Safety | Automation | Iterations | Requirements | Readiness |
+| --- | --- | --- | --- | --- | --- | --- |
+| `HW-B0-001` | B0 | READ_ONLY | AUTOMATIC | - | `HW-REQ-ENV-001` | READY_FOR_HARDWARE |
+| `HW-B0-002` | B0 | READ_ONLY | AUTOMATIC | - | `HW-REQ-ENV-002`, `HW-REQ-ENV-003` | READY_FOR_HARDWARE |
+| `HW-B0-003` | B0 | READ_ONLY | AUTOMATIC | - | `HW-REQ-ENV-004` | READY_FOR_HARDWARE |
+| `HW-B0-004` | B0 | READ_ONLY | AUTOMATIC | - | `HW-REQ-ENV-004`, `HW-REQ-LINK-008` | READY_FOR_HARDWARE |
+| `HW-B0-005` | B0 | READ_ONLY | OPERATOR_ASSISTED | - | `HW-REQ-ENV-005`, `HW-REQ-ENV-009` | READY_FOR_HARDWARE |
+| `HW-B0-006` | B0 | READ_ONLY | OPERATOR_ASSISTED | - | `HW-REQ-ENV-006` | **BLOCKED** (`bench.unit_identified`) |
+| `HW-B0-007` | B0 | READ_ONLY | OPERATOR_ASSISTED | - | `HW-REQ-ENV-007` | READY_FOR_HARDWARE |
+| `HW-B0-008` | B0 | READ_ONLY | OPERATOR_ASSISTED | - | `HW-REQ-ENV-008`, `HW-REQ-PWR-001` | **BLOCKED** (`bench.multimeter`) |
+| `HW-B0-009` | B0 | READ_ONLY | AUTOMATIC | - | `HW-REQ-ENV-010` | READY_FOR_HARDWARE |
+| `HW-B0-010` | B0 | READ_ONLY | OPERATOR_ASSISTED | - | `HW-REQ-PWR-004`, `HW-REQ-SENSOR-015` | **BLOCKED** (`bench.oscilloscope`) |
+| `HW-B1-001` | B1 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-LINK-001` | READY_FOR_HARDWARE |
+| `HW-B1-002` | B1 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-LINK-002` | READY_FOR_HARDWARE |
+| `HW-B1-003` | B1 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-LINK-003` | READY_FOR_HARDWARE |
+| `HW-B1-004` | B1 | COMMUNICATION | AUTOMATIC | 5 OPEN_CYCLE (max 200, qual 5) | `HW-REQ-LINK-004` | READY_FOR_HARDWARE |
+| `HW-B1-005` | B1 | ENDURANCE | AUTOMATIC | 100 OPEN_CYCLE (max 2000, qual 100) | `HW-REQ-LINK-005` | READY_FOR_HARDWARE |
+| `HW-B1-006` | B1 | ENDURANCE | AUTOMATIC | 1000 REQUEST (max 20000, qual 1000) | `HW-REQ-LINK-006` | READY_FOR_HARDWARE |
+| `HW-B1-007` | B1 | COMMUNICATION | AUTOMATIC | 50 REQUEST (max 5000) | `HW-REQ-LINK-007` | READY_FOR_HARDWARE |
+| `HW-B1-008` | B1 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-LINK-008` | READY_FOR_HARDWARE |
+| `HW-B1-009` | B1 | COMMUNICATION | AUTOMATIC | 200 REQUEST (max 20000, qual 200) | `HW-REQ-LINK-009` | READY_FOR_HARDWARE |
+| `HW-B1-010` | B1 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-LINK-010` | READY_FOR_HARDWARE |
+| `HW-B1-011` | B1 | COMMUNICATION | OPERATOR_ASSISTED | - | `HW-REQ-LINK-011` | READY_FOR_HARDWARE |
+| `HW-B1-012` | B1 | COMMUNICATION | AUTOMATIC | 200 REQUEST (max 20000) | `HW-REQ-LINK-012` | READY_FOR_HARDWARE |
+| `HW-B2-001` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-001` | READY_FOR_HARDWARE |
+| `HW-B2-002` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-002`, `HW-REQ-SERVO-003` | READY_FOR_HARDWARE |
+| `HW-B2-003` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-002` | READY_FOR_HARDWARE |
+| `HW-B2-004` | B2 | COMMUNICATION | AUTOMATIC | 20 REQUEST (max 500) | `HW-REQ-SERVO-004` | READY_FOR_HARDWARE |
+| `HW-B2-005` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-005` | READY_FOR_HARDWARE |
+| `HW-B2-006` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-007` | **BLOCKED** (`diagnostic.servo_raw`) |
+| `HW-B2-007` | B2 | COMMUNICATION | OPERATOR_ASSISTED | - | `HW-REQ-SERVO-006` | READY_FOR_HARDWARE |
+| `HW-B2-008` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-008` | **BLOCKED** (`diagnostic.servo_feedback`) |
+| `HW-B2-009` | B2 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-SERVO-009` | READY_FOR_HARDWARE |
+| `HW-B2-010` | B2 | POWER_CYCLE | OPERATOR_ASSISTED | - | `HW-REQ-SERVO-010` | READY_FOR_HARDWARE |
+| `HW-B2-011` | B2 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-DIAG-001`, `HW-REQ-DIAG-002` | **BLOCKED** (`diagnostic.agent`) |
+| `HW-B2-012` | B2 | COMMUNICATION | OPERATOR_ASSISTED | - | `HW-REQ-DIAG-003` | READY_FOR_HARDWARE |
+| `HW-B3-001` | B3 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-H002-001`, `HW-REQ-H002-004`, `HW-REQ-H002-006` | READY_FOR_HARDWARE |
+| `HW-B3-002` | B3 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-H002-002` | READY_FOR_HARDWARE |
+| `HW-B3-003` | B3 | MOTION | AUTOMATIC | 5 MOVEMENT (max 100) | `HW-REQ-H002-003` | READY_FOR_HARDWARE |
+| `HW-B3-004` | B3 | COMMUNICATION | AUTOMATIC | - | `HW-REQ-SERVO-007` | **BLOCKED** (`diagnostic.servo_raw`) |
+| `HW-B3-005` | B3 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-H002-005` | READY_FOR_HARDWARE |
+| `HW-B4-001` | B4 | MOTION | AUTOMATIC | 5 MOVEMENT (max 200) | `HW-REQ-SERVO-014` | READY_FOR_HARDWARE |
+| `HW-B4-002` | B4 | MOTION | AUTOMATIC | 5 MOVEMENT (max 100) | `HW-REQ-SERVO-014` | READY_FOR_HARDWARE |
+| `HW-B4-003` | B4 | MOTION | AUTOMATIC | 50 MOVEMENT (max 500) | `HW-REQ-SERVO-011` | READY_FOR_HARDWARE |
+| `HW-B4-004` | B4 | MOTION | AUTOMATIC | 20 MOVEMENT (max 500) | `HW-REQ-SERVO-012` | READY_FOR_HARDWARE |
+| `HW-B4-005` | B4 | MOTION | AUTOMATIC | 20 MOVEMENT (max 500, qual 20) | `HW-REQ-SERVO-013` | READY_FOR_HARDWARE |
+| `HW-B4-006` | B4 | ENDURANCE | AUTOMATIC | 200 MOVEMENT (max 5000) | `HW-REQ-SERVO-011`, `HW-REQ-END-003` | READY_FOR_HARDWARE |
+| `HW-B4-007` | B4 | MOTION | OPERATOR_ASSISTED | 30 MOVEMENT (max 500) | `HW-REQ-SERVO-015` | **BLOCKED** (`bench.representative_load`) |
+| `HW-B4-008` | B4 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-PWR-002` | **BLOCKED** (`bench.multimeter`) |
+| `HW-B5-001` | B5 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-CAR-001`, `HW-REQ-CAR-002` | READY_FOR_HARDWARE |
+| `HW-B5-002` | B5 | MOTION | AUTOMATIC | - | `HW-REQ-CAR-001` | READY_FOR_HARDWARE |
+| `HW-B5-003` | B5 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-CAR-003` | READY_FOR_HARDWARE |
+| `HW-B5-004` | B5 | MOTION | AUTOMATIC | 5 MOVEMENT (max 100) | `HW-REQ-CAR-004` | READY_FOR_HARDWARE |
+| `HW-B5-005` | B5 | MOTION | AUTOMATIC | 3 ROTATION (max 100) | `HW-REQ-CAR-005` | READY_FOR_HARDWARE |
+| `HW-B5-006` | B5 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-CAR-006` | READY_FOR_HARDWARE |
+| `HW-B5-007` | B5 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-CAR-007` | **BLOCKED** (`bench.representative_load`) |
+| `HW-B5-008` | B5 | MOTION | OPERATOR_ASSISTED | 5 MOVEMENT (max 100) | `HW-REQ-CAR-008` | READY_FOR_HARDWARE |
+| `HW-B5-009` | B5 | MOTION | OPERATOR_ASSISTED | - | `HW-REQ-CAR-009` | READY_FOR_HARDWARE |
+| `HW-B5-010` | B5 | MOTION | AUTOMATIC | - | `HW-REQ-CAR-010` | READY_FOR_HARDWARE |
+| `HW-B6-001` | B6 | READ_ONLY | AUTOMATIC | - | `HW-REQ-SENSOR-016` | **BLOCKED** (`diagnostic.i2c_scan`) |
+| `HW-B6-002` | B6 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-SENSOR-001`, `HW-REQ-SENSOR-002` | READY_FOR_HARDWARE |
+| `HW-B6-003` | B6 | READ_ONLY | AUTOMATIC | - | `HW-REQ-LINK-003` | READY_FOR_HARDWARE |
+| `HW-B6-004` | B6 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-SENSOR-006`, `HW-REQ-SENSOR-008` | READY_FOR_HARDWARE |
+| `HW-B6-005` | B6 | ILLUMINATION | AUTOMATIC | 50 MEASUREMENT (max 1000, qual 50) | `HW-REQ-SENSOR-003` | READY_FOR_HARDWARE |
+| `HW-B6-006` | B6 | RESET | AUTOMATIC | - | `HW-REQ-SENSOR-005`, `HW-REQ-REC-003` | READY_FOR_HARDWARE |
+| `HW-B6-007` | B6 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-SENSOR-006`, `HW-REQ-SENSOR-013` | READY_FOR_HARDWARE |
+| `HW-B6-008` | B6 | ENDURANCE | AUTOMATIC | 200 MEASUREMENT (max 5000, qual 200) | `HW-REQ-SENSOR-003` | READY_FOR_HARDWARE |
+| `HW-B7-001` | B7 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-SENSOR-006` | READY_FOR_HARDWARE |
+| `HW-B7-002` | B7 | ILLUMINATION | AUTOMATIC | 100 MEASUREMENT (max 5000, qual 100) | `HW-REQ-SENSOR-009` | READY_FOR_HARDWARE |
+| `HW-B7-003` | B7 | ENDURANCE | AUTOMATIC | 200 MEASUREMENT (max 5000) | `HW-REQ-END-002` | READY_FOR_HARDWARE |
+| `HW-B7-004` | B7 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-004` | READY_FOR_HARDWARE |
+| `HW-B7-005` | B7 | ILLUMINATION | AUTOMATIC | 10 MEASUREMENT (max 200) | `HW-REQ-SENSOR-008` | READY_FOR_HARDWARE |
+| `HW-B7-006` | B7 | ILLUMINATION | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-012` | READY_FOR_HARDWARE |
+| `HW-B7-007` | B7 | ILLUMINATION | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-013` | READY_FOR_HARDWARE |
+| `HW-B7-008` | B7 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-013`, `HW-REQ-SENSOR-014` | READY_FOR_HARDWARE |
+| `HW-B7-009` | B7 | ILLUMINATION | AUTOMATIC | - | `HW-REQ-SENSOR-007` | READY_FOR_HARDWARE |
+| `HW-B7-010` | B7 | ILLUMINATION | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-010` | READY_FOR_HARDWARE |
+| `HW-B7-011` | B7 | ILLUMINATION | OPERATOR_ASSISTED | - | `HW-REQ-SENSOR-011` | READY_FOR_HARDWARE |
+| `HW-B7-012` | B7 | ILLUMINATION | OPERATOR_ASSISTED | - | `HW-REQ-PWR-003` | **BLOCKED** (`bench.multimeter`) |
+| `HW-B8-001` | B8 | FULL_SYSTEM | AUTOMATIC | - | `HW-REQ-INT-001` | READY_FOR_HARDWARE |
+| `HW-B8-002` | B8 | FULL_SYSTEM | AUTOMATIC | - | `HW-REQ-INT-002` | READY_FOR_HARDWARE |
+| `HW-B8-003` | B8 | FULL_SYSTEM | AUTOMATIC | - | `HW-REQ-INT-003` | READY_FOR_HARDWARE |
+| `HW-B8-004` | B8 | FULL_SYSTEM | AUTOMATIC | - | `HW-REQ-INT-004` | READY_FOR_HARDWARE |
+| `HW-B8-005` | B8 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-INT-005` | READY_FOR_HARDWARE |
+| `HW-B9-001` | B9 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-REC-001`, `HW-REQ-REC-002` | READY_FOR_HARDWARE |
+| `HW-B9-002` | B9 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-REC-001`, `HW-REQ-REC-002` | READY_FOR_HARDWARE |
+| `HW-B9-003` | B9 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-REC-001`, `HW-REQ-REC-002` | READY_FOR_HARDWARE |
+| `HW-B9-004` | B9 | MANUAL_DISCONNECT | OPERATOR_ASSISTED | - | `HW-REQ-REC-002`, `HW-REQ-REC-003` | READY_FOR_HARDWARE |
+| `HW-B9-005` | B9 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-REC-002`, `HW-REQ-SENSOR-013` | READY_FOR_HARDWARE |
+| `HW-B9-006` | B9 | RESET | AUTOMATIC | - | `HW-REQ-REC-003` | READY_FOR_HARDWARE |
+| `HW-B9-007` | B9 | POWER_CYCLE | OPERATOR_ASSISTED | - | `HW-REQ-REC-003`, `HW-REQ-REC-004`, `HW-REQ-REC-005` | READY_FOR_HARDWARE |
+| `HW-B9-008` | B9 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-REC-003` | READY_FOR_HARDWARE |
+| `HW-B9-009` | B9 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-REC-007` | READY_FOR_HARDWARE |
+| `HW-B9-010` | B9 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-REC-006` | READY_FOR_HARDWARE |
+| `HW-B10-001` | B10 | READ_ONLY | AUTOMATIC | - | `HW-REQ-FLOW-001` | READY_FOR_HARDWARE |
+| `HW-B10-002` | B10 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-FLOW-002` | READY_FOR_HARDWARE |
+| `HW-B10-003` | B10 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-FLOW-003`, `HW-REQ-FLOW-006` | READY_FOR_HARDWARE |
+| `HW-B10-004` | B10 | FAULT_INJECTION | OPERATOR_ASSISTED | - | `HW-REQ-FLOW-005` | READY_FOR_HARDWARE |
+| `HW-B10-005` | B10 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-FLOW-004`, `HW-REQ-FLOW-006` | READY_FOR_HARDWARE |
+| `HW-B10-006` | B10 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-FLOW-007` | READY_FOR_HARDWARE |
+| `HW-B11-001` | B11 | ENDURANCE | AUTOMATIC | 5000 REQUEST (max 100000, qual 5000) | `HW-REQ-END-001`, `HW-REQ-END-007` | READY_FOR_HARDWARE |
+| `HW-B11-002` | B11 | ENDURANCE | AUTOMATIC | 1000 MEASUREMENT (max 20000, qual 1000) | `HW-REQ-END-002` | READY_FOR_HARDWARE |
+| `HW-B11-003` | B11 | ENDURANCE | AUTOMATIC | 1000 MOVEMENT (max 20000, qual 1000) | `HW-REQ-END-003` | READY_FOR_HARDWARE |
+| `HW-B11-004` | B11 | ENDURANCE | AUTOMATIC | 50 ROTATION (max 2000, qual 50) | `HW-REQ-END-004` | READY_FOR_HARDWARE |
+| `HW-B11-005` | B11 | ENDURANCE | AUTOMATIC | 50 MEASUREMENT (max 1000, qual 50) | `HW-REQ-END-005` | READY_FOR_HARDWARE |
+| `HW-B11-006` | B11 | ENDURANCE | OPERATOR_ASSISTED | 500 REQUEST (max 20000) | `HW-REQ-END-006` | READY_FOR_HARDWARE |
+| `HW-B11-007` | B11 | ENDURANCE | OPERATOR_ASSISTED | 50 MOVEMENT (max 2000) | `HW-REQ-THERM-001` | **BLOCKED** (`bench.thermal_probe`) |
+| `HW-B12-001` | B12 | FULL_SYSTEM | OPERATOR_ASSISTED | - | `HW-REQ-MISSION-001`, `HW-REQ-MISSION-002`, `HW-REQ-MISSION-003` | READY_FOR_HARDWARE |
+| `HW-B12-002` | B12 | FULL_SYSTEM | OPERATOR_ASSISTED | 3 MISSION (max 20, qual 3) | `HW-REQ-MISSION-004` | READY_FOR_HARDWARE |

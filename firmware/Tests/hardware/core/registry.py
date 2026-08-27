@@ -23,6 +23,7 @@ modules, which build definitions out of plain data and function objects.
 Nothing is called, no port is opened, no adapter is constructed.
 """
 
+from . import requirements as requirements_module
 from .model import Campaign, TestDefinition
 
 
@@ -301,7 +302,74 @@ class Registry:
                         "campaign {}: prerequisite {!r} is not a "
                         "campaign".format(campaign.campaign_id, name))
 
+        problems.extend(self.traceability_problems())
+
         return problems
+
+    # ------------------------------------------------------------------
+    # traceability
+    # ------------------------------------------------------------------
+
+    def traceability_problems(self):
+        """
+        Every break in the requirement <-> test correspondence.
+
+        Both directions matter and they fail differently. A test with a
+        requirement that names nothing is a typo nobody would notice; a
+        requirement with no test is a promise the campaign never keeps.
+        """
+        problems = []
+
+        claimed = set()
+
+        for definition in self.all_tests():
+            unknown = requirements_module.unknown(definition.requirements)
+
+            for name in unknown:
+                problems.append(
+                    "{}: requirement {!r} names nothing in "
+                    "core/requirements.py".format(
+                        definition.test_id, name))
+
+            claimed.update(
+                name for name in definition.requirements
+                if name not in unknown)
+
+        for requirement in requirements_module.all_requirements():
+            if requirement.verified_by != (
+                    requirements_module.VerifiedBy.HARDWARE_TEST):
+                # Established by the offline suite, which is the only
+                # place it CAN be established. `test_traceability.py`
+                # checks those separately.
+                continue
+
+            if requirement.requirement_id not in claimed:
+                problems.append(
+                    "requirement {} has no test - it is a promise the "
+                    "campaign never keeps".format(
+                        requirement.requirement_id))
+
+        return problems
+
+    def requirement_to_tests(self):
+        """requirement id -> the tests that are evidence for it."""
+        mapping = {
+            requirement.requirement_id: []
+            for requirement in requirements_module.all_requirements()
+        }
+
+        for definition in self.all_tests():
+            for name in definition.requirements:
+                mapping.setdefault(name, []).append(definition.test_id)
+
+        return mapping
+
+    def test_to_requirements(self):
+        """test id -> the requirements it is evidence for."""
+        return {
+            definition.test_id: list(definition.requirements)
+            for definition in self.all_tests()
+        }
 
 
 # The one registry. Campaign modules import it and register into it.

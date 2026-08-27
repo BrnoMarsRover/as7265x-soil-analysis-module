@@ -23,7 +23,8 @@ both pin orders, which turns "no answer from servo 1" - a sentence that
 names four assumptions and tests none - into a table.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
 from ..core.analysis import summarize
 
 
@@ -44,6 +45,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-001", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-001",),
         title="The servo driver comes up",
         objective="Bring the ST3215 driver up over the real UART and "
                   "confirm the servo answers a ping.",
@@ -71,6 +73,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-002", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-002", "HW-REQ-SERVO-003"),
         title="Servo identity, baud, mode, torque and limits",
         objective="Read every register the driver's assumptions rest "
                   "on, and compare each with what config.py expects.",
@@ -105,6 +108,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-003", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-002",),
         title="Bus scan: every baud, both pin orders",
         objective="Turn 'no answer from servo 1' into a table that says "
                   "which of the four assumptions is wrong.",
@@ -136,6 +140,9 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-004", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-004",),
+        iteration_kind=IterationKind.REQUEST,
+        characterization_min_iterations=10,
         title="Repeated position reads with nothing commanded",
         objective="Establish whether the reported position is stable "
                   "when the mechanism is standing still.",
@@ -165,6 +172,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-005", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-005",),
         title="The calibration report matches the shipped configuration",
         objective="Prove the numbers the servo is being driven with are "
                   "the numbers in config.py.",
@@ -191,6 +199,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B2-006", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-007",),
         title="Raw ST3215 packet capture",
         objective="Capture the bytes of a position read exactly as they "
                   "came off the servo bus, so the driver's parsing can "
@@ -210,16 +219,19 @@ def register(registry):
         captures=("request bytes", "reply bytes", "parsed value",
                   "checksum"),
         safety=Safety.COMMUNICATION, automation=Automation.AUTOMATIC,
-        requires=("servo.raw_packet",),
+        requires=("diagnostic.servo_raw",),
         run=_raw_packet, cleanup=_release,
         assumption="H-002", defect_prefix="HW-SERVO",
-        notes="BLOCKED: the shipped firmware has no raw servo "
-              "passthrough. See the recommendation on the "
-              "servo.raw_packet capability.",
+        notes="BLOCKED until the test-side diagnostic agent is "
+              "deployed. The competition firmware has no raw "
+              "servo passthrough and must not grow one; the "
+              "agent under test_side_firmware/ provides it "
+              "read-only, whitelisted and manually deployed.",
     )
 
     registry.test(
         test_id="HW-B2-007", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-006",),
         title="The firmware refuses a malformed servo command",
         objective="Check the error path is a structured refusal rather "
                   "than a movement or a crash.",
@@ -248,6 +260,207 @@ def register(registry):
         automation=Automation.OPERATOR_ASSISTED,
         requires=("servo.test_move",),
         run=_refusals, cleanup=_release,
+        defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B2-008", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-008",),
+        title="Full servo telemetry",
+        objective="Read position, speed, load, voltage, current, "
+                  "temperature and the moving/status bits, so a later "
+                  "movement failure can be attributed to the supply, "
+                  "the load or the encoder rather than guessed at.",
+        hardware_setup="Servo connected and at rest. Nothing moves.",
+        preconditions="HW-B2-002 passed.",
+        procedure=(
+            "read every telemetry register the diagnostic agent "
+            "exposes",
+            "record which registers answered and which did not",
+            "check the voltage is plausible for the configured supply",
+            "check the temperature is plausible for a servo at rest",
+            "check the moving bit reads not-moving on a stationary "
+            "servo",
+        ),
+        expected="Every telemetry register answers, and position, "
+                 "voltage, temperature and the moving bit are "
+                 "self-consistent for a servo at rest.",
+        failure_criteria="A moving bit set on a stationary servo, or a "
+                         "register that will not read. The VALUES are "
+                         "characterization: no datasheet limits are "
+                         "recorded in this repository, so this "
+                         "establishes a baseline rather than judging "
+                         "one.",
+        captures=("every telemetry register with its value",
+                  "which registers failed and why",
+                  "the moving and status bits"),
+        safety=Safety.COMMUNICATION, automation=Automation.AUTOMATIC,
+        requires=("diagnostic.servo_feedback",),
+        run=_servo_telemetry, cleanup=_release,
+        defect_prefix="HW-SERVO",
+        notes="BLOCKED until the test-side diagnostic agent is "
+              "deployed. servo_diagnostics reads a fixed subset and "
+              "does not expose load, current or temperature.",
+    )
+
+    registry.test(
+        test_id="HW-B2-009", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-009",),
+        title="Torque enable, disable and a bounded stop",
+        objective="Confirm torque can be commanded both ways and that a "
+                  "stop is bounded, without ever leaving the carousel "
+                  "free to be turned by gravity.",
+        hardware_setup="Servo connected. THE CAROUSEL MUST BE EMPTY and "
+                       "in a position where losing torque cannot let it "
+                       "fall - if the plate is loaded or unbalanced, "
+                       "skip this test.",
+        preconditions="HW-B2-002 passed. The operator has confirmed the "
+                      "mechanism cannot move under its own weight.",
+        procedure=(
+            "ask the operator to confirm the plate cannot fall if "
+            "torque is released",
+            "read the torque state",
+            "disable torque and read it back",
+            "ask the operator whether the shaft became free",
+            "re-enable torque and read it back",
+            "ask the operator whether the shaft became firm again",
+            "issue a stop and confirm it returns promptly",
+            "leave torque ENABLED",
+        ),
+        expected="Torque reads back as commanded in both directions, "
+                 "the operator observes the matching mechanical change, "
+                 "the stop returns within its timeout, and torque is "
+                 "left enabled.",
+        failure_criteria="A torque state that does not read back, a "
+                         "mechanical state that contradicts it, or a "
+                         "stop that does not return. Leaving torque "
+                         "disabled at the end is a failure in itself.",
+        captures=("torque state at each step",
+                  "the operator's observation of the shaft",
+                  "the stop's elapsed time",
+                  "the torque state at the end"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("servo.torque", "servo.stop", "servo.diagnostics"),
+        run=_torque_and_stop, cleanup=_release,
+        defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B2-010", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-010",),
+        title="The servo mode survives a reset and a power cycle",
+        objective="Check the ST3215 still reports STEP mode after the "
+                  "ESP32 restarts and after the servo itself loses "
+                  "power.",
+        hardware_setup="Servo connected. The operator can power the "
+                       "servo supply down and up independently of the "
+                       "ESP32.",
+        preconditions="HW-B2-002 passed with mode_correct true.",
+        procedure=(
+            "read the mode register and record it",
+            "reset the ESP32 and wait for it to answer",
+            "reconnect the servo and read the mode again",
+            "ask the operator to power the SERVO supply down and up",
+            "reconnect and read the mode a third time",
+            "compare all three against the configured mode",
+        ),
+        expected="The mode reads the configured STEP mode all three "
+                 "times.",
+        failure_criteria="A mode that reverts on power-up. That would "
+                         "reproduce H-002 intermittently - a relative "
+                         "goal read as an absolute one - and it would "
+                         "look like a software fault every time.",
+        captures=("the mode before, after the ESP32 reset, and after "
+                  "the servo power cycle",
+                  "the configured mode compared against",
+                  "the time to answer after each restart"),
+        safety=Safety.POWER_CYCLE,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("servo.diagnostics", "servo.connect",
+                  "link.hard_reset"),
+        run=_mode_persistence, cleanup=_release,
+        assumption="H-002", defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B2-011", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-DIAG-001", "HW-REQ-DIAG-002"),
+        title="The diagnostic agent identifies itself and is read-only",
+        objective="Before trusting anything the diagnostic agent says, "
+                  "confirm it is the build this adapter expects and "
+                  "that its safety properties hold.",
+        hardware_setup="The test-side diagnostic agent deployed and "
+                       "running, per test_side_firmware/DEPLOYMENT.md. "
+                       "The competition firmware is NOT running.",
+        preconditions="The bench profile records the deployment.",
+        procedure=(
+            "send diag_identify",
+            "check the protocol string and version are the diagnostic "
+            "ones, not the production ones",
+            "check the agent reports moves: false",
+            "check its register whitelist is the one this adapter "
+            "expects",
+            "attempt a read of a register NOT on the whitelist and "
+            "check it is refused",
+            "attempt a read longer than the bound and check it is "
+            "refused",
+        ),
+        expected="The agent identifies itself unmistakably, declares no "
+                 "movement capability, and refuses both out-of-bounds "
+                 "requests.",
+        failure_criteria="A production firmware answering - its replies "
+                         "would be read as register bytes - or an agent "
+                         "that accepts a register outside its "
+                         "whitelist. A wrong access to the ST3215 "
+                         "memory table can change the servo id or baud "
+                         "rate and take the bus away entirely.",
+        captures=("the identity answer in full",
+                  "the declared register whitelist",
+                  "the refusal for each out-of-bounds attempt"),
+        safety=Safety.COMMUNICATION, automation=Automation.AUTOMATIC,
+        requires=("diagnostic.agent",),
+        run=_agent_identity, cleanup=_release,
+        defect_prefix="HW-SERVO",
+        notes="BLOCKED until the agent is deployed. Deployment is "
+              "manual and deliberate - see "
+              "test_side_firmware/DEPLOYMENT.md.",
+    )
+
+    registry.test(
+        test_id="HW-B2-012", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-DIAG-003",),
+        title="Production firmware is restored after diagnostic use",
+        objective="Confirm the competition firmware is back and the "
+                  "diagnostic agent is gone, and record both hashes.",
+        hardware_setup="The diagnostic session is finished and the "
+                       "production firmware has been redeployed.",
+        preconditions="HW-B2-011 ran at some point, and the operator "
+                      "has followed the restoration steps in "
+                      "test_side_firmware/DEPLOYMENT.md.",
+        procedure=(
+            "confirm with the operator that diagnostic_agent.py has "
+            "been removed from the board",
+            "send ping and check the PRODUCTION firmware answers",
+            "check the diagnostic protocol no longer answers",
+            "record the restored firmware version",
+            "check the bench profile no longer claims a deployment",
+        ),
+        expected="The production firmware answers, the diagnostic "
+                 "protocol does not, and the profile agrees.",
+        failure_criteria="A diagnostic agent still present, or a "
+                         "profile that still claims a deployment. Any "
+                         "prerequisite PASS earned while the agent was "
+                         "deployed is void by fingerprint anyway - but "
+                         "a competition run must not start with a "
+                         "diagnostic build on the board.",
+        captures=("the operator's confirmation of removal",
+                  "the production firmware identity after restoration",
+                  "the profile's diagnostic_firmware section",
+                  "both firmware hashes where recorded"),
+        safety=Safety.COMMUNICATION,
+        automation=Automation.OPERATOR_ASSISTED,
+        requires=("link.ping",),
+        run=_firmware_restored, cleanup=_release,
         defect_prefix="HW-SERVO",
     )
 
@@ -353,26 +566,33 @@ def _diagnostics(ctx):
 
     steps = {step.get("step"): step for step in report.get("steps") or []}
 
-    reported_id = (steps.get("id") or {}).get("value")
+    # All three REQUIRED. "the id matches OR was not reported" is not
+    # an identity check, and the mode is hypothesis 1 of H-002 - a
+    # servo that will not say which mode it is in has not eliminated
+    # it.
+    ctx.observed(
+        "the servo reports the configured id ({})".format(
+            production["servo_id"]),
+        (steps.get("id") or {}).get("value"),
+        expected=production["servo_id"],
+        requirement=Requirement.REQUIRED)
 
-    ctx.check(reported_id is None or reported_id == production["servo_id"],
-              "the servo reports the configured id ({})".format(
-                  production["servo_id"]),
-              evidence={"reported": reported_id,
-                        "configured": production["servo_id"]})
+    ctx.observed(
+        "the servo's baud rate matches the configured {}".format(
+            production["baud"]),
+        report.get("baud_matches"), expected=True,
+        requirement=Requirement.REQUIRED,
+        evidence={"reported": report.get("baud_reported"),
+                  "configured": production["baud"]})
 
-    ctx.check(report.get("baud_matches") is not False,
-              "the servo's baud rate matches the configured {}".format(
-                  production["baud"]),
-              evidence={"reported": report.get("baud_reported"),
-                        "configured": production["baud"]})
-
-    ctx.check(report.get("mode_correct") is not False,
-              "the servo is in the mode the driver assumes ({})".format(
-                  production["mode"]),
-              evidence={"mode": report.get("mode"),
-                        "mode_name": report.get("mode_name"),
-                        "expected": report.get("expected_mode")})
+    ctx.observed(
+        "the servo is in the mode the driver assumes ({})".format(
+            production["mode"]),
+        report.get("mode_correct"), expected=True,
+        requirement=Requirement.REQUIRED,
+        evidence={"mode": report.get("mode"),
+                  "mode_name": report.get("mode_name"),
+                  "expected": report.get("expected_mode")})
 
     ctx.measure(
         stage="diagnostics", latency_ms=transaction["elapsed_ms"],
@@ -547,13 +767,15 @@ def _calibration_matches(ctx):
     )
 
     for reported_key, production_key in pairs:
-        reported = current.get(reported_key)
-        expected = production[production_key]
-
-        ctx.check(reported is None or reported == expected,
-                  "{} is {} on the device, as config.py ships".format(
-                      reported_key, expected),
-                  evidence={"reported": reported, "expected": expected})
+        # REQUIRED: this test exists to prove the deployed firmware
+        # IS the firmware in this working tree, and a value the device
+        # will not report proves nothing either way.
+        ctx.observed(
+            "{} is {} on the device, as config.py ships".format(
+                reported_key, production[production_key]),
+            current.get(reported_key),
+            expected=production[production_key],
+            requirement=Requirement.REQUIRED)
 
     ctx.check(report.get("editable") is not True,
               "the calibration reports itself non-editable, so a "
@@ -568,21 +790,68 @@ def _calibration_matches(ctx):
 
 
 def _raw_packet(ctx):
-    # Blocked by capability. `require` raises with the exact interface
-    # that would unblock it, so the body below never runs today - and
-    # will run unchanged on the day the firmware grows the command.
-    ctx.require("servo.raw_packet")
+    """
+    The bytes, not the driver's reading of them.
 
-    transaction = ctx.link.request(                     # pragma: no cover
-        "servo_raw_read", register=56, length=2)
+    Goes through the diagnostic agent, which is the only thing that can
+    show them. The whitelist and the length bound are checked on both
+    sides; this asks for the present-position register, which is the one
+    H-002 is about.
+    """
+    ctx.require("diagnostic.servo_raw")
 
-    answer = transaction["data"] or {}                  # pragma: no cover
+    identity = ctx.diagnostic.identify()
 
-    ctx.record("raw_read", **answer)                    # pragma: no cover
+    ctx.record("agent", **identity)
 
-    ctx.check(bool(answer.get("bytes")),                # pragma: no cover
-              "the raw reply bytes were captured",
-              evidence=answer)
+    transaction = ctx.diagnostic.servo_raw_read(register=56, length=2)
+
+    answer = transaction["data"] or {}
+
+    ctx.record("raw_read", **answer)
+
+    raw = answer.get("bytes")
+
+    ctx.require_observation("the raw reply bytes", raw,
+                            evidence={"answer": answer})
+
+    interpretations = ctx.diagnostic.interpret_bytes(raw or [])
+
+    ctx.record("interpretations", **(interpretations or {}))
+
+    parsed = answer.get("parsed_little_endian")
+
+    ctx.observed(
+        "the agent's parsed value matches the little-endian reading of "
+        "the bytes it returned",
+        parsed,
+        expected=(interpretations or {}).get("little_endian"),
+        requirement=Requirement.REQUIRED,
+        evidence=interpretations)
+
+    position = ctx.servo.position()
+
+    ctx.observed(
+        "the production driver's position agrees with the raw register",
+        position, requirement=Requirement.OPTIONAL_DIAGNOSTIC,
+        matches=lambda v: v == parsed,
+        evidence={"driver": position, "raw_parsed": parsed})
+
+    ctx.measure(stage="raw_packet", register=56,
+                register_name=answer.get("register_name"),
+                hex=(interpretations or {}).get("hex"),
+                little_endian=(interpretations or {}).get(
+                    "little_endian"),
+                big_endian=(interpretations or {}).get("big_endian"),
+                driver_position=position,
+                elapsed_ms=answer.get("elapsed_ms"))
+
+    if position is not None and parsed is not None and position != parsed:
+        ctx.note(
+            "The production driver and the raw register disagree "
+            "({} vs {}). That is hypothesis 8 of H-002 becoming "
+            "concrete - compare the byte orders above.".format(
+                position, parsed))
 
 
 def _refusals(ctx):
@@ -641,3 +910,334 @@ def _refusals(ctx):
     ctx.confirm_observation(
         "Did the carousel stay completely still during those three "
         "refused commands")
+
+
+def _servo_telemetry(ctx):
+    ctx.require("diagnostic.servo_feedback")
+
+    identity = ctx.diagnostic.identify()
+
+    ctx.record("agent", **identity)
+
+    transaction = ctx.diagnostic.servo_feedback()
+
+    answer = transaction["data"] or {}
+
+    readings = answer.get("readings") or {}
+    errors = answer.get("errors") or {}
+
+    ctx.record("telemetry", readings=readings, errors=errors,
+               complete=answer.get("complete"))
+
+    for name in ("PRESENT_POSITION", "PRESENT_VOLTAGE",
+                 "PRESENT_TEMPERATURE", "MOVING"):
+        ctx.observed(
+            "the servo reports {}".format(name), readings.get(name),
+            requirement=Requirement.REQUIRED,
+            matches=lambda v: isinstance(v, (int, float)),
+            evidence={"errors": errors.get(name)})
+
+    for name in ("PRESENT_SPEED", "PRESENT_LOAD", "PRESENT_CURRENT"):
+        ctx.observed(
+            "the servo reports {}".format(name), readings.get(name),
+            requirement=Requirement.OPTIONAL_DIAGNOSTIC)
+
+    moving = readings.get("MOVING")
+
+    if moving is not None:
+        ctx.check(not moving,
+                  "the moving bit reads not-moving on a stationary "
+                  "servo",
+                  evidence={"moving": moving})
+
+    for name, value in sorted(readings.items()):
+        ctx.measure(stage="telemetry", register=name, value=value)
+
+    ctx.characterize(
+        "servo telemetry at rest recorded: {}. No datasheet limits for "
+        "this servo are recorded in this repository, so these values "
+        "are the baseline a later loaded or warm measurement is "
+        "compared against, not a judgement.".format(
+            ", ".join("{}={}".format(k, v)
+                      for k, v in sorted(readings.items())[:6])))
+
+
+def _torque_and_stop(ctx):
+    ctx.require("servo.torque", "servo.stop", "servo.diagnostics")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+
+    safe = ctx.ask(
+        "Is the carousel EMPTY and in a position where releasing torque "
+        "cannot let it fall or swing")
+
+    if not safe:
+        ctx.skip(
+            "the operator will not confirm the plate is safe to release "
+            "- this test never drops torque on a mechanism that could "
+            "move under its own weight")
+
+    def read_torque():
+        report = ctx.servo.diagnostics()["data"] or {}
+
+        return report.get("torque_enabled")
+
+    before = read_torque()
+
+    ctx.record("torque_before", torque=before)
+
+    ctx.servo.torque(enable=False)
+
+    released = read_torque()
+
+    ctx.observed("torque reads back disabled", released,
+                 expected=False, requirement=Requirement.REQUIRED)
+
+    ctx.confirm_observation(
+        "With torque released, is the output shaft free to turn by hand")
+
+    ctx.servo.torque(enable=True)
+
+    restored = read_torque()
+
+    ctx.observed("torque reads back enabled", restored,
+                 expected=True, requirement=Requirement.REQUIRED)
+
+    ctx.confirm_observation(
+        "With torque re-enabled, is the output shaft firm again")
+
+    stop = ctx.servo.stop()
+
+    ctx.check(stop["elapsed_ms"] < 5000,
+              "the stop returned promptly ({} ms)".format(
+                  stop["elapsed_ms"]),
+              evidence={"elapsed_ms": stop["elapsed_ms"]})
+
+    final = read_torque()
+
+    ctx.check(bool(final),
+              "torque is ENABLED at the end of the test - a carousel "
+              "left without torque can be turned by gravity",
+              evidence={"torque": final})
+
+    ctx.measure(stage="torque", before=before, released=released,
+                restored=restored, final=final,
+                stop_ms=stop["elapsed_ms"])
+
+
+def _mode_persistence(ctx):
+    ctx.require("servo.diagnostics", "servo.connect", "link.hard_reset")
+
+    import time
+
+    expected = ctx.profile.production["servo"]["mode"]
+
+    def read_mode():
+        ctx.link.request("connect_servo",
+                         timeout=ctx.servo._move_timeout())
+
+        report = ctx.servo.diagnostics()["data"] or {}
+
+        return report.get("mode"), report
+
+    first, report = read_mode()
+
+    ctx.record("mode_initial", mode=first, expected=expected)
+
+    ctx.observed("the servo reports its mode", first,
+                 expected=expected, requirement=Requirement.REQUIRED)
+
+    link = ctx.link.require_link("reset the board")
+
+    link.hard_reset()
+
+    started = time.perf_counter()
+
+    link.wait_online()
+
+    after_reset_ms = round((time.perf_counter() - started) * 1000.0, 3)
+
+    second, _ = read_mode()
+
+    ctx.record("mode_after_esp32_reset", mode=second,
+               online_ms=after_reset_ms)
+
+    ctx.observed("the mode survives an ESP32 reset", second,
+                 expected=expected, requirement=Requirement.REQUIRED)
+
+    ctx.link.close(reason="servo power cycle")
+
+    ctx.instruct(
+        "Power the SERVO SUPPLY down, wait five seconds, and power it "
+        "back up. Leave the ESP32 powered.")
+
+    third, _ = read_mode()
+
+    ctx.record("mode_after_servo_power_cycle", mode=third)
+
+    ctx.observed("the mode survives a servo power cycle", third,
+                 expected=expected, requirement=Requirement.REQUIRED)
+
+    ctx.measure(stage="mode_persistence", initial=first,
+                after_esp32_reset=second,
+                after_servo_power_cycle=third, expected=expected,
+                online_ms=after_reset_ms)
+
+    if third is not None and third != expected:
+        ctx.defect(
+            title="the ST3215 does not keep its mode across a power "
+                  "cycle",
+            observed="mode {} after the servo supply was cycled; {} "
+                     "before".format(third, first),
+            expected="mode {} - STEP servo mode - at all times".format(
+                expected),
+            reproduction=("run HW-B2-010",),
+            suspected_layer="servo non-volatile configuration",
+            evidence={"initial": first, "after_reset": second,
+                      "after_power_cycle": third},
+        )
+
+        ctx.note(
+            "This would reproduce H-002 intermittently and look like a "
+            "software fault every time: in position mode a relative "
+            "goal is interpreted as an absolute one.")
+
+
+def _agent_identity(ctx):
+    ctx.require("diagnostic.agent")
+
+    from ..adapters.diagnostic import (AGENT_PROTOCOL,
+                                       AGENT_PROTOCOL_VERSION,
+                                       MAX_READ_LENGTH,
+                                       READABLE_REGISTERS)
+
+    identity = ctx.diagnostic.identify()
+
+    ctx.record("agent_identity", **identity)
+
+    ctx.observed("the agent names the diagnostic protocol",
+                 identity.get("protocol"), expected=AGENT_PROTOCOL,
+                 requirement=Requirement.REQUIRED)
+
+    ctx.observed("the agent's protocol version matches this adapter",
+                 identity.get("protocol_version"),
+                 expected=AGENT_PROTOCOL_VERSION,
+                 requirement=Requirement.REQUIRED)
+
+    ctx.observed("the agent declares that it cannot move anything",
+                 identity.get("moves"), expected=False,
+                 requirement=Requirement.REQUIRED)
+
+    declared = identity.get("readable_registers")
+
+    ctx.observed("the agent declares its register whitelist", declared,
+                 requirement=Requirement.REQUIRED,
+                 matches=lambda v: sorted(v) == sorted(
+                     READABLE_REGISTERS))
+
+    ctx.observed("the agent declares its read length bound",
+                 identity.get("max_read_length"),
+                 expected=MAX_READ_LENGTH,
+                 requirement=Requirement.REQUIRED)
+
+    writes = identity.get("writes") or []
+
+    ctx.check(set(writes) <= {"diag_lamps_off"},
+              "the agent's only write is diag_lamps_off",
+              evidence={"writes": writes})
+
+    # A register deliberately NOT on the whitelist. 0x28 (40) IS on it -
+    # pick something in the memory table that is not.
+    refused = False
+    code = None
+
+    try:
+        ctx.link.request("diag_servo_raw_read", register=200, length=2)
+
+    except Exception as error:
+        refused = True
+        code = getattr(error, "code", None)
+
+    ctx.check(refused,
+              "a register outside the whitelist is refused",
+              evidence={"register": 200, "code": code})
+
+    long_refused = False
+    long_code = None
+
+    try:
+        ctx.link.request("diag_servo_raw_read", register=56,
+                         length=MAX_READ_LENGTH + 4)
+
+    except Exception as error:
+        long_refused = True
+        long_code = getattr(error, "code", None)
+
+    ctx.check(long_refused,
+              "a read longer than {} bytes is refused".format(
+                  MAX_READ_LENGTH),
+              evidence={"length": MAX_READ_LENGTH + 4,
+                        "code": long_code})
+
+    ctx.measure(stage="agent", protocol=identity.get("protocol"),
+                version=identity.get("protocol_version"),
+                build=identity.get("build"),
+                moves=identity.get("moves"),
+                whitelist=len(declared or []),
+                bad_register_refused=refused,
+                long_read_refused=long_refused)
+
+
+def _firmware_restored(ctx):
+    ctx.require("link.ping")
+
+    from ..adapters.diagnostic import AGENT_PROTOCOL
+
+    declared = ctx.profile.diagnostic_firmware()
+
+    ctx.record("profile_diagnostic_firmware", **declared)
+
+    ctx.confirm_observation(
+        "Has diagnostic_agent.py been removed from the board")
+
+    transaction = ctx.link.request("ping", retries=2)
+
+    answer = transaction["data"] or {}
+
+    ctx.record("ping_after_restore", **answer)
+
+    expected_name = ctx.profile.production["firmware_name"]
+
+    ctx.observed("the production firmware identifies itself",
+                 answer.get("firmware") or answer.get("name"),
+                 expected=expected_name,
+                 requirement=Requirement.REQUIRED)
+
+    ctx.observed("the production protocol version is back",
+                 answer.get("protocol_version"),
+                 expected=ctx.profile.production["protocol_version"],
+                 requirement=Requirement.REQUIRED)
+
+    ctx.check(answer.get("protocol") != AGENT_PROTOCOL,
+              "the diagnostic protocol no longer answers",
+              evidence={"protocol": answer.get("protocol")})
+
+    ctx.check(not declared.get("deployed"),
+              "the bench profile no longer claims a diagnostic "
+              "deployment",
+              evidence={"diagnostic_firmware": declared})
+
+    ctx.measure(stage="restored",
+                firmware=answer.get("firmware") or "",
+                version=answer.get("version") or "",
+                protocol_version=answer.get("protocol_version"),
+                profile_claims_deployed=bool(declared.get("deployed")),
+                production_sha256=declared.get(
+                    "production_firmware_sha256") or "")
+
+    ctx.note(
+        "Any prerequisite PASS earned while the diagnostic agent was "
+        "deployed is void by fingerprint: the run fingerprint includes "
+        "the diagnostic firmware, so the layer gate will not accept "
+        "those results for a production run. Re-run the campaigns that "
+        "matter on the restored firmware.")

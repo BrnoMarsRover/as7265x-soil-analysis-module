@@ -18,7 +18,51 @@
     "max_requests": 20000,
     "max_measurements": 5000,
     "max_movements": 5000,
+    "max_rotations": 2000,
     "max_missions": 200
+  },
+
+  "unit": {
+    "module_id": null,
+    "esp32_id": null,
+    "servo_id_tag": null,
+    "servo_model": "ST3215",
+    "sensor_id_tag": null,
+    "carousel_assembly_id": null,
+    "carousel_assembly_revision": null
+  },
+
+  "instruments": {
+    "multimeter": null,
+    "oscilloscope": null,
+    "logic_analyzer": null,
+    "thermal_probe": null,
+    "current_probe": null
+  },
+
+  "fixtures": {
+    "representative_load": null,
+    "reference_target": null,
+    "rotation_reference": null,
+    "ir_observer": null,
+    "carousel_detachable": null
+  },
+
+  "diagnostic_firmware": {
+    "deployed": false,
+    "version": null,
+    "sha256": null,
+    "deployed_utc": null,
+    "production_firmware_sha256": null
+  },
+
+  "power": {
+    "topology_confirmed": false,
+    "regulated_input_v": null,
+    "sensor_rail_v": null,
+    "servo_supply_v": null,
+    "servo_supply_shared_ground": null,
+    "servo_current_through_sensor_pcb": null
   },
 
   "mechanism": {
@@ -39,8 +83,75 @@
     "sources": ["white", "uv", "ir"]
   },
 
+  "thresholds": {
+    "direction_symmetry_counts": {
+      "value": 4,
+      "unit": "counts",
+      "source": "NONE",
+      "rationale": "A working figure, not a requirement. Until HW-B4-001 has measured both directions there is nothing authoritative to compare against.",
+      "requirement_id": "HW-REQ-SERVO-014",
+      "provenance": "ASSUMED"
+    },
+    "angle_growth_counts": {
+      "value": 8,
+      "unit": "counts",
+      "source": "NONE",
+      "rationale": "Whether error grows with angle is the question; this bound only decides when to raise a defect for a human to look at.",
+      "requirement_id": "HW-REQ-SERVO-014",
+      "provenance": "ASSUMED"
+    },
+    "endurance_drift_counts": {
+      "value": 5,
+      "unit": "counts",
+      "source": "NONE",
+      "rationale": "A trend detector, not a limit. The measured first-to-last-decile difference is the result.",
+      "requirement_id": "HW-REQ-END-003",
+      "provenance": "ASSUMED"
+    },
+    "move_timeout_headroom": {
+      "value": 0.5,
+      "unit": "fraction",
+      "source": "DESIGN",
+      "rationale": "A movement that routinely takes more than half its timeout leaves no margin to distinguish a slow movement from a stuck one.",
+      "requirement_id": "HW-REQ-SERVO-012",
+      "provenance": "ASSUMED"
+    },
+    "status_latency_ms": {
+      "value": 2000,
+      "unit": "ms",
+      "source": "DESIGN",
+      "rationale": "get_status must answer at the same speed whether the sensor is present or missing, so it must be far below an acquisition.",
+      "requirement_id": "HW-REQ-LINK-003",
+      "provenance": "DESIGN"
+    },
+    "operator_angle_tolerance_deg": {
+      "value": 5.0,
+      "unit": "deg",
+      "source": "NONE",
+      "rationale": "What a human can read off a protractor. Not a property of the mechanism.",
+      "requirement_id": "HW-REQ-H002-001",
+      "provenance": "ASSUMED"
+    },
+    "rotation_drift_counts": {
+      "value": 20,
+      "unit": "counts",
+      "source": "NONE",
+      "rationale": "An absolute bound that does NOT scale with the rotation count. A 100-rotation run that accepts 100x the one-rotation tolerance has no acceptance criterion at all.",
+      "requirement_id": "HW-REQ-CAR-005",
+      "provenance": "ASSUMED"
+    }
+  },
+
+  "mission": {
+    "expected_slots": null,
+    "expected_sample_count": null,
+    "required_slot_sequence": null,
+    "time_budget_minutes": null,
+    "allowed_workarounds": 0
+  },
+
   "artifacts": null,
   "operator": null,
 
-  "notes": "gear_ratio_servo_to_carousel is ASSUMED to be 1.0 and is one of the things H-002 exists to settle: if the mechanism has a reduction between the ST3215 output shaft and the carousel plate, every angle in the firmware is wrong by that ratio. Do not change it to make a test pass - change it only from a measurement, and set provenance to MEASURED with the run id in notes when you do. slot_count is null so the production value (4) is used; do not put a second copy of it here."
+  "notes": "THIRTEEN TESTS ARE BLOCKED BY THIS FILE BEING A TEMPLATE, and each one names the field it needs. Fill in `unit.module_id` to unblock HW-B0-006; declare `instruments.multimeter` for HW-B0-008, HW-B4-008 and HW-B7-012; `instruments.oscilloscope` for HW-B0-010; `instruments.thermal_probe` for HW-B11-007; `fixtures.representative_load` for HW-B4-007 and HW-B5-007. The remaining four (HW-B2-006, HW-B2-008, HW-B2-011, HW-B3-004, HW-B6-001) need the test-side diagnostic agent - see test_side_firmware/DEPLOYMENT.md. gear_ratio_servo_to_carousel is ASSUMED to be 1.0 and is one of the things H-002 exists to settle: if the mechanism has a reduction between the ST3215 output shaft and the carousel plate, every angle in the firmware is wrong by that ratio. Do not change it to make a test pass - change it only from a measurement, and set provenance to MEASURED with the run id in notes when you do. slot_count is null so the production value (4) is used; do not put a second copy of it here."
 }

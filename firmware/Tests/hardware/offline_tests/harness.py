@@ -155,9 +155,13 @@ class Bench:
         """
         self.context.link = link
 
-        for adapter in (self.context.servo, self.context.sensor,
-                        self.context.carousel, self.context.workflow):
-            adapter.link = link
+        # EVERY adapter that holds a link, not a hand-written subset.
+        # The list was a subset once, the diagnostic adapter was added
+        # after it, and the result was a "fake" bench trying to open
+        # /dev/fake0 for real.
+        for adapter in self.context.adapters.values():
+            if hasattr(adapter, "link"):
+                adapter.link = link
 
         self.context.adapters["link"] = link
 

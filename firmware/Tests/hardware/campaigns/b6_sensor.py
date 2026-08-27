@@ -21,7 +21,8 @@ fail differently, and HW-B6-002 and HW-B6-005 exist to make each of them
 happen for real, repeatedly, from cold.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import (Automation, IterationKind, Requirement,
+                          Safety)
 from ..core.analysis import failure_rate, outliers, summarize
 
 
@@ -43,6 +44,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-001", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-016",),
         title="On-demand I2C bus scan",
         objective="Enumerate every address answering on the I2C bus "
                   "without disturbing a sensor that is already working.",
@@ -60,17 +62,21 @@ def register(registry):
         captures=("every address found", "the bus description",
                   "the configured address"),
         safety=Safety.READ_ONLY, automation=Automation.AUTOMATIC,
-        requires=("sensor.i2c_scan_on_demand",),
+        requires=("diagnostic.i2c_scan",),
         run=_i2c_scan, cleanup=_release,
         defect_prefix="HW-SENSOR",
-        notes="BLOCKED: the firmware scans the bus only during sensor "
-              "initialization. HW-B6-002 covers the same ground through "
-              "a forced re-initialization, which is heavier but needs "
-              "no firmware change.",
+        notes="BLOCKED until the test-side diagnostic agent is "
+              "deployed. The competition firmware scans the bus "
+              "only during initialization, so its addresses are "
+              "from the last init; the agent answers with a fresh "
+              "scan that initializes nothing. HW-B6-002 meanwhile "
+              "covers the same ground through a forced "
+              "re-initialization.",
     )
 
     registry.test(
         test_id="HW-B6-002", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-001", "HW-REQ-SENSOR-002"),
         title="Initialization from cold, and the address at 0x49",
         objective="Force a full initialization and observe the bus scan "
                   "it performs.",
@@ -102,6 +108,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-003", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-LINK-003",),
         title="Sensor status without touching the sensor",
         objective="Check that get_status answers at the same speed "
                   "whether the sensor is present, missing or half dead.",
@@ -129,6 +136,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-004", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-006", "HW-REQ-SENSOR-008"),
         title="One acquisition under each illumination",
         objective="Take a single reading under WHITE, under UV and "
                   "under IR, and check each returns eighteen channels.",
@@ -156,6 +164,10 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-005", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-003",),
+        iteration_kind=IterationKind.MEASUREMENT,
+        qualification_min_iterations=50,
+        characterization_min_iterations=10,
         title="Repeated cold initialization",
         objective="Establish whether initialization is reliable or "
                   "intermittent - the AS7265X_NOT_FOUND question.",
@@ -184,6 +196,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-006", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-005", "HW-REQ-REC-003"),
         title="Initialization after an ESP32 reset",
         objective="Check the sensor comes up from a genuine cold start, "
                   "with the post-reset settling the driver waits out.",
@@ -217,6 +230,7 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-007", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-006", "HW-REQ-SENSOR-013"),
         title="The production WHITE, UV, IR sequence",
         objective="Run the exact triad the measurement uses, and check "
                   "all 54 features arrive.",
@@ -244,6 +258,10 @@ def register(registry):
 
     registry.test(
         test_id="HW-B6-008", campaign=CAMPAIGN, layer="B6",
+        requirements=("HW-REQ-SENSOR-003",),
+        iteration_kind=IterationKind.MEASUREMENT,
+        qualification_min_iterations=200,
+        characterization_min_iterations=50,
         title="Watching for the intermittent AS7265X_NOT_FOUND",
         objective="Run long enough to catch the intermittent fault, and "
                   "record exactly what the firmware said when it "
@@ -329,17 +347,69 @@ def _sensor_error(error):
 # ======================================================================
 
 def _i2c_scan(ctx):
-    ctx.require("sensor.i2c_scan_on_demand")
+    """
+    Who is on the bus, right now, without disturbing anything.
 
-    transaction = ctx.link.request("i2c_scan")       # pragma: no cover
+    This is what distinguishes "the sensor is absent" from "the bus is
+    dead" - and it does it without initializing the sensor, which the
+    production path cannot.
+    """
+    ctx.require("diagnostic.i2c_scan")
 
-    answer = transaction["data"] or {}               # pragma: no cover
+    ctx.diagnostic.identify()
 
-    ctx.record("i2c_scan", **answer)                 # pragma: no cover
+    transaction = ctx.diagnostic.i2c_scan()
 
-    ctx.check(bool(answer.get("addresses")),         # pragma: no cover
-              "at least one device answered on the I2C bus",
+    answer = transaction["data"] or {}
+
+    ctx.record("i2c_scan", **answer)
+
+    addresses = answer.get("addresses")
+
+    ctx.require_observation("the list of answering I2C addresses",
+                            addresses, evidence={"answer": answer})
+
+    ctx.check(bool(addresses),
+              "at least one device answered on the I2C bus - an empty "
+              "bus means wiring, pull-ups or power, not a missing "
+              "sensor",
               evidence=answer)
+
+    expected = answer.get("expected_address")
+
+    ctx.observed(
+        "the AS7265x answers at its configured address",
+        answer.get("expected_present"), expected=True,
+        requirement=Requirement.REQUIRED,
+        evidence={"expected_address": expected, "found": addresses})
+
+    ctx.measure(stage="i2c_scan",
+                addresses=";".join(addresses or []),
+                count=answer.get("count"),
+                expected_address=expected,
+                expected_present=answer.get("expected_present"),
+                elapsed_ms=answer.get("elapsed_ms"))
+
+    others = [a for a in (addresses or []) if a != expected]
+
+    if others:
+        ctx.note(
+            "Other devices answered on the bus: {}. Not a fault, but "
+            "worth recording - an unexpected address is either another "
+            "component or a wiring problem.".format(", ".join(others)))
+
+    if addresses and not answer.get("expected_present"):
+        ctx.defect(
+            title="the I2C bus is alive but the AS7265x is not on it",
+            observed="addresses {} answered; {} did not".format(
+                ", ".join(addresses), expected),
+            expected="the AS7265x answering at {}".format(expected),
+            reproduction=("run HW-B6-001 with the diagnostic agent "
+                          "deployed",),
+            suspected_layer="sensor power or its I2C connection - the "
+                            "bus itself is working",
+            evidence=answer,
+        )
 
 
 def _cold_initialization(ctx):
@@ -615,9 +685,13 @@ def _production_triad(ctx):
 
     bulbs_off = report.get("bulbs_off")
 
-    ctx.check(bulbs_off is not False,
-              "the firmware reports the bulbs off after the triad",
-              evidence={"bulbs_off": bulbs_off})
+    # REQUIRED and explicitly True. `is not False` also passed None,
+    # which is "the firmware did not say" - and an unconfirmable
+    # off-state is exactly the thing HW-REQ-SENSOR-014 says must be
+    # reported as unconfirmed rather than assumed.
+    ctx.observed("the firmware reports the bulbs off after the triad",
+                 bulbs_off, expected=True,
+                 requirement=Requirement.REQUIRED)
 
     ctx.record("triad", elapsed_ms=transaction["elapsed_ms"],
                features=features, bulbs_off=bulbs_off,

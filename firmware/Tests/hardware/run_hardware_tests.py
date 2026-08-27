@@ -57,6 +57,7 @@ if str(TESTS_DIR) not in sys.path:
 from hardware.configuration.profile import (              # noqa: E402
     EXAMPLE_PROFILE, Profile, ProfileError)
 from hardware.core import registry as registry_module     # noqa: E402
+from hardware.core import requirements as requirements_module  # noqa: E402
 from hardware.core.context import RunContext              # noqa: E402
 from hardware.core.evidence import EvidenceWriter         # noqa: E402
 from hardware.core.model import Mode, Status              # noqa: E402
@@ -280,10 +281,49 @@ def do_describe(registry, test_id, as_json):
         print("Defects filed as  {}-nnn".format(definition.defect_prefix))
 
     if definition.default_iterations is not None:
-        print("Iterations        {} by default, {} maximum".format(
-            definition.default_iterations, definition.max_iterations))
+        print("Iterations        {} by default, {} maximum, kind "
+              "{}".format(definition.default_iterations,
+                          definition.max_iterations,
+                          definition.iteration_kind))
+
+        if definition.qualification_min_iterations:
+            print("Qualification     at least {} - below that the run "
+                  "produces".format(
+                      definition.qualification_min_iterations))
+            print("                  CHARACTERIZATION, never a "
+                  "qualification PASS")
+
+        if definition.characterization_min_iterations:
+            print("Characterization  at least {}".format(
+                definition.characterization_min_iterations))
+
+    if definition.acceptance_source:
+        print("Acceptance from   {}".format(
+            definition.acceptance_source))
 
     print()
+
+    if definition.requirements:
+        print("Evidence for")
+
+        for name in definition.requirements:
+            try:
+                requirement = requirements_module.get(name)
+
+            except KeyError:                           # pragma: no cover
+                print("   {}  (UNKNOWN REQUIREMENT)".format(name))
+
+                continue
+
+            print("   {}  {}".format(name, requirement.title))
+            print("      source: {}{}".format(
+                requirement.source,
+                "" if requirement.authoritative
+                else " - CHARACTERIZATION ONLY, no authoritative "
+                     "acceptance criterion exists"))
+
+        print()
+
     _paragraph("Objective", definition.objective)
     _paragraph("Hardware setup", definition.hardware_setup)
     _paragraph("Preconditions", definition.preconditions)

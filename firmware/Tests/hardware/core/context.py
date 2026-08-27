@@ -23,10 +23,12 @@ for a test to reach a port around it - which is what makes "--list,
 rather than a promise in a README.
 """
 
-from ..adapters import (CarouselAdapter, LinkAdapter, SensorAdapter,
+from ..adapters import (BenchAdapter, CarouselAdapter,
+                        DiagnosticAdapter, LinkAdapter, SensorAdapter,
                         ServoAdapter, WorkflowAdapter)
 from ..configuration import ports as ports_module
-from .model import Blocked, Check, Failure, Mode, Skip, now
+from .model import (Blocked, Characterization, Check, Failure,
+                    Inconclusive, Mode, Requirement, Skip, now)
 
 
 class HardwareNotPermitted(RuntimeError):
@@ -82,6 +84,8 @@ class RunContext:
         self.sensor = SensorAdapter(self, self.link)
         self.carousel = CarouselAdapter(self, self.link)
         self.workflow = WorkflowAdapter(self, self.link)
+        self.diagnostic = DiagnosticAdapter(self, self.link)
+        self.bench = BenchAdapter(self)
 
         self.adapters = {
             "link": self.link,
@@ -89,6 +93,8 @@ class RunContext:
             "sensor": self.sensor,
             "carousel": self.carousel,
             "workflow": self.workflow,
+            "diagnostic": self.diagnostic,
+            "bench": self.bench,
         }
 
         self._capabilities = None
@@ -299,6 +305,130 @@ class RunContext:
 
     def fail(self, reason, defect=None, evidence=None):
         raise Failure(reason, defect=defect, evidence=evidence)
+
+    def inconclusive(self, reason, missing=(), evidence=None):
+        """
+        The procedure ran and cannot support a verdict.
+
+        Not a failure. Nothing was observed to be wrong; the thing the
+        test exists to establish was simply not established.
+        """
+        raise Inconclusive(reason, missing=missing, evidence=evidence)
+
+    def characterize(self, reason, measurements=None):
+        """
+        Measurements were collected and no requirement judges them.
+
+        Raised by the tests whose whole job is to produce numbers. It
+        ends the body, so it goes last - anything after it would not
+        run.
+        """
+        raise Characterization(reason, measurements=measurements)
+
+    # ------------------------------------------------------------------
+    # observations, classified
+    # ------------------------------------------------------------------
+
+    def observed(self, description, value, expected=None,
+                 requirement=Requirement.REQUIRED, matches=None,
+                 evidence=None):
+        """
+        Record one observation, and treat a MISSING one honestly.
+
+        THE DEFECT THIS REPLACES, which was in eight test bodies:
+
+            ctx.check(reported is None or reported == expected, ...)
+
+        which reads "the device identifies correctly OR does not
+        identify at all" and passes both. A device that returned no
+        firmware name passed the firmware-identity check.
+
+        Here, for a REQUIRED observation:
+
+            value is None      -> recorded as missing. The runner turns
+                                  the result INCONCLUSIVE: the
+                                  procedure ran, the evidence is not
+                                  there.
+            value != expected  -> a failed check. FAIL: the contract was
+                                  violated.
+            value == expected  -> a passed check.
+
+        An OPTIONAL_DIAGNOSTIC observation may be absent, is recorded
+        either way, and never decides anything.
+        """
+        detail = dict(evidence or {})
+        detail.update({"observed": value, "expected": expected,
+                       "requirement": requirement})
+
+        entry = {"description": description, "value": value,
+                 "expected": expected, "requirement": requirement}
+
+        self.result.observations.append(entry)
+
+        if value is None:
+            if requirement == Requirement.REQUIRED:
+                self.result.record_missing_required(description, detail)
+
+                self.check(False,
+                           "{} (REQUIRED, and it was not "
+                           "reported)".format(description),
+                           evidence=detail)
+
+                return False
+
+            # `detail` already carries `requirement`; passing it again
+            # explicitly is a duplicate keyword and a TypeError.
+            self.event("observation_absent", description=description,
+                       **detail)
+
+            self.note(
+                "{} was not reported. It is {}, so nothing depends on "
+                "it.".format(description, requirement))
+
+            return None
+
+        if requirement == Requirement.NOT_AVAILABLE:
+            self.note(
+                "{} arrived from a system that is not supposed to be "
+                "able to produce it; recording it, deciding "
+                "nothing.".format(description))
+
+            return None
+
+        if matches is None:
+            ok = value == expected if expected is not None else True
+
+        else:
+            ok = bool(matches(value))
+
+        if requirement == Requirement.OPTIONAL_DIAGNOSTIC:
+            self.event("observation", description=description,
+                       satisfied=ok, **detail)
+
+            return ok
+
+        self.check(ok, description, evidence=detail)
+
+        return ok
+
+    def require_observation(self, description, value, evidence=None):
+        """
+        A REQUIRED observation whose mere presence is what matters.
+
+        Used where the objective needs a field to EXIST - a measurement
+        id, a slot association, a raw spectrum - rather than to equal
+        something.
+        """
+        present = value is not None and value != "" and value != []
+
+        if not present:
+            self.result.record_missing_required(description, evidence)
+
+        self.check(present,
+                   "{} is present".format(description),
+                   evidence=dict(evidence or {}, observed=value))
+
+        return present
 
     def block(self, reason, capability=None, recommendation=""):
         raise Blocked(reason, capability=capability,

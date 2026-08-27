@@ -133,7 +133,8 @@ def run():
             test_id="HW-T-002", campaign="T", layer="T", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=("s",), expected="e", failure_criteria="f",
-            captures=("c",), safety=Safety.READ_ONLY,
+            captures=("c",), requirements=("HW-REQ-FW-001",),
+            safety=Safety.READ_ONLY,
             automation=Automation.AUTOMATIC, run=observes,
             defect_prefix="HW-TEST"))
 
@@ -309,7 +310,8 @@ def run():
             test_id="HW-T-001", campaign="T", layer="T", title="t",
             objective="o", hardware_setup="h", preconditions="p",
             procedure=("s",), expected="e", failure_criteria="f",
-            captures=("c",), safety=Safety.READ_ONLY,
+            captures=("c",), requirements=("HW-REQ-FW-001",),
+            safety=Safety.READ_ONLY,
             automation=Automation.AUTOMATIC, run=raises_defect,
             defect_prefix="HW-TEST"))
 

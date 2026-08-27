@@ -17,6 +17,7 @@ if str(HERE.parent.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent.parent))
 
 from hardware.core.model import (Automation, Blocked,       # noqa: E402
+                                 IterationKind,
                                  Evidence, Failure, Safety,
                                  Status, TestDefinition)
 from hardware.core.registry import Registry                 # noqa: E402
@@ -43,6 +44,7 @@ def _registry_with(body, cleanup=None, **overrides):
         "expected": "the thing happens",
         "failure_criteria": "the thing does not happen",
         "captures": ("what happened",),
+        "requirements": ("HW-REQ-FW-001",),
         "safety": Safety.READ_ONLY,
         "automation": Automation.AUTOMATIC,
         "run": body, "cleanup": cleanup,
@@ -294,7 +296,8 @@ def run():
         ctx.check(True, "resolved {} iterations".format(ctx.iterations()))
 
     catalogue = _registry_with(counts, default_iterations=10,
-                               max_iterations=100)
+                               max_iterations=100,
+                               iteration_kind=IterationKind.REQUEST)
 
     for bad, description in ((0, "zero"), (-5, "a negative count"),
                              (1000, "a count above the ceiling")):
@@ -360,6 +363,7 @@ def run():
             title="t", objective="o", hardware_setup="h",
             preconditions="p", procedure=("s",), expected="e",
             failure_criteria="f", captures=("c",),
+            requirements=("HW-REQ-FW-001",),
             safety=Safety.READ_ONLY, automation=Automation.AUTOMATIC,
             run=body, defect_prefix="HW-TEST"))
 

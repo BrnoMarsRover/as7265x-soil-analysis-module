@@ -32,7 +32,7 @@ about the position is worse. B9 checks that it keeps the first and
 admits the second.
 """
 
-from ..core.model import Automation, Safety
+from ..core.model import Automation, Requirement, Safety
 
 
 CAMPAIGN = "B9"
@@ -70,6 +70,7 @@ def _register_disconnects(registry):
     for test_id, when, why, body, prerequisites in disconnects:
         registry.test(
             test_id=test_id, campaign=CAMPAIGN, layer="B9",
+            requirements=("HW-REQ-REC-001", "HW-REQ-REC-002"),
             title="USB disconnect {}".format(when),
             objective="Check the link fails as PORT_LOST, the client "
                       "survives, and every later command is a clean "
@@ -106,6 +107,7 @@ def _register_disconnects(registry):
 
     registry.test(
         test_id="HW-B9-004", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-002", "HW-REQ-REC-003"),
         title="Communication lost during a carousel movement",
         objective="Check that a movement interrupted by a lost link "
                   "leaves the position UNKNOWN rather than assumed.",
@@ -144,6 +146,7 @@ def _register_disconnects(registry):
 
     registry.test(
         test_id="HW-B9-005", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-002", "HW-REQ-SENSOR-013"),
         title="Communication lost during a measurement",
         objective="Check a measurement interrupted by a lost link fails "
                   "cleanly and leaves nothing illuminated.",
@@ -178,6 +181,7 @@ def _register_disconnects(registry):
 def _register_resets(registry):
     registry.test(
         test_id="HW-B9-006", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-003",),
         title="ESP32 soft reset",
         objective="Reset the board deliberately and check the position "
                   "reference does not survive it.",
@@ -208,6 +212,7 @@ def _register_resets(registry):
 
     registry.test(
         test_id="HW-B9-007", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-003", "HW-REQ-REC-004", "HW-REQ-REC-005"),
         title="ESP32 power cycle",
         objective="Remove power entirely and check the same thing a "
                   "reset checks, plus that the port comes back.",
@@ -240,6 +245,7 @@ def _register_resets(registry):
 def _register_component_loss(registry):
     registry.test(
         test_id="HW-B9-008", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-003",),
         title="Servo bus communication lost",
         objective="Remove the servo from the bus and check the failure "
                   "is named and the position invalidated.",
@@ -276,6 +282,7 @@ def _register_component_loss(registry):
 
     registry.test(
         test_id="HW-B9-009", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-007",),
         title="Failure during one specific illumination",
         objective="Fail the acquisition in the middle of the triad and "
                   "check the answer names WHICH illumination failed.",
@@ -306,6 +313,7 @@ def _register_component_loss(registry):
 
     registry.test(
         test_id="HW-B9-010", campaign=CAMPAIGN, layer="B9",
+        requirements=("HW-REQ-REC-006",),
         title="The return fails after the data was acquired",
         objective="Prove the science data survives a failed return, and "
                   "that the position is admitted to be uncertain.",
