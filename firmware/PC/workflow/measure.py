@@ -34,10 +34,14 @@ from BD.channels import ILLUMINATIONS
 from serial_link import DeviceError, LinkError
 
 from workflow.records import ask_metadata
+
+# `ui_status`, not `status`: this module binds a local `status` to the
+# get_status dict, the shadowing hazard display.py documents.
+from workflow import status as ui_status
+
 from workflow.display import (
     offer_decision_detail,
     print_agreement,
-    print_cross_database,
     print_decision,
     print_evidence_summary,
     print_metric_table,
@@ -230,6 +234,196 @@ def menu_confirm(mission, status, view):
     print("Sample {} is now {}.".format(record["sample_id"], record["state"]))
 
 
+# ======================================================================
+# measurement recovery
+# ======================================================================
+# WHY A FAILED MEASUREMENT DOES NOT SIMPLY RETURN.
+#
+# It used to. `menu_measure` printed a correct, compact failure block,
+# called `pause()`, and returned - and the main loop's very next
+# iteration re-read the status, saw `position_valid == False`, and drew
+# the context-free startup screen. Every screen rendered correctly.
+# The operator still lost the sample id, the slot, the LOADED state,
+# which stage had failed and whether a spectrum existed, because the
+# only screen that had ever shown them was now two screens back.
+#
+# On a bench that is annoying. During a competition run, with a sample
+# already committed to a slot and a carousel in an unknown position, it
+# is the difference between recovering and starting again.
+#
+# So a failure that leaves anything worth acting on holds the operator
+# HERE, in context, until they choose to leave.
+#
+# WHAT THIS SCREEN MAY NOT OFFER.
+#
+# There is no "retry the movement". Carousel movement is RELATIVE, and
+# a movement whose acknowledgement was lost may already have happened;
+# re-sending it would turn one 180 degree sweep into two. Every action
+# here is a pure read, a diagnostic, or a re-declaration of the origin
+# that moves nothing. Recovering position is the operator's eyes plus
+# re-sync, never a resend.
+
+
+def _recovery_state(mission):
+    """
+    The live state behind the recovery screen, or a reason there is none.
+
+    Re-read every time round, because the whole point is to show what
+    is true NOW - after a diagnostic, after a re-sync - rather than
+    what was true when the measurement failed.
+    """
+    try:
+        return mission.hardware_status(), None
+
+    except (DeviceError, LinkError, TimeoutError) as error:
+        return None, error
+
+
+def measurement_recovery(mission, sample_id, slot_id, stage,
+                         spectrum_state, recorded):
+    """
+    Hold the operator in the failed measurement's context.
+
+    Returns when they choose to leave: explicitly, or by going back to
+    the sample once the carousel position is trustworthy again.
+    """
+    while True:
+        status, error = _recovery_state(mission)
+
+        print()
+        print(RULE)
+        print("MEASUREMENT RECOVERY")
+        print(RULE)
+
+        if status is None:
+            # The link itself is gone. Say so and offer the only two
+            # things that are still meaningful.
+            ui_status.print_fields((
+                ("Sample", "{} / Slot {}".format(sample_id, slot_id)),
+                ("Stage", stage or "unknown"),
+                ("Spectrum", spectrum_state),
+                ("Link", "UNREACHABLE - {}".format(error)),
+            ))
+
+            print()
+            print("[1] Try the module again")
+            print("[0] Back to the main menu")
+
+            if choose() == "1":
+                continue
+
+            return
+
+        carousel = status.get("carousel") or {}
+        entry = mission.store.get_sample(sample_id) or {}
+
+        ui_status.print_fields((
+            ("Sample", "{} / Slot {} / {}".format(
+                sample_id, slot_id, entry.get("state", "?"))),
+            ("Stage", stage or "unknown"),
+            ("Servo", ui_status.servo_link(status)),
+            ("Carousel", ui_status.carousel_label(status)),
+            ("Sensor", ui_status.sensor_label(status)),
+            ("Spectrum", spectrum_state),
+            ("Recorded", recorded),
+        ))
+
+        # The options are built from the state, so the screen can never
+        # offer a recovery that does not apply - and never offers a
+        # movement.
+        online = ui_status.servo_online(status)
+        synchronized = bool(carousel.get("position_valid"))
+
+        actions = [("1", "Refresh hardware state")]
+
+        if not online:
+            actions.append(("2", "Carousel Setup - connect the servo"))
+
+        elif not synchronized:
+            actions.append(("2", "Re-sync carousel (nothing moves)"))
+
+        actions.append(("3", "Servo diagnostics"))
+        actions.append(("4", "Sensor diagnostics"))
+
+        if synchronized:
+            actions.append(("5", "Back to this sample"))
+
+        actions.append(("0", "Abort to the main menu"))
+
+        print()
+
+        for key, label in actions:
+            print("[{}] {}".format(key, label))
+
+        selection = choose()
+        offered = {key for key, _label in actions}
+
+        if selection not in offered:
+            if selection:
+                print("Unknown option.")
+
+            continue
+
+        if selection == "0":
+            return
+
+        if selection == "1":
+            continue
+
+        # Imported here rather than at module scope. `workflow.carousel`
+        # and `workflow.calibration` are peers of this module that
+        # `screen` imports alongside it; pulling them in lazily keeps
+        # the import graph a tree no matter which of the three grows an
+        # import of another later.
+        from workflow import calibration as calibration_menus
+        from workflow import carousel as carousel_menus
+
+        try:
+            if selection == "2":
+                if not online:
+                    carousel_menus.menu_initial_calibration(mission)
+
+                else:
+                    carousel_menus.menu_resync(mission)
+
+            elif selection == "3":
+                carousel_menus.menu_servo_diagnostics(mission)
+
+            elif selection == "4":
+                # The sensor test re-initialises the AS7265x and takes a
+                # reading. It illuminates; it moves NOTHING, which is
+                # what makes it safe to offer while the carousel
+                # position is unknown.
+                calibration_menus.menu_sensor_test(mission)
+
+            elif selection == "5":
+                # Position is trustworthy again and the sample is still
+                # where it was. Nothing further is owed here.
+                print()
+                print("Carousel synchronized. Slot {} is selectable "
+                      "again.".format(slot_id))
+                print()
+                pause()
+
+                return
+
+        except (DeviceError, LinkError, TimeoutError) as failure:
+            # A recovery action failing must not throw the operator out
+            # of recovery - that is the defect this screen exists for.
+            print()
+            print("That did not work: {}".format(
+                getattr(failure, "message", None) or failure))
+            print()
+            pause()
+
+        except StorageError as failure:
+            print()
+            print("Storage error: {} ({})".format(
+                failure.message, failure.code))
+            print()
+            pause()
+
+
 def menu_measure(mission, status, view):
     """
     The full measurement cycle.
@@ -316,39 +510,34 @@ def menu_measure(mission, status, view):
         data = mission.link.measure_raw(slot_id, sample_id)
 
     except (DeviceError, LinkError) as error:
-        print()
-
-        # WHICH STAGE, not just "it failed".
+        # ONE BLOCK, NOT FOUR PARAGRAPHS. §3.
         #
-        # This used to print one sentence for every failure of the
-        # whole out-acquire-back transaction. "Measurement failed
-        # before any spectrum was obtained" is true of all of them and
-        # useful about none: it reads as though nothing happened, and
-        # the case that reached the Linux bench was a 180 degree
-        # transfer that HAD happened and could not be verified.
+        # WHICH STAGE, not just "it failed". The firmware names the
+        # stage it was in, and that goes in the title where it is read
+        # first - it used to be a sentence of prose above three more
+        # paragraphs that between them said "no spectrum was saved"
+        # twice and described the carousel state in two different
+        # wordings.
         #
-        # The firmware names the stage it was in; the carousel verdict
-        # comes from report_link_error below.
-        stage = (error.data or {}).get("phase")
+        # Everything the operator needs is now on one screen in the
+        # order they need it: what failed and where, what the encoder
+        # saw, where the carousel is, what happened to the spectrum,
+        # what state the sample is left in, what to do next.
+        data = error.data or {}
+        stage = data.get("phase")
 
-        STAGE_TEXT = {
-            "PRECHECK": "The measurement was refused before anything "
-                        "moved.",
-            "MOVE_TO_SCANNER": "The carousel was moving the sample to "
-                               "the scanner when this failed.",
-            "ACQUISITION": "The sample reached the scanner and the "
-                           "acquisition failed.",
+        # THE STAGE STILL SAYS WHERE THE SAMPLE IS. One line, not a
+        # paragraph - but not dropped either. The bare enum name in the
+        # title says which stage failed; it does NOT say that an
+        # ACQUISITION failure leaves the sample sitting at the scanner
+        # rather than at the loading hole, and that is a physical fact
+        # the operator acts on. RF-005C exists because these three need
+        # opposite responses.
+        STAGE_LINE = {
+            "PRECHECK": "refused before anything moved",
+            "MOVE_TO_SCANNER": "failed moving the sample to the scanner",
+            "ACQUISITION": "sample reached the scanner; acquisition failed",
         }
-
-        print(STAGE_TEXT.get(
-            stage,
-            "The measurement failed somewhere between the loader and "
-            "the scanner."))
-
-        print("No spectrum was obtained, so none was saved.")
-
-        report_link_error(error)
-        report_return_move((error.data or {}).get("return_move"))
 
         # An acquisition that failed is an operational fact, and it is
         # recorded as one: a Measurement with acquisition_status FAILED
@@ -356,6 +545,12 @@ def menu_measure(mission, status, view):
         # full of zeros - a spectrum of zeros cannot be told apart from
         # a genuinely dark one, and inventing it would put an
         # acquisition into the scientific record that never happened.
+        #
+        # Recorded BEFORE the report is printed, so the block can say
+        # which record it landed in rather than promising one.
+        recorded = None
+        storage_failure = None
+
         try:
             failed = mission.store.add_measurement(
                 sample_id,
@@ -365,22 +560,43 @@ def menu_measure(mission, status, view):
                 },
                 error={"code": error.code, "message": error.message},
             )
-
-            print()
-            print("Recorded as {} ({}). Sample {} remains {}; no "
-                  "spectrum was saved because none was "
-                  "obtained.".format(
-                      failed["measurement_id"], ACQUISITION_FAILED,
-                      sample_id, STATE_LOADED,
-                  ))
+            recorded = failed["measurement_id"]
 
         except StorageError as storage_error:
-            print()
-            print("!! Could not even record the failure: {}".format(
-                storage_error.message))
+            storage_failure = storage_error.message
 
-        print()
-        pause()
+        extra = [
+            ("Spectrum", "NOT ACQUIRED - none was saved"),
+            ("Sample", "{} remains {}".format(sample_id, STATE_LOADED)),
+            ("Recorded", "{} ({})".format(recorded, ACQUISITION_FAILED)
+             if recorded else "NOT RECORDED - {}".format(storage_failure)),
+        ]
+
+        ui_status.print_failure(
+            error.code, data, message=error.message,
+            title="MEASUREMENT FAILED{}".format(
+                " - {}".format(stage) if stage else ""
+            ),
+            lead=[("Stage", STAGE_LINE.get(stage))],
+            extra=extra,
+        )
+
+        report_return_move(data.get("return_move"))
+
+        # STAY IN CONTEXT. §11.
+        #
+        # This used to `pause()` and return, and the main loop then drew
+        # the startup screen over the top of it - so the sample, the
+        # slot, the stage and the missing spectrum were gone one
+        # keypress after they were printed. The operator is now held
+        # here, with that context on screen, until they choose to leave.
+        measurement_recovery(
+            mission, sample_id, slot_id, stage,
+            spectrum_state="NOT ACQUIRED - none was saved",
+            recorded=("{} ({})".format(recorded, ACQUISITION_FAILED)
+                      if recorded
+                      else "NOT RECORDED - {}".format(storage_failure)),
+        )
 
         return
 
@@ -541,10 +757,50 @@ def menu_measure(mission, status, view):
         offer_decision_detail(run)
 
     if run_id and run.get("decision"):
-        capture_ground_truth(mission, measurement_id, run)
+        # A GLOBALLY UNIQUE OBSERVATION ID, NOT THE PER-SAMPLE ONE.
+        #
+        # `measurement_id` is allocated from the SAMPLE's own list -
+        # `_next_id(measurements_of(record), "M")` - so the first
+        # measurement of every sample is M001. The learning store keys
+        # its observations table on the id it is given, GLOBALLY.
+        #
+        # So the first sample labelled worked and the second was
+        # refused with "M001 is already recorded. ... immutable ...",
+        # which reads like a database fault and is an id collision. On
+        # a bench whose learning history already carries an M001 it
+        # failed on the very first sample. Either way the mixture the
+        # operator had just weighed and typed in was silently not
+        # saved, at the last keystroke.
+        #
+        # Qualifying with the sample makes it unique and keeps the
+        # record self-describing: the observation names the sample it
+        # came from, which is the linkage the observations table has no
+        # column for.
+        capture_ground_truth(
+            mission, "{}/{}".format(sample_id, measurement_id), run)
 
     print()
     pause()
+
+    # THE ACQUISITION SUCCEEDED AND THE CAROUSEL DID NOT COME HOME. §13F.
+    #
+    # These are two independent outcomes and this is the case where they
+    # diverge: real spectra exist, are saved and are analysed, while the
+    # carousel is somewhere nobody can name. Falling through here sent
+    # the operator to the startup screen, which says only POSITION
+    # UNKNOWN - so the one screen that knew a measurement had SUCCEEDED
+    # was the screen they had just left.
+    #
+    # Recovery is entered with `Spectrum: ACQUIRED`, which is the whole
+    # point: what to do next is different when the science is already
+    # safe.
+    if not data.get("home_restored"):
+        measurement_recovery(
+            mission, sample_id, slot_id, "RETURN_TO_LOADER",
+            spectrum_state="ACQUIRED and saved - the science is safe",
+            recorded="{} / {}".format(
+                measurement_id, run_id or "no analysis"),
+        )
 
 
 def menu_clear_slot(mission, status, view):

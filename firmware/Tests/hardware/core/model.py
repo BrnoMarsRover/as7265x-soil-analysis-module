@@ -1076,6 +1076,17 @@ class TestResult:
             "test_id": self.test_id,
             "campaign": self.campaign,
             "layer": self.layer,
+
+            # WHAT THIS TEST WAS ALLOWED TO DO, recorded with what it
+            # did. Reading a summary months later, "HW-B5-003 FAILED" and
+            # "HW-B5-003 FAILED and it was allowed to move the carousel"
+            # call for different next actions, and the second is the one
+            # an operator standing at the bench needs. It also lets the
+            # runner say, from the results alone, whether a failure could
+            # have left the mechanism somewhere unknown.
+            "safety": self.definition.safety,
+            "automation": self.definition.automation,
+
             "status": self.status,
             "reported_status": self.reported_status(),
             "readiness": self.readiness,

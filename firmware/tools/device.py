@@ -46,6 +46,7 @@ current directory.
 
 import argparse
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -305,10 +306,20 @@ def build_firmware(report):
     the content check below is that there is exactly one answer to
     "what is on the device".
 
-    mpy-cross output is deterministic for a given source and version -
-    verified by compiling protocol.py twice and comparing SHA256 - so
-    `verify` can rebuild and compare hashes against the device without
-    keeping any artefact around.
+    mpy-cross output is REPRODUCIBLE FROM THE SAME CHECKOUT, which is
+    what `verify` needs, but it is NOT path-independent: the compiler
+    embeds the source path so a traceback on the device can name a
+    file, and the same bytes compiled from a different directory - or
+    with different line endings - produce a different .mpy.
+
+    Measured 2026-08-27: identical source content compiled under two
+    directory names gave two different SHA256 at 2152 and 2153 bytes.
+
+    So `verify` rebuilds and compares without keeping an artefact
+    around, and that is sound **as long as it runs from the checkout
+    that deployed**. Verifying a device from a second copy of the
+    repository reports a CONTENT mismatch that is about the path, not
+    about the bytes that matter.
     """
     global BUILD_DIR
 
@@ -608,9 +619,24 @@ def check_content(port, report, built):
             mismatched.append(name)
 
     if mismatched:
-        return report.step(
+        report.step(
             "CONTENT", False, "hash mismatch: " + ", ".join(mismatched)
         )
+
+        # WHICH OF THE TWO CAUSES IS IT? Both look identical here, and
+        # they call for opposite responses: one is a corrupted or stale
+        # upload, the other is a phantom.
+        report.note(
+            "if EVERY file mismatches, suspect the checkout rather than "
+            "the device: mpy-cross embeds the source path, so rebuilding "
+            "from a different copy of the repository - or one with "
+            "different line endings - cannot reproduce the bytes that "
+            "were uploaded. Re-run verify from the checkout that "
+            "deployed. If only SOME files mismatch, the upload is the "
+            "suspect: re-deploy with --clean."
+        )
+
+        return False
 
     if unverifiable:
         report.step("CONTENT", True, "{} files verified".format(
@@ -815,6 +841,131 @@ def command_clean(args):
     return 1 if report.failed else 0
 
 
+RECEIPT_PATH = (
+    REPO_ROOT / "firmware" / "Tests" / "hardware" / "artifacts"
+    / "deployment-receipt.json"
+)
+
+
+def write_receipt(port, built):
+    """
+    Record the exact bytes this deployment put on the device.
+
+    WHY A RECEIPT AT ALL.
+
+    `verify` proves the device matches the source by REBUILDING and
+    comparing SHA256. That is sound from the checkout that deployed,
+    and only from there: mpy-cross embeds the source path, so the same
+    source compiled from a second copy of the repository - or with
+    different line endings - produces different bytes and `verify`
+    reports a mismatch about the path rather than about the firmware.
+    Measured 2026-08-27: identical content under two directory names
+    gave two different SHA256.
+
+    The receipt removes the recompilation from the question. It is
+    written after the device has already been proved to match the
+    build, so what it records is not a claim about what was intended -
+    it is what was verified to be there.
+
+    Best effort by design: a receipt that cannot be written must not
+    fail a deployment that has otherwise succeeded and been verified.
+    """
+    payload = {
+        "deployed_utc": _utc_now(),
+        "port": str(port),
+        "source_dir": str(ESP32_DIR),
+        "mpy_cross": _mpy_cross_version(),
+        "files": {
+            name: local_sha256(built[name]) for name in ESP32_FILES
+        },
+    }
+
+    try:
+        RECEIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RECEIPT_PATH.write_text(
+            json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
+
+        return payload
+
+    except OSError as error:                           # pragma: no cover
+        print("(receipt not written to {}: {})".format(
+            RECEIPT_PATH, error))
+
+        return payload
+
+
+def read_receipt():
+    """The last deployment receipt, or None. Never raises."""
+    try:
+        return json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
+
+    except (OSError, ValueError):
+        return None
+
+
+def check_against_receipt(port, report):
+    """
+    Compare the device against the RECORDED deployment, not a rebuild.
+
+    Path-independent, so it answers the one question a rebuild cannot:
+    are these the bytes that were actually put there? Reports nothing
+    when there is no receipt - a device deployed before receipts
+    existed is not a fault.
+    """
+    receipt = read_receipt()
+
+    if not receipt or not receipt.get("files"):
+        return None
+
+    mismatched = []
+    unverifiable = []
+
+    for name, expected in sorted(receipt["files"].items()):
+        remote = device_sha256(port, name)
+
+        if remote is None:
+            unverifiable.append(name)
+
+        elif remote != expected:
+            mismatched.append(name)
+
+    if mismatched:
+        report.step(
+            "RECEIPT", False,
+            "device differs from the {} deployment: {}".format(
+                receipt.get("deployed_utc", "recorded"),
+                ", ".join(mismatched)))
+
+        return False
+
+    report.step(
+        "RECEIPT", True,
+        "matches the deployment recorded at {}".format(
+            receipt.get("deployed_utc", "an unknown time")))
+
+    return True
+
+
+def _utc_now():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _mpy_cross_version():
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "mpy_cross", "--version"],
+            capture_output=True, text=True, timeout=30)
+
+        text = (result.stdout or result.stderr or "").strip()
+
+        return text.splitlines()[0] if text else None
+
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
 def command_deploy(args):
     """
     The full acceptance pipeline.
@@ -897,7 +1048,15 @@ def command_deploy(args):
 
         return 1
 
+    receipt = write_receipt(args.port, built)
+
     print("Deployed and verified. The board is serving the JSON protocol.")
+    print()
+    print("Receipt: {}".format(RECEIPT_PATH))
+    print("  {} files, recorded at {}".format(
+        len(receipt["files"]), receipt["deployed_utc"]))
+    print("  `verify` compares the device against these hashes, so it")
+    print("  no longer depends on rebuilding from this exact path.")
 
     return 0
 
@@ -919,6 +1078,14 @@ def command_verify(args):
 
     check_remote_manifest(args.port, report, strict=True)
     check_content(args.port, report, built)
+
+    # PATH-INDEPENDENT, AND THEREFORE THE ANSWER WHEN THE REBUILD
+    # DISAGREES. `check_content` compares against a fresh compile, which
+    # is only reproducible from the checkout that deployed. This
+    # compares against what the deployment actually verified onto the
+    # device. Silent when no receipt exists.
+    check_against_receipt(args.port, report)
+
     check_imports(args.port, report)
 
     return 1 if report.failed else 0

@@ -2,8 +2,112 @@
 
 What to do, in order, on the day the module is on the bench.
 
-> **Nothing in this runbook has been executed.** All 107 tests are
-> `NOT_RUN`. This is the procedure, not a record.
+> **Mostly not executed.** 24 of the 107 tests have real hardware
+> evidence from 2026-08-27 (17 PASS, the rest BLOCKED on a human
+> observation). Everything from B3 onward is `NOT_RUN`. This is the
+> procedure, not a record.
+>
+> Two tests carry `ever_failed` in the ledger — **HW-B1-009, HW-B2-004** — meaning they
+> failed on hardware before later passing. That history is deliberate
+> and must not be cleared: HW-B1-009 is a real transport anomaly
+> (one damaged frame in ~800 requests) and HW-B2-004 failed for an
+> adapter defect that is now fixed.
+
+---
+
+## 0. Day one, in order
+
+The short sheet. Every phase below has a full section later; this is the
+sequence, the pass condition and the stop condition, in the order you
+will actually work.
+
+**`<PORT>` is resolved once, in step B, and reused everywhere.**
+
+| # | Do this | PASS when | STOP if |
+| --- | --- | --- | --- |
+| A | `git status` in the repo; confirm you are on the frozen tree | 29 modified, 9 untracked, HEAD `e2848f2` | anything else — restore from the checkpoint first |
+| B | identify the device (below) | exactly one CP2102 `10C4:EA60` | zero or two matches — do not guess a `ttyUSB` number |
+| C | `device.py status --port <PORT>` | filesystem matches the manifest | stale files present → `deploy --clean` |
+| D | `device.py deploy --port <PORT> --clean` then `verify` | every SHA256 matches, and `RECEIPT PASS` | any mismatch — do not proceed to tests |
+| E | **preflight** (below) | board answers, protocol 2, sensor + servo states as expected | no answer, or PROTOCOL MISMATCH → re-deploy |
+| F | `--run-campaign B0` | environment and identity recorded | B0 FAIL — the bench is not what you think |
+| G | `--run-campaign B1` | link qualified | transport FAIL → stop; everything above rides on it |
+| H | `--run-campaign B2` | ID 1, STEP mode, pins as configured | mode ≠ 3, or no answer → servo/power, not software |
+| I | **H-002**: `+10`, `+45`, `+90`, then `+1024`, `+2048` | encoder tracks the mechanism | encoder ≈ 0 while the plate turns → H-002 confirmed; **stop, capture, do not change tolerance** |
+| J | B3 → B4 → B5 | only once H-002 is understood | B3 blocked while H-002 open |
+| K | B6, B7 | sensor qualified | AS7265X_NOT_FOUND recurs → sensor campaign, not carousel |
+| L | B8: 180 out → WHITE → UV → IR → 180 back | one full transaction, sample home | any stage FAIL → recovery flow, capture evidence |
+| M | repeat L ×10, then ×25 | closing error stays bounded | drift grows → stop, characterize |
+| N | all four slots, 1→2→3→4→1 | every transition verified | wrap-around fails → geometry, not transport |
+| O | B9 recovery | faults handled honestly | — |
+| P | B10, B12 mission rehearsal | operator workflow end to end | — |
+
+### B. Identify the device
+
+```bash
+ls -l /dev/serial/by-id/
+```
+
+Use the `by-id` path as `<PORT>`. It survives replugging; `ttyUSB2` does
+not. If more than one CP2102 is present, `--list` the candidates and
+decide deliberately — **the framework will refuse to guess, and so
+should you.**
+
+### E. Read-only preflight
+
+```bash
+python3 firmware/PC/rover_science_client.py --port <PORT> --preflight --save-evidence firmware/Tests/hardware/artifacts/
+```
+
+Moves nothing, writes no EPROM, changes no torque, runs no acquisition.
+Reports board identity and protocol, sensor state, servo link/id/mode,
+encoder, supply voltage and temperature, carousel validity, and the
+transport counters. **Run this first, and again any time something goes
+strange.**
+
+### D. What the deployment receipt is for
+
+A successful deploy writes
+`firmware/Tests/hardware/artifacts/deployment-receipt.json` with the
+SHA256 of each of the seven files it verified onto the device.
+
+`verify` compares the device against **both** a fresh rebuild and that
+receipt. The rebuild is only reproducible from the checkout that
+deployed — mpy-cross embeds the source path — so if you ever see every
+file mismatch at once, read the `RECEIPT` line: if it PASSES, the
+firmware is the firmware you deployed and the rebuild is the thing
+that is wrong.
+
+### I. H-002 evidence
+
+Every movement test records `start_position`, `actual_position`,
+`requested_counts`, `position_error`, per-leg detail and the closing
+error. Compare the small moves against the large ones: if `+10` tracks
+and `+1024` does not, the fault scales; if nothing tracks, it is the
+register or the mode.
+
+**Do not** raise `ST3215_POSITION_TOLERANCE`, disable encoder
+verification, or substitute commanded counts for measured position.
+
+---
+
+## 0.1 Degraded modes — what is still true
+
+| Situation | Still trusted | Next safe action | Never |
+| --- | --- | --- | --- |
+| **Link lost** | nothing about the mechanism | re-open the port, `--preflight` | assume the carousel stayed put |
+| **Servo OFFLINE** | sensor, link, records | sensor diagnostics, B6/B7 can still run | any carousel campaign |
+| **Servo ONLINE, position UNKNOWN** | servo link, sensor, all records | look at the plate, then **re-sync** | re-send the failed movement |
+| **Sensor UNAVAILABLE** | servo, carousel position | sensor diagnostics; the measure path re-probes and may recover it | moving a sample to chase a sensor fault |
+| **H-002 unresolved** | link, servo comms, sensor, B0/B1/B2/B6/B7 | characterize with the small-move sequence | B3/B4/B5/B8+ qualification claims |
+| **Return move failed** | the spectra — they are acquired and saved | re-sync, then continue | treating the record as a normal success |
+| **PC client restarted** | everything in `BD/` — samples, measurements, learning | reconnect; the client re-reads all state from the firmware | trusting any remembered position |
+| **ESP32 reset** | records on the PC | re-connect servo, re-sync | assuming position survived the reboot |
+
+A campaign that fails now prints what failed, whether a test that could
+move the mechanism was among them, and the exact `--resume` command.
+`--resume` only **skips** tests that already passed on hardware; it
+never replays one.
 
 ---
 

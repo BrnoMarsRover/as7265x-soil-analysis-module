@@ -685,6 +685,135 @@ checks.equal(hop_counted, [],
              "name, so moving a file cannot silently repoint it")
 
 
+# ======================================================================
+checks.section("a database with no feature in common is not 'available'")
+
+# THE DB2 DEFECT, GUARDED AS A CLASS RATHER THAN AS ONE MISTAKE.
+#
+# DB2 holds 54 multi-illumination features keyed `white:A`, `uv:A`,
+# `ir:A`. The comparison was called with `channels=None`, and
+# `metrics.paired` reads `channels or CHANNELS` - the eighteen BARE
+# band names. Those exist on neither side, so nothing was compared:
+# every metric came back None while the entry still reported
+# `available: True` with its full candidate count.
+#
+# The keys are fixed now. What is checked HERE is the part that made it
+# survive so long: that comparing over zero shared features is
+# REPORTED, so the next feature space to arrive cannot fail silently
+# the same way.
+support.add_path("")
+
+from Science import pipeline as science_pipeline              # noqa: E402
+from BD.channels import AS7265X_18, CHANNELS as BD_CHANNELS   # noqa: E402
+
+
+class _Handle:
+    """A library keyed in a feature space the measurement does not use."""
+
+    def __init__(self, materials, feature_space):
+        self.materials = materials
+        self.feature_space = feature_space
+        self.database_id = "PROBE"
+        self.version = "1"
+        self.evidence = "probe"
+        self.status = "ready"
+        self.ready = True
+        self.problems = []
+
+
+class _Registry:
+    def __init__(self, databases):
+        self.databases = databases
+
+
+measured_18 = {channel: 0.5 for channel in BD_CHANNELS}
+
+# Same shape, incompatible NAMES - the exact DB2 situation.
+alien = {"Probe Material": {
+    "alien:{}".format(channel): 0.5 for channel in BD_CHANNELS
+}}
+
+analysis = science_pipeline._reference_analysis(
+    _Registry({"PROBE": _Handle(alien, AS7265X_18)}),
+    {"normalized": {"white": measured_18}},
+    {}, None, {}, None, {},
+)
+
+probe = (analysis.get("databases") or {}).get("PROBE") or {}
+
+checks.equal(probe.get("channels_compared"), 0,
+             "a library sharing no feature name compares zero features")
+
+checks.ok(probe.get("available") is False,
+          "and it reports itself UNAVAILABLE - this is the check that "
+          "was missing while DB2 contributed nothing to every decision "
+          "and every screen still listed it")
+
+checks.ok("feature space" in (probe.get("reason") or ""),
+          "and says the feature spaces do not meet, rather than looking "
+          "like a library that simply had no opinion")
+
+# The same call with matching keys must still work, or the check above
+# would pass for a pipeline that reported everything unavailable.
+agreeing = {"Probe Material": dict(measured_18)}
+
+ok_analysis = science_pipeline._reference_analysis(
+    _Registry({"PROBE": _Handle(agreeing, AS7265X_18)}),
+    {"normalized": {"white": measured_18}},
+    {}, None, {}, None, {},
+)
+
+ok_probe = (ok_analysis.get("databases") or {}).get("PROBE") or {}
+
+checks.ok(ok_probe.get("available") is True,
+          "while a library that DOES share the feature space is still "
+          "compared normally")
+
+checks.ok((ok_probe.get("channels_compared") or 0) >= len(BD_CHANNELS),
+          "over every channel both sides carry")
+
+
+# ======================================================================
+checks.section("every suite on disk is in the runner's manifest")
+
+# A SUITE THAT IS NOT LISTED DOES NOT RUN, AND SAYS NOTHING WHILE IT
+# FAILS TO. On 2026-08-27, test_operator_ui, test_learning_ui,
+# test_damage_capture and test_damaged_motion - 148 checks written that
+# day - sat in regression/ unlisted. `run_software.py` reported "40
+# suites passed" and was telling the truth about the forty it knew of.
+#
+# The runner now refuses a full campaign with an unlisted suite. This
+# check is here as well so it also fires on a FILTERED run, which is
+# what anybody iterating on one group actually uses.
+sys.path.insert(0, str(FIRMWARE / "Tests" / "software"))
+
+import run_software                                           # noqa: E402
+
+checks.equal(run_software.unregistered(), [],
+             "no test_*.py under Tests/software is missing from SUITES "
+             "or NOT_SUITES - an unlisted suite never runs, and a suite "
+             "that never runs still 'passes'")
+
+checks.ok(len(run_software.SUITES) >= 44,
+          "and the manifest still names every suite it did - {} "
+          "registered".format(len(run_software.SUITES)))
+
+# The same manifest shape exists in the hardware framework's offline
+# runner, and it has the same failure mode.
+sys.path.insert(0, str(FIRMWARE / "Tests"))
+
+import importlib.util                                         # noqa: E402
+
+_offline = FIRMWARE / "Tests" / "hardware" / "offline_tests" / "run_offline.py"
+_spec = importlib.util.spec_from_file_location("_run_offline", _offline)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+
+checks.equal(_module.unregistered(), [],
+             "and the hardware framework's offline runner lists every "
+             "suite in its own directory too")
+
+
 restore_serial()
 
 sys.exit(checks.report())

@@ -231,9 +231,13 @@ try:
     mission.analyse_measurement = exploding
 
     try:
+        # `exhausted="0"` throughout this suite wherever menu_measure is
+        # driven: a FAILED measurement no longer returns, it holds the
+        # operator in MEASUREMENT RECOVERY until they choose to leave.
+        # "0" is that choice. Every assertion below is unchanged.
         run_screen(["", "", "", ""],
                    lambda: measure_module.menu_measure(mission, status, view),
-                   exhausted="")
+                   exhausted="0")
 
     except Exception:                                  # noqa: BLE001
         # A raising analysis is allowed to reach the caller; what is
@@ -297,7 +301,7 @@ try:
     _value, output, _console = run_screen(
         ["", "", ""],
         lambda: measure_module.menu_measure(mission, status, view),
-        exhausted="")
+        exhausted="0")
 
     checks.ok("failed" in output.lower(),
               "the operator is told the measurement failed")
@@ -369,7 +373,7 @@ try:
         _value, output, _console = run_screen(
             ["", "", "", ""],
             lambda: measure_module.menu_measure(mission, status, view),
-            exhausted="")
+            exhausted="0")
 
     except Exception as error:                         # noqa: BLE001
         output = "RAISED:" + type(error).__name__

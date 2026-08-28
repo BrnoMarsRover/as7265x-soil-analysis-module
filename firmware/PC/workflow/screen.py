@@ -15,6 +15,11 @@ from serial_link import DeviceError, LinkError
 # workflow/carousel.py while being a plain dict lookup. The screens this
 # file needs are imported by name below.
 from workflow import calibration, measure, records
+
+# `ui_status`, for the same reason display.py does it: this module binds
+# a local named `status` to the get_status dict in almost every function.
+from workflow import status as ui_status
+
 from workflow.display import (
     print_system_status,
     report_failure,
@@ -223,9 +228,23 @@ def menu_help(mission, status, view):
 
 
 def action_labels(entry, carousel):
-    """What the operator can actually do right now."""
+    """
+    What the operator can actually do right now.
+
+    MEASURING NEEDS A TRUSTED POSITION. Measure Sample swings the
+    carousel 180 degrees and back; with the position invalidated the
+    firmware does not know which slot is at the loader, so the movement
+    would be aimed at a slot number that means nothing.
+
+    The main loop routes to the startup screen when the position is
+    invalid, so this is a second line rather than the only one - but a
+    label that reads [AVAILABLE] over an unknown position is exactly
+    the misleading confidence §5 is about, and it must not depend on
+    another function's routing to stay honest.
+    """
     state = entry.get("state", STATE_EMPTY)
     phase = carousel.get("carousel_phase")
+    synchronized = bool(carousel.get("position_valid"))
 
     labels = {"2": "", "3": "", "4": ""}
 
@@ -243,7 +262,9 @@ def action_labels(entry, carousel):
         labels["2"] = "[DONE]"
         labels["3"] = "[DONE]"
         labels["4"] = (
-            "[AVAILABLE]" if phase == "LOAD"
+            "[LOCKED - carousel position unknown, re-sync]"
+            if not synchronized
+            else "[AVAILABLE]" if phase == "LOAD"
             else "[LOCKED - sample not at loading hole]"
         )
 
@@ -262,23 +283,27 @@ def print_main_screen(mission, status, view):
 
     banner("FREYA SCIENCE MODULE")
 
-    print("Selected: Slot {} / {}".format(
-        selected, entry.get("sample_id") or "----"
+    # THE FOUR SUBSYSTEMS, THEN THE SELECTION. §7.
+    #
+    # What an operator needs from this screen in two seconds is whether
+    # each layer is working and where the carousel is - not the servo's
+    # part number and its feedback type, which is what stood here and is
+    # telemetry that belongs in setup. Deep servo detail is one keypress
+    # away in Carousel Setup and Diagnostics; it is not duplicated here.
+    ui_status.print_fields((
+        ("System", ui_status.ONLINE if mission.link.online
+         else ui_status.UNREACHABLE),
+        ("Sensor", ui_status.sensor_label(status)),
+        ("Servo", ui_status.servo_link(status)),
+        ("Carousel", ui_status.carousel_label(status)),
     ))
-    print("State:    {}".format(entry.get("state", "-")))
-    print("Position: {}".format(carousel.get("carousel_phase", "?")))
 
-    # Which actuator is driving the carousel is always on screen, together
-    # with whether it can verify its own movements. Those two facts change
-    # what a measurement is worth.
-    servo = status.get("servo") or {}
-    capabilities = servo.get("capabilities") or {}
-
-    print("Servo:    {}{}".format(
-        servo.get("label", "NOT SELECTED"),
-        " (encoder verified)" if capabilities.get("verified_movement")
-        else " (timed, open loop)" if servo.get("selected") else "",
-    ))
+    print()
+    print(ui_status.field("Selected", "Slot {} / {} / {}".format(
+        selected,
+        entry.get("sample_id") or "----",
+        entry.get("state", "-"),
+    )))
 
     print()
     print("Loader: Slot {}    Scanner: Slot {}".format(
@@ -291,13 +316,6 @@ def print_main_screen(mission, status, view):
         print("{}  {:<8} {}".format(
             item["slot_id"], item["sample_id"] or "----", item["state"]
         ))
-
-    sensor = status.get("sensor") or {}
-
-    if not sensor.get("ready"):
-        print()
-        print("Sensor: UNAVAILABLE - it will be retried automatically on "
-              "the next measurement or sensor test.")
 
     if mission.science_error:
         print()
@@ -323,17 +341,51 @@ def print_main_screen(mission, status, view):
     print("[q] Exit")
 
 
-def print_startup_screen(servo_label=None):
+def print_startup_screen(status=None):
+    """
+    The screen shown while the carousel position is not trusted.
+
+    A SERVO THAT IS ANSWERING IS NEVER ASKED TO BE CONNECTED. §5.
+
+    This screen printed "connect the ST3215 carousel servo" whenever
+    `position_valid` was false, and position is invalidated by a failed
+    movement as well as by a missing servo. So a SERVO_POSITION_MISMATCH
+    - which is a mechanism or feedback fault, with the servo answering
+    normally throughout - dropped the operator here and told them to
+    connect hardware that had never disconnected. The real instruction,
+    re-sync, was nowhere on the screen.
+
+    The two states are now distinguished by what the firmware reports,
+    and `[0]` is labelled with whichever one is actually true.
+    """
     banner("FREYA SCIENCE MODULE")
 
-    print("Carousel servo: {}".format(servo_label or "NOT SELECTED"))
-    print("Carousel:       NOT CALIBRATED")
+    online = ui_status.servo_online(status)
+
+    ui_status.print_fields((
+        ("Servo", ui_status.servo_link(status)),
+        ("Sensor", ui_status.sensor_label(status) if status else None),
+        ("Carousel", ui_status.POSITION_UNKNOWN),
+    ))
+
     print()
-    print("Before working with samples:")
-    print("  1. connect the ST3215 carousel servo")
-    print("  2. align physical Slot 1 with the soil loading hole")
-    print()
-    print("[0] Carousel Setup")
+
+    if online:
+        # The servo is fine. The only missing fact is which physical
+        # slot is Slot 1, and only a person can supply it.
+        print("The servo is answering; the carousel position is not")
+        print("trusted. Align physical Slot 1 with the loading hole and")
+        print("confirm it. Nothing moves until you do.")
+        print()
+        print("[0] Re-sync Carousel")
+
+    else:
+        print("Before working with samples:")
+        print("  1. connect the ST3215 carousel servo")
+        print("  2. align physical Slot 1 with the soil loading hole")
+        print()
+        print("[0] Carousel Setup")
+
     print("[t] Tools / Records")
     print("[h] Help")
     print("[q] Exit")
@@ -368,6 +420,31 @@ def interactive(link):
 
     print("Connection: ONLINE")
 
+    # BUILD IDENTITY, ON THE LINE THE OPERATOR ALREADY READS.
+    #
+    # `new PC code + old ESP32 firmware` is the failure this prevents:
+    # it presents as dead keys and missing commands, which look like
+    # hardware faults and cost bench time. The firmware bumps
+    # PROTOCOL_VERSION whenever the command surface changes, so a
+    # mismatch here is proof the device is not running this source.
+    print("Firmware:   {} {}  (protocol {})".format(
+        link.firmware_name or "?",
+        link.firmware_version or "?",
+        link.device_protocol_version
+        if link.device_protocol_version is not None else "?",
+    ))
+
+    if link.protocol_mismatch:
+        print()
+        print("!! PROTOCOL MISMATCH: this client expects {}, the board "
+              "reports {}.".format(link.protocol_mismatch["expected"],
+                                   link.protocol_mismatch["device"]))
+        print("   The device is not running this source. Re-deploy, or")
+        print("   expect missing commands and absent response fields:")
+        print("     py firmware/tools/device.py deploy --port {} --clean"
+              .format(link.port))
+        print()
+
     mission = Mission(link)
 
     if mission.science_error:
@@ -381,6 +458,36 @@ def interactive(link):
             print()
             print("Could not read the hardware state: {}".format(error))
 
+            # A CLOSED LINK CANNOT BE RETRIED, SO DO NOT OFFER IT.
+            #
+            # PORT_LOST closes the link and clears the serial handle.
+            # Nothing in this loop re-opens it, so every "Retry?" after
+            # that raises PORT_CLOSED again - forever, with a prompt
+            # that defaults to Yes. An operator whose USB cable fell out
+            # pressed Enter, saw the same line, and had every reason to
+            # think the client had hung. The cable being plugged back in
+            # does not help either: the software link stays closed.
+            #
+            # The client is NOT re-opened automatically here on purpose.
+            # Opening the port resets the ESP32, which drops the servo
+            # connection and invalidates the carousel position - a
+            # physical consequence that must not follow from a
+            # keypress the operator meant as "try again".
+            if getattr(error, "code", None) == "PORT_CLOSED":
+                print()
+                print("The connection is closed and this client cannot "
+                      "re-open it.")
+                print("Reconnect the module, then start the client "
+                      "again:")
+                print("  py firmware/PC/rover_science_client.py --port {}"
+                      .format(mission.link.port))
+                print()
+                print("Re-opening the port resets the board, so the "
+                      "carousel position")
+                print("will need re-syncing after you reconnect.")
+
+                return 1
+
             if choose("Retry? [Y/n]").startswith("n"):
                 return 1
 
@@ -390,7 +497,12 @@ def interactive(link):
         carousel = status.get("carousel") or {}
 
         if not carousel.get("position_valid"):
-            print_startup_screen((status.get("servo") or {}).get("label"))
+            # The whole status dict, so the screen can tell a missing
+            # servo from an unverified movement. `menu_initial_calibration`
+            # behind [0] already connects only when nothing is connected,
+            # so an online servo is never re-opened - it goes straight to
+            # the alignment controls, which is the re-sync path. §5.
+            print_startup_screen(status)
 
             selection = choose()
 

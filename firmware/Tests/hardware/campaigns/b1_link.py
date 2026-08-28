@@ -964,6 +964,7 @@ def _damaged_frames(ctx):
         command = "ping" if index % 2 else "get_status"
 
         already = len(getattr(link, "damaged_lines", []) or [])
+        already_reports = len(getattr(link, "damage_reports", []) or [])
 
         try:
             ctx.link.request(command, retries=0)
@@ -979,21 +980,47 @@ def _damaged_frames(ctx):
 
         damaged = list(getattr(link, "damaged_lines", []) or [])
 
-        for line in damaged[already:]:
+        # THE TRANSPORT'S OWN STRUCTURED DESCRIPTION OF THE SAME EVENT.
+        #
+        # `damaged_lines` holds a 400-character excerpt, which on this
+        # bench was 400 intact characters of a frame damaged further
+        # in - enough to prove damage and not to explain it. The
+        # transport now also describes each frame it gives up on:
+        # true length, where parsing stopped, the window around the
+        # fault, USB packet alignment, and which request was in flight.
+        reports = list(getattr(link, "damage_reports", []) or [])
+        new_reports = reports[already_reports:]
+
+        for offset, line in enumerate(damaged[already:]):
             entry = _classify_damage(line)
 
             entry["request"] = index
             entry["command"] = command
 
+            # Merge the transport's report under its own keys, so the
+            # campaign's own classification and the transport's stay
+            # separately attributable.
+            if offset < len(new_reports):
+                entry["transport"] = new_reports[offset]
+
             seen.append(entry)
 
             ctx.event("damaged_frame", **entry)
+
+            transport = entry.get("transport") or {}
 
             ctx.measure(
                 stage="damaged_frame", request=index, command=command,
                 leading_damage_bytes=entry["leading_damage_bytes"],
                 cp210x_syndrome=entry["cp210x_packet_syndrome"],
-                length=entry["length"])
+                length=entry["length"],
+                true_length=transport.get("length"),
+                parse_error_offset=transport.get("parse_error_offset"),
+                packet_aligned=transport.get("cp210x_packet_aligned"),
+                salvageable=transport.get("salvageable"),
+                replacement_chars=transport.get("replacement_chars"),
+                damaged_request_id=transport.get("request_id"),
+                port_present=transport.get("port_present"))
 
         if index % 50 == 0:
             ctx.say("{} of {}, {} damaged frames so far".format(

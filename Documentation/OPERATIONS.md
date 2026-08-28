@@ -346,13 +346,18 @@ project that git cannot restore.
 ### SERVO_POSITION_MISMATCH — the carousel moved and the measurement stopped
 
 ```
-Servo 1 was commanded 2048 counts, the encoder moved 2 counts ...
-THE CAROUSEL HAS MOVED and its position is now unknown.
+MEASUREMENT FAILED - MOVE_TO_SCANNER
 
-  stage  : MOVE_TO_SCANNER
-  carousel: THE CAROUSEL MOVED. It stopped somewhere that could not
-            be verified.
-            LOOK AT THE MECHANISM before assuming which slot is where.
+Stage:      failed moving the sample to the scanner
+Move:       half turn cw
+Encoder:    2048 -> 2050 cnt (+0.18 deg)
+Expected:   4096 cnt
+Error:      2046 cnt (tolerance 15)
+Carousel:   POSITION UNKNOWN - the encoder measured travel
+Spectrum:   NOT ACQUIRED - none was saved
+Sample:     s0007 remains LOADED
+Recorded:   M001 (FAILED)
+Action:     inspect the mechanism and re-sync
 ```
 
 **Read the two numbers.** "Commanded N counts, the encoder moved M" is
@@ -365,9 +370,47 @@ the whole diagnosis:
 | M near zero, and nothing moved | the servo is not acting on the goal — check power at the driver board |
 
 No spectrum was acquired and none was saved. The carousel position is
-invalidated. The sample is somewhere between the loader and the
-scanner: look at the mechanism, then connect the servo and re-declare
-Slot 1.
+invalidated, and the sample is somewhere between the loader and the
+scanner: **look at the mechanism first**, then re-sync.
+
+**The servo has not disconnected.** A position mismatch is a mechanism
+or feedback fault with the link answering normally, so the recovery is
+`Re-sync carousel`, not `Connect servo`. Telling an operator to
+reconnect working hardware was itself a defect, fixed on 2026-08-27.
+
+### You stay in the failed measurement
+
+The client does not drop you back at the main menu. It shows
+**MEASUREMENT RECOVERY**, which keeps the sample, the slot, the stage
+and what was lost on screen until you choose to leave:
+
+```
+MEASUREMENT RECOVERY
+Sample:     s0007 / Slot 1 / LOADED
+Stage:      MOVE_TO_SCANNER
+Servo:      ONLINE
+Carousel:   POSITION UNKNOWN
+Sensor:     READY
+Spectrum:   NOT ACQUIRED - none was saved
+Recorded:   M001 (FAILED)
+
+[1] Refresh hardware state
+[2] Re-sync carousel (nothing moves)
+[3] Servo diagnostics
+[4] Sensor diagnostics
+[0] Abort to the main menu
+```
+
+The options follow the state: `[2]` offers **Carousel Setup** instead
+when the servo is genuinely not connected, and a `[5] Back to this
+sample` appears once the position is trustworthy again — which returns
+you to the same slot, still loaded, ready to measure.
+
+**There is deliberately no "retry the movement".** Carousel movement is
+relative, so a movement whose acknowledgement was lost may already have
+happened; resending it would turn one 180 degree sweep into two. Every
+action on this screen is a read, a diagnostic, or a re-declaration of
+the origin that moves nothing.
 
 The screen will **never** say "nothing was moved" in this case. That
 sentence is reserved for a refusal that happened before the servo was

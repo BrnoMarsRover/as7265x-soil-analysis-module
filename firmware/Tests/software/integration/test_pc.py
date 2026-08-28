@@ -908,8 +908,14 @@ for name, call in (
     ("print_main_screen",
      lambda: screen.print_main_screen(mission, status,
                                       mission.slot_view(status))),
+    # The whole status dict, which is what the screen takes: it has to
+    # tell a servo that is not connected from one that is connected
+    # with the carousel position lost, and a bare label cannot say
+    # which of those is true.
     ("print_startup_screen",
-     lambda: screen.print_startup_screen("NOT CONNECTED")),
+     lambda: screen.print_startup_screen(status)),
+    ("print_startup_screen (nothing connected)",
+     lambda: screen.print_startup_screen(None)),
     ("print_system_status",
      lambda: display.print_system_status(mission)),
 ):
@@ -1461,8 +1467,10 @@ class SyncingLink:
     def get_status(self):
         status = dict(STATUS)
         status["servo"] = {
+            # `connected` only. `selected` is not a key any firmware
+            # sends, and a fake that invents one lets a reader go on
+            # passing against it - which is exactly what happened.
             "connected": True,
-            "selected": True,
             "label": "Waveshare ST3215",
             "backend": {
                 "connected": True, "id": 1, "position_counts": 2048,

@@ -146,6 +146,25 @@ NOISE_LIMIT = 40
 # the ordinary PROTOCOL_TIMEOUT says so.
 MAX_FRAME_BYTES = 65536
 
+# The command surface this client was written against.
+#
+# `ESP32/config.py` bumps PROTOCOL_VERSION whenever a command is added,
+# removed or renamed, or a response field the PC depends on changes. So
+# a device reporting a different number is running firmware that does
+# not match this source, and the failure that produces is a dead key or
+# a missing command diagnosed as a hardware fault.
+#
+# This exists to make "new PC code, old ESP32 firmware" say so on the
+# first ping instead of three screens later. It is a WARNING, not a
+# refusal: an operator at the bench may deliberately point a newer
+# client at an older board to find out what changed, and refusing to
+# connect would take that away.
+#
+# The strong check is `device.py verify`, which rebuilds every module
+# and compares SHA256 against the device. This is the cheap one that
+# runs every time anybody connects.
+EXPECTED_PROTOCOL_VERSION = 2
+
 
 def utc_timestamp():
     return datetime.now(timezone.utc).isoformat()
@@ -323,6 +342,168 @@ def salvage_json(text):
     return None
 
 
+# How much of a damaged line is preserved, and how much context is kept
+# around the point it stopped parsing.
+#
+# BOUNDED ON PURPOSE. The whole line can be up to MAX_FRAME_BYTES, and a
+# transport diagnostic that attaches 64 KB to an exception - which is
+# then appended to `damaged_lines`, up to NOISE_LIMIT times - turns a
+# link fault into a memory problem during the one session where the link
+# is already misbehaving. A prefix, a suffix and a window around the
+# fault answer every question the shape of the damage can answer; the
+# middle of an intact 4 KB frame answers none of them.
+DAMAGE_PREFIX_CHARS = 240
+DAMAGE_SUFFIX_CHARS = 240
+DAMAGE_WINDOW_CHARS = 96
+
+# The CP210x moves data in 64-byte USB packets. A frame that loses or
+# repeats a whole packet fails at an offset that is a multiple of 64,
+# and that is a different fault from a single flipped byte: one is the
+# bridge or the host driver, the other is the wire. The alignment is
+# REPORTED, never concluded from - a 64-aligned offset can happen by
+# chance, and one sample is not a diagnosis.
+CP210X_PACKET_BYTES = 64
+CP210X_ALIGNMENT_SLACK = 2
+
+
+def _field_from(text, name):
+    """
+    Pull one scalar field out of a line too damaged to parse.
+
+    Deliberately crude string work rather than a parser: the input is by
+    definition not valid JSON, and the point is to recover the request
+    id and command so a damaged frame can be tied to the request that
+    provoked it. Returns None when it cannot be read, never a guess.
+    """
+    marker = '"{}"'.format(name)
+    at = text.find(marker)
+
+    if at == -1:
+        return None
+
+    at = text.find(":", at + len(marker))
+
+    if at == -1:
+        return None
+
+    rest = text[at + 1:at + 80].strip()
+
+    if not rest:
+        return None
+
+    if rest[0] == '"':
+        end = rest.find('"', 1)
+
+        return rest[1:end] if end != -1 else None
+
+    for terminator in (",", "}"):
+        end = rest.find(terminator)
+
+        if end != -1:
+            rest = rest[:end]
+
+    rest = rest.strip()
+
+    return rest or None
+
+
+def describe_damage(line, parse_error=None, counters=None,
+                    terminated_by_newline=True, port_present=None):
+    """
+    Everything a single damaged frame can be asked, within a fixed size.
+
+    WHY THIS EXISTS. The MALFORMED_RESPONSE error used to carry
+    `line[:400]` and nothing else. Measured on the bench, 2026-08-27:
+    HW-B1-009 caught one damaged frame in 200 requests, and the evidence
+    it preserved was the first 400 characters - all of them intact,
+    because the damage was further in. The capture proved a frame had
+    been damaged and made it impossible to say how.
+
+    This changes NO transport behaviour. Nothing here parses, retries,
+    salvages or times anything differently; it only describes a line the
+    reader has already given up on.
+    """
+    line = line or ""
+    length = len(line)
+
+    report = {
+        # `line` stays, under its old name, so existing readers and the
+        # damaged_lines buffer keep working unchanged.
+        "line": line[:400],
+
+        "length": length,
+        "prefix": line[:DAMAGE_PREFIX_CHARS],
+        "suffix": line[-DAMAGE_SUFFIX_CHARS:] if length else "",
+        "truncated_middle": length > (
+            DAMAGE_PREFIX_CHARS + DAMAGE_SUFFIX_CHARS
+        ),
+        "terminated_by_newline": bool(terminated_by_newline),
+
+        # What the line claims to be about. Recovered by string search
+        # because it will not parse.
+        "request_id": _field_from(line, "request_id"),
+        "cmd": _field_from(line, "cmd"),
+        "ok": _field_from(line, "ok"),
+
+        # Whether the other half of the defence found anything.
+        "json_start": line.find("{"),
+        "salvageable": salvage_json(line) is not None,
+    }
+
+    if port_present is not None:
+        # Whether the USB device was still enumerated after the damage.
+        # A bridge that vanished mid-frame and a bridge that corrupted
+        # one are different faults.
+        report["port_present"] = bool(port_present)
+
+    offset = getattr(parse_error, "pos", None)
+
+    if isinstance(offset, int) and 0 <= offset <= length:
+        report["parse_error_offset"] = offset
+        report["parse_error"] = str(parse_error)[:200]
+
+        start = max(0, offset - DAMAGE_WINDOW_CHARS // 2)
+        report["window"] = line[start:start + DAMAGE_WINDOW_CHARS]
+        report["window_offset"] = start
+
+        # The bytes either side of the exact failure point, escaped, so
+        # a non-printable or a replacement character is visible rather
+        # than being swallowed by the terminal.
+        report["at_fault"] = repr(line[max(0, offset - 8):offset + 8])
+
+        remainder = offset % CP210X_PACKET_BYTES
+        distance = min(remainder, CP210X_PACKET_BYTES - remainder)
+
+        report["cp210x_packet_offset"] = remainder
+        report["cp210x_packet_aligned"] = distance <= CP210X_ALIGNMENT_SLACK
+
+    if length:
+        remainder = length % CP210X_PACKET_BYTES
+        report["length_packet_offset"] = remainder
+        report["length_packet_aligned"] = min(
+            remainder, CP210X_PACKET_BYTES - remainder
+        ) <= CP210X_ALIGNMENT_SLACK
+
+    # The replacement character is what a decode failure leaves behind,
+    # so its presence separates "bytes arrived wrong" from "bytes
+    # arrived fine and the structure is wrong".
+    replacements = line.count("�")
+
+    report["replacement_chars"] = replacements
+    report["undecodable_bytes"] = bool(replacements)
+
+    if counters is not None:
+        report["counters"] = {
+            "corrupt_frames": getattr(counters, "corrupt_frames", None),
+            "salvaged_frames": getattr(counters, "salvaged_frames", None),
+            "stale_frames": getattr(counters, "stale_frames", None),
+            "oversized_lines": getattr(counters, "oversized_lines", None),
+            "bytes_read": getattr(counters, "bytes_read", None),
+        }
+
+    return report
+
+
 def diagnose_noise(lines):
     """Turn collected non-frame output into a sentence worth reading."""
     if not lines:
@@ -385,6 +566,13 @@ class SerialLink:
         self.serial = None
         self.online = False
 
+        # What the board says it is, filled by the first successful
+        # ping. None until then - never guessed.
+        self.firmware_name = None
+        self.firmware_version = None
+        self.device_protocol_version = None
+        self.protocol_mismatch = None
+
         # WHY the link is closed, when it was closed by a failure rather
         # than by a normal quit. It turns "the connection is not open"
         # into "the connection was lost because the device disappeared",
@@ -431,6 +619,20 @@ class SerialLink:
         #
         # Capped, because this is a diagnostic aid and not a log file.
         self.damaged_lines = []
+
+        # THE SAME EVENTS, DESCRIBED RATHER THAN QUOTED.
+        #
+        # `damaged_lines` holds text, and several readers depend on it
+        # being text, so it stays exactly as it was. This holds the
+        # `describe_damage` report for the same frames: length, parse
+        # offset, the window around the fault, packet alignment, the
+        # counters at the time, and which request was in flight.
+        #
+        # Kept beside rather than instead, because the useful evidence
+        # is structured and the old field cannot carry it: a 400-char
+        # excerpt of an intact prefix proved a frame had been damaged
+        # and could not say how. Capped by the same NOISE_LIMIT.
+        self.damage_reports = []
 
         # A RANDOM SESSION NONCE, PLUS A COUNTER.
         #
@@ -497,6 +699,39 @@ class SerialLink:
     def _trace(self, marker, detail=""):
         if self.verbose:
             print("   {:<16} {}".format(marker, detail))
+
+    def _port_present(self):
+        """
+        Is this device still enumerated by the OS? None if unanswerable.
+
+        DIAGNOSTIC ONLY, and it must never influence anything. It is
+        called on the damaged-frame path to separate two faults that
+        look identical from inside the reader: a bridge that corrupted
+        a frame, and a bridge that disappeared in the middle of one.
+
+        Every failure mode returns None rather than raising. This runs
+        while an exception is already being built, and a diagnostic that
+        throws would replace a MALFORMED_RESPONSE - which names the real
+        problem - with whatever went wrong while describing it.
+
+        `is_open` is not consulted: it reports what pySerial believes,
+        not what the OS still has. Enumeration is the independent fact.
+        """
+        if list_ports is None:                         # pragma: no cover
+            return None
+
+        try:
+            return any(
+                entry.device == self.port
+                for entry in list_ports.comports()
+            )
+
+        # BaseException is deliberate and narrow in effect. Enumeration
+        # walks the OS device tree and can fail in ways pySerial does
+        # not wrap - see the raw OSError that `in_waiting` raises - and
+        # the answer to "is it still there" is then honestly "unknown".
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # connection
@@ -627,6 +862,30 @@ class SerialLink:
         self.online = False
         self._trace("RESET", "RTS pulse with DTR low, buffer cleared")
 
+    def _note_identity(self, pong):
+        """
+        Remember what the board says it is, and whether it matches.
+
+        Read-only and never raises: identity is diagnostic information,
+        and a board that answers a ping with an unexpected shape is
+        still a board that answered.
+        """
+        pong = pong or {}
+
+        self.firmware_name = pong.get("firmware")
+        self.firmware_version = pong.get("version")
+        self.device_protocol_version = pong.get("protocol_version")
+
+        expected = EXPECTED_PROTOCOL_VERSION
+        actual = self.device_protocol_version
+
+        self.protocol_mismatch = (
+            None if actual is None or actual == expected
+            else {"expected": expected, "device": actual}
+        )
+
+        return self.protocol_mismatch
+
     def wait_online(self, timeout=None):
         """
         Block until the module answers a ping, or say why it did not.
@@ -646,8 +905,9 @@ class SerialLink:
             remaining = deadline - time.monotonic()
 
             try:
-                self.request("ping", timeout=min(remaining, 2.5))
+                pong = self.request("ping", timeout=min(remaining, 2.5))
                 self.online = True
+                self._note_identity(pong)
 
                 return True
 
@@ -916,6 +1176,15 @@ class SerialLink:
                         (error.data or {}).get("line", "")
                     )
 
+                if len(self.damage_reports) < NOISE_LIMIT:
+                    # The structured description of the same event, with
+                    # the command that provoked it - which the frame
+                    # itself may be too damaged to name.
+                    report = dict(error.data or {})
+                    report["request_command"] = cmd
+
+                    self.damage_reports.append(report)
+
                 if attempt + 1 < attempts:
                     self._trace("RX DAMAGED", "asking again")
 
@@ -1041,7 +1310,10 @@ class SerialLink:
                 # RecursionError as well: pathological nesting exhausts
                 # the stack rather than failing to parse. See
                 # salvage_json for the whole argument.
-                except (ValueError, RecursionError):
+                #
+                # `as parse_error` only so the failure OFFSET can be
+                # reported. Nothing about the handling changed.
+                except (ValueError, RecursionError) as parse_error:
                     salvaged = salvage_json(line)
 
                     if salvaged is not None and isinstance(salvaged, dict):
@@ -1054,12 +1326,23 @@ class SerialLink:
                         continue
 
                     if looks_like_a_frame(line):
+                        # THE SHAPE OF THE DAMAGE, NOT JUST ITS FIRST
+                        # 400 CHARACTERS. See describe_damage: the old
+                        # payload could prove a frame had been damaged
+                        # and never say how, which is what stalled the
+                        # HW-B1-009 investigation.
                         raise LinkError(
                             "MALFORMED_RESPONSE",
                             "The module answered, but the answer was "
                             "damaged in transit and could not be "
                             "parsed.",
-                            data={"line": line[:400]},
+                            data=describe_damage(
+                                line,
+                                parse_error=parse_error,
+                                counters=self,
+                                terminated_by_newline=True,
+                                port_present=self._port_present(),
+                            ),
                         )
 
                     self._trace("RX NON-JSON", line[:120])

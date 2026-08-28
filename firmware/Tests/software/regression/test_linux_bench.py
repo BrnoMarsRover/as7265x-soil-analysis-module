@@ -302,11 +302,19 @@ try:
               "RF-001D: the screen does NOT say 'nothing was moved' - "
               "this exact sentence, after a rotation the operator had "
               "just watched, is the defect")
-    checks.ok("CAROUSEL MOVED" in printed.upper(),
-              "it says the carousel moved")
-    checks.ok("LOOK AT THE MECHANISM" in printed.upper(),
+    # THE GUARANTEE, NOT THE SENTENCE. The compact renderer states the
+    # same two facts in fewer words: that the encoder measured travel
+    # (so the carousel did move), and that the mechanism must be looked
+    # at. Asserting the old block-capital phrasing would pin the
+    # wording rather than the promise, and the promise is what RF-001D
+    # is about.
+    checks.ok("encoder measured travel" in printed.lower(),
+              "it says the carousel moved, on the encoder's evidence")
+    checks.ok("mechanism" in printed.lower(),
               "and tells the operator to look at the mechanism before "
               "assuming which slot is where")
+    checks.ok("POSITION UNKNOWN" in printed.upper(),
+              "and that the position is not to be trusted")
     checks.ok("re-sync" in printed.lower() or "resync" in printed.lower(),
               "and that a re-sync is needed")
 
@@ -343,7 +351,12 @@ try:
 
     printed = screen_for(error)
 
-    checks.ok("nothing was moved" in printed.lower(),
+    # Same promise, compact wording: the carousel is UNCHANGED and the
+    # servo was NEVER COMMANDED. This is the direction the RF-001D fix
+    # must not break - saying "nothing moved" when it is true is what
+    # lets an operator leave the mechanism alone.
+    checks.ok("unchanged" in printed.lower()
+              and "never commanded" in printed.lower(),
               "and the screen says nothing was moved, because nothing "
               "was")
 
@@ -1001,10 +1014,18 @@ def measure_screen(handle, sample_id):
     status = handle.mission.hardware_status()
     view = handle.mission.slot_view(status)
 
+    # `exhausted="0"` because a failed measurement no longer RETURNS.
+    #
+    # It now holds the operator in MEASUREMENT RECOVERY until they
+    # choose to leave, which is the whole point of that screen: the
+    # sample, the slot, the stage and the missing spectrum used to be
+    # gone one keypress after they were printed. "0" is the abort, so
+    # the screen still finishes and everything it printed on the way is
+    # still asserted on below.
     _value, printed, _console = run_screen(
         ["", "", "", ""],
         lambda: measure_screens.menu_measure(handle.mission, status, view),
-        exhausted="")
+        exhausted="0")
 
     return printed
 
@@ -1016,9 +1037,14 @@ try:
     handle.sensor.bus_error = True
     printed = measure_screen(handle, "S-RF005A")
 
+    checks.ok("measurement recovery" in printed.lower(),
+              "every failure lands in the recovery context, keeping the "
+              "sample and the stage on screen")
+
     checks.ok("refused before anything moved" in printed.lower(),
               "a pre-flight refusal says nothing moved")
-    checks.ok("nothing was moved" in printed.lower(),
+    checks.ok("unchanged" in printed.lower()
+              and "never commanded" in printed.lower(),
               "and the carousel line agrees")
 
 finally:
@@ -1033,7 +1059,7 @@ try:
 
     checks.ok("moving the sample to the scanner" in printed.lower(),
               "RF-005C: a failed transfer names THAT stage")
-    checks.ok("CAROUSEL MOVED" in printed.upper(),
+    checks.ok("encoder measured travel" in printed.lower(),
               "and says the carousel moved")
     checks.ok("refused before anything moved" not in printed.lower(),
               "and does NOT reuse the sentence for a refusal that "
@@ -1097,7 +1123,7 @@ try:
     handle.sensor.bus_error = True
     printed = measure_screen(handle, "S-RF005E")
 
-    checks.ok("no spectrum was obtained" in printed.lower()
+    checks.ok("not acquired" in printed.lower()
               or "none was saved" in printed.lower(),
               "RF-005D: a failed measurement says plainly that nothing "
               "was saved")

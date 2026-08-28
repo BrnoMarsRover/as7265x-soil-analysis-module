@@ -392,6 +392,80 @@ def run():
         checks.ok(result.override is None,
                   "an override with no written reason is not applied")
 
+    # ==================================================================
+    checks.section("a hardware failure stays on the record after it passes")
+
+    # WHY THIS EXISTS. The ledger holds the LAST hardware result per
+    # test, because that is what a layer gate must ask about. It also
+    # used to hold ONLY that, so a test that failed and was then re-run
+    # until it passed left a ledger entry indistinguishable from one
+    # that had never failed at all.
+    #
+    # HW-B1-009 is the real case: one damaged response frame in 200
+    # requests on 2026-08-27, then three later runs of 200 that passed.
+    # The ledger said PASS. An intermittent transport fault is exactly
+    # the kind that re-running hides.
+    from hardware.core.runner import Ledger                   # noqa: E402
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        ledger = Ledger(Path(directory) / "ledger.json")
+
+        class _Result:
+            def __init__(self, status, reason):
+                self.test_id = "HW-X-001"
+                self.status = status
+                self.reason = reason
+                self.hardware_evidence = True
+
+        ledger.record(_Result(Status.FAIL, "one damaged frame"), "RUN-1")
+
+        checks.equal(ledger.status_of("HW-X-001"), Status.FAIL,
+                     "a hardware failure is recorded as the status")
+
+        ledger.record(_Result(Status.PASS, "200 clean"), "RUN-2")
+
+        checks.equal(ledger.status_of("HW-X-001"), Status.PASS,
+                     "and a later pass becomes the status a gate reads - "
+                     "unchanged, because gates must use the last result")
+
+        entry = ledger.data["HW-X-001"]
+
+        checks.ok(entry.get("ever_failed") is True,
+                  "but the entry still says the test has failed on "
+                  "hardware - re-running until green no longer erases it")
+
+        checks.equal([f["run_id"] for f in entry.get("failed_runs") or ()],
+                     ["RUN-1"],
+                     "and it names the run that failed, so the evidence "
+                     "can be found")
+
+        checks.equal(entry["failed_runs"][0]["reason"], "one damaged frame",
+                     "with the reason it failed for")
+
+        ledger.record(_Result(Status.FAIL, "another damaged frame"), "RUN-3")
+        ledger.record(_Result(Status.PASS, "clean again"), "RUN-4")
+
+        checks.equal(len(ledger.data["HW-X-001"]["failed_runs"]), 2,
+                     "every failure accumulates - an intermittent fault "
+                     "is a COUNT, and one that fails twice in four runs "
+                     "must not read the same as one that never failed")
+
+    with tempfile.TemporaryDirectory() as directory:
+        ledger = Ledger(Path(directory) / "ledger.json")
+
+        class _Simulated:
+            test_id = "HW-X-002"
+            status = Status.FAIL
+            reason = "not real hardware"
+            hardware_evidence = False
+
+        ledger.record(_Simulated(), "RUN-1")
+
+        checks.equal(ledger.data.get("HW-X-002"), None,
+                     "and a result that is not hardware evidence still "
+                     "writes nothing at all, failure or not")
+
     return checks.report()
 
 

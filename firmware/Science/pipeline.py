@@ -422,6 +422,38 @@ def _reference_analysis(registry, representations, reliability,
             comparison_weights,
         ))
 
+        # A COMPARISON OVER NOTHING IS NOT A COMPARISON. §44.
+        #
+        # The DB2 defect above was not that the keys were wrong - keys
+        # can always be wrong - it was that being wrong was SILENT. The
+        # entry reported `available: True` with 22 candidates while
+        # every metric was None, because nothing checked that the two
+        # sides had a single feature in common. The screens then showed
+        # a database that was contributing nothing, and did so for every
+        # measurement.
+        #
+        # `channels_compared` is the largest overlap found against any
+        # material in the library, so zero means no material shared even
+        # one finite feature with the measurement. That is a feature
+        # space mismatch, and it is reported as one instead of as a
+        # library with no opinion.
+        compared = entry.get("channels_compared") or 0
+
+        if not compared:
+            entry["available"] = False
+            entry["reason"] = (
+                "no feature is present on both sides: the measurement "
+                "and this library do not share a feature space. "
+                "Comparing them would report a result computed from "
+                "nothing."
+            )
+            entry["channels_used"] = (
+                list(comparison_channels) if comparison_channels else None
+            )
+            analysis["databases"][key] = entry
+
+            continue
+
         entry["available"] = True
         entry["normalization"] = normalization
         entry["channels_used"] = (

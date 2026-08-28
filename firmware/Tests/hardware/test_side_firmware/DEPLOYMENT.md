@@ -31,6 +31,30 @@ that may be a version behind.
 
 ---
 
+## If the datasheet names a register this agent cannot read
+
+`READABLE_REGISTERS` is an explicit whitelist and `servo_raw_read`
+refuses anything outside it. That is deliberate and is enforced twice -
+here and in `adapters/diagnostic.py` on the PC.
+
+The **angular-resolution / position-resolution configuration register
+is deliberately NOT on that list**, because this repository has no
+authoritative source for its address. It has been guessed at as
+"possibly register 30" in earlier notes; a guess is not a source, and
+putting one in a whitelist would make it look like a fact.
+
+If the ST3215 documentation on the bench names it, add it in **two**
+places and re-deploy the agent:
+
+1. `READABLE_REGISTERS` here, with the memory table's own name;
+2. `WORD_REGISTERS` as well, if it is two bytes.
+
+Then record in the run notes which document gave the address. Until a
+real device has answered, its value is a hardware question and nothing
+in this repository should present an interpretation of it as fact.
+
+---
+
 ## Before you start
 
 1. The module is on the bench, not on the rover.
@@ -40,12 +64,16 @@ that may be a version behind.
    back afterwards:
 
 ```bash
-python3 firmware/tools/device.py --port <device> --hash
+python3 firmware/tools/device.py status --port <device>
 ```
 
-If that tool has no `--hash` mode on your build, take the hash of the
-deployed files from the working tree you deployed from, and record which
-commit that was.
+`status` lists the device filesystem and compares every file against a
+freshly compiled build of the current source, printing the SHA256 of
+each. That is the record to keep: it identifies exactly what was on the
+device before the agent replaced anything.
+
+There is no `--hash` mode. `device.py` takes a command
+(`status`, `clean`, `deploy`, `verify`, `reset`) followed by `--port`.
 
 ---
 
@@ -124,8 +152,14 @@ python3 -m mpremote connect <device> fs rm :diagnostic_agent.py
 Then redeploy the competition firmware the normal way and confirm it:
 
 ```bash
-python3 firmware/tools/device.py --port <device> --deploy
+python3 firmware/tools/device.py deploy --port <device> --clean
+python3 firmware/tools/device.py verify --port <device>
 ```
+
+`--clean` removes every user file first, so no part of the agent can
+survive into the competition firmware. `verify` then rebuilds each
+module and compares SHA256 against the device, which is the proof that
+what is running is this source and nothing else.
 
 Finally, clear the profile:
 

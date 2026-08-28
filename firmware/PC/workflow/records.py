@@ -29,6 +29,8 @@ from BD.samples import (
 
 from serial_link import DeviceError, LinkError
 
+from workflow import materials
+
 from workflow.display import (
     print_agreement,
     print_decision,
@@ -389,14 +391,26 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
         if not confirm("Save this measurement to the learning history?"):
             return None
 
+    # WHAT MAY AND MAY NOT BE SAVED, in four lines. §19.
+    #
+    # The distinction this screen turns on is not obvious from the
+    # options: [1] and [3] are things the operator KNOWS, [4] and [5]
+    # are honest admissions that they do not. The one mistake that
+    # cannot be undone is entering the Decision Model's answer as
+    # though it were a fact, so it is named here rather than assumed.
     print()
-    print("Ground truth available?")
+    print("GROUND TRUTH - what the sample ACTUALLY is")
     print()
-    print("  [1] Yes - exact material known")
+    print("  Save only what you know independently of the instrument:")
+    print("  a labelled container, or a mixture you weighed yourself.")
+    print("  A Decision Model estimate is NOT ground truth - record an")
+    print("  unidentified sample as [4], which is trained on by nothing.")
+    print()
+    print("  [1] Exact material known")
     print("  [2] Material family known")
     print("  [3] Known prepared mixture")
-    print("      Several materials you weighed and mixed yourself, with")
-    print("      their proportions - including what you mixed them INTO.")
+    print("      Materials you weighed and mixed yourself, with their")
+    print("      proportions - including what you mixed them INTO.")
     print("  [4] Unknown sample")
     print("  [5] Save the measurement without a label")
     print()
@@ -483,10 +497,14 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
 
     if mixture:
         print()
-        print("Recorded as a prepared mixture of {} part(s). The stored")
+        # The `.format()` was on the LAST line and the `{}` on the
+        # first, so the operator was told their mixture had "{} part(s)"
+        # at the one moment they were checking it had been stored right.
+        print("Recorded as a prepared mixture of {} part(s). The "
+              "stored".format(len(mixture)))
         print("proportions are what you WEIGHED; nothing in the runtime")
         print("pipeline reads them. They are what an unmixing model will")
-        print("be scored against when there are enough of them.".format())
+        print("be scored against when there are enough of them.")
 
         summary = mission.mixture_readiness()
 
@@ -497,52 +515,17 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
     return record
 
 
-def ask_material(mission):
-    """Resolve a material name through the controlled vocabulary."""
-    taxonomy = mission.taxonomy
+def ask_material(mission, prompt="Select material"):
+    """
+    Resolve a material through the controlled vocabulary.
 
-    if taxonomy is None:
-        print("The material vocabulary is not loaded.")
-
-        return None
-
-    while True:
-        text = ask("Material (name, alias or blank to cancel)")
-
-        if not text:
-            return None
-
-        identity = taxonomy.get(text)
-
-        if identity is not None:
-            print("  -> {} ({})".format(
-                identity.display_name, identity.family_id or "no family"
-            ))
-
-            if confirm("Is that right?"):
-                return identity
-
-            continue
-
-        suggestions = taxonomy.suggest(text)
-
-        print()
-        print("'{}' is not a known material.".format(text))
-
-        if suggestions:
-            print("Did you mean:")
-
-            for index, name in enumerate(suggestions, start=1):
-                print("  [{}] {}".format(index, name))
-
-            choice = ask("Number, or another name")
-
-            if choice.isdigit() and 1 <= int(choice) <= len(suggestions):
-                return taxonomy.get(suggestions[int(choice) - 1])
-
-        print()
-        print("A ground-truth label is never guessed: an unknown name is")
-        print("refused rather than attached to the nearest match.")
+    THE LIST IS SHOWN. This used to be a bare free-text field that
+    refused what it could not resolve without ever saying what it would
+    accept, so an operator had to know the canonical spelling before
+    they could enter one. `workflow.materials` owns the picker now -
+    §11, §13 - and this stays as the name every caller already uses.
+    """
+    return materials.select_material(mission, prompt=prompt)
 
 
 def ask_family(mission):
@@ -598,14 +581,26 @@ def ask_mixture(mission):
     print()
     print("PREPARED MIXTURE")
     print()
-    print("Enter each library material you weighed in, then the matrix")
-    print("it was mixed into. Percentages, by mass. Blank name finishes.")
+    print("Two kinds of ingredient, and the difference matters:")
     print()
+    print("  COMPONENT  a library material you weighed in")
+    print("             -> Activated Carbon 30 %")
+    print("  MATRIX     what you mixed it INTO. Ordinary soil or sand:")
+    print("             real, usually most of the sample, and in no")
+    print("             library. Named separately, asked for at the end.")
+    print()
+    print("Percentages by mass. Cancel at the material list finishes the")
+    print("component list and moves on to the matrix.")
 
     while True:
         _print_mixture_table(components)
 
-        identity = ask_material(mission)
+        identity = ask_material(
+            mission,
+            prompt="Component {} - select material".format(
+                len(components) + 1
+            ),
+        )
 
         if identity is None:
             break
@@ -676,12 +671,28 @@ def ask_mixture(mission):
     )
 
     if abs(total - 1.0) > 0.005:
-        print("These add up to {:.2f} %, not 100 %.".format(total * 100.0))
+        # BOTH DIRECTIONS, NAMED CORRECTLY. This printed "the missing
+        # mass was in the cup" for every failure, including the ones
+        # that add up to MORE than 100 % - where nothing is missing and
+        # something has been counted twice. §17.
+        print("Composition totals {:.2f} %. Expected 100 %.".format(
+            total * 100.0
+        ))
         print()
-        print("The missing mass was in the cup and in the measurement.")
-        print("Attributing it to the components that WERE listed would")
-        print("make every one of them wrong, so this cannot be saved as")
-        print("it stands.")
+
+        if total < 1.0:
+            print("The unaccounted {:.2f} % was still in the cup and in the"
+                  .format((1.0 - total) * 100.0))
+            print("measurement. Attributing it to the components that WERE")
+            print("listed would make every one of them wrong.")
+            print()
+            print("If it was soil or sand, name it as the matrix.")
+
+        else:
+            print("That is {:.2f} % more than the sample can contain, so at"
+                  .format((total - 1.0) * 100.0))
+            print("least one proportion is wrong or counted twice.")
+
         print()
 
         if not confirm("Re-enter the mixture?"):
@@ -697,28 +708,44 @@ def ask_mixture(mission):
     return components
 
 
+# What each role MEANS, said where the numbers are read.
+#
+# The two are not interchangeable and the record does not treat them as
+# interchangeable: a COMPONENT is a library material with a reference
+# spectrum that a model can be scored against, and a MATRIX is a real
+# substance with a real mass and NO reference spectrum anywhere. A table
+# that showed "component / matrix" in lower case left the operator to
+# infer that difference, and the whole value of the record depends on
+# it being deliberate.
+ROLE_NOTE = {
+    "COMPONENT": "reference component",
+    "MATRIX": "matrix / no reference spectrum",
+}
+
+
 def _print_mixture_table(components):
     if not components:
         return
 
     print()
-    print("  {:<34} {:<10} {:>9}".format("component", "role", "percent"))
+    print("  {:<30} {:>8}  {}".format("ingredient", "percent", "role"))
 
     for part in components:
         name = part.get("material_key") or part.get("matrix_label") or "?"
         fraction = part.get("prepared_mass_fraction")
+        role = part.get("role", "COMPONENT")
 
-        print("  {:<34} {:<10} {:>8.2f}%".format(
-            name[:34],
-            part.get("role", "COMPONENT").lower(),
+        print("  {:<30} {:>7.2f}%  [{}]".format(
+            name[:30],
             (fraction or 0.0) * 100.0,
+            ROLE_NOTE.get(role, role.lower()),
         ))
 
     total = sum(
         part.get("prepared_mass_fraction") or 0.0 for part in components
     )
 
-    print("  {:<34} {:<10} {:>8.2f}%".format("", "total", total * 100.0))
+    print("  {:<30} {:>7.2f}%".format("total", total * 100.0))
     print()
 
 
@@ -998,6 +1025,100 @@ def menu_learning_history(mission):
     print()
     print("A prediction is never ground truth. Retraining is an explicit")
     print("command, never a consequence of measuring.")
+    print()
+    print("[1] Review saved observations")
+    print("[0] Back")
+
+    if choose() == "1":
+        menu_review_observations(mission)
+
+
+def menu_review_observations(mission):
+    """
+    What was actually saved, one line per record. §20.
+
+    The history screen counted observations and never showed one, so an
+    operator who had just saved a mixture could see the total go up and
+    could not check that the proportions had gone in the way they meant.
+    A record you cannot read is a record you cannot trust.
+
+    GROUND TRUTH AND PREDICTION ARE IN DIFFERENT COLUMNS, and the
+    prediction column is never filled from the label or the other way
+    round. Seeing them side by side is the point: it is how a person
+    notices the model was wrong, and it is why they must never be
+    merged into one "identity" field.
+    """
+    banner("SAVED OBSERVATIONS")
+
+    if mission.learning is None:
+        print("The learning database is not available.")
+        print()
+        pause()
+
+        return
+
+    observations = mission.learning.observations()
+
+    if not observations:
+        print("Nothing has been saved to the learning history yet.")
+        print()
+        pause()
+
+        return
+
+    print("{} observation(s), newest last.".format(len(observations)))
+    print()
+
+    for record in observations:
+        measurement_id = record.get("measurement_id")
+        truth = mission.learning.get_ground_truth(measurement_id) or {}
+
+        label_type = truth.get("label_type") or "NO_LABEL"
+
+        print("-" * 60)
+        print("{}   {}".format(measurement_id, label_type))
+
+        if truth.get("material_key"):
+            print("  Ground truth: {}".format(truth["material_key"]))
+
+        elif label_type == "PREPARED_MIXTURE":
+            print("  Ground truth:")
+
+            for part in mission.learning.components(measurement_id):
+                fraction = part.get("prepared_mass_fraction")
+                role = part.get("role", "COMPONENT")
+
+                print("    {:<28} {:>7}  [{}]".format(
+                    (part.get("material_key")
+                     or part.get("matrix_label") or "?")[:28],
+                    "-" if fraction is None
+                    else "{:.1f} %".format(fraction * 100.0),
+                    ROLE_NOTE.get(role, role.lower()),
+                ))
+
+        elif truth.get("family_id"):
+            print("  Ground truth: family {}".format(truth["family_id"]))
+
+        else:
+            # UNKNOWN_SAMPLE and NO_LABEL. Said explicitly, because
+            # "no label" and "label not shown" look identical otherwise.
+            print("  Ground truth: none - not a training label")
+
+        if truth.get("verification_status"):
+            print("  Verified as: {} ({})".format(
+                truth["verification_status"],
+                truth.get("verification_source") or "-",
+            ))
+
+        # The model's own answer, clearly marked as the model's.
+        for prediction in mission.learning.predictions(measurement_id):
+            print("  Model {}: {} ({})".format(
+                prediction.get("model_version"),
+                prediction.get("material_key")
+                or prediction.get("family_id") or "no answer",
+                prediction.get("level"),
+            ))
+
     print()
     pause()
 

@@ -78,11 +78,42 @@ class Ledger:
         if not result.hardware_evidence:
             return
 
-        self.data[result.test_id] = {
+        previous = self.data.get(result.test_id) or {}
+
+        entry = {
             "status": result.status,
             "run_id": run_id,
             "reason": result.reason,
         }
+
+        # A TEST THAT HAS EVER FAILED ON HARDWARE SAYS SO FOREVER.
+        #
+        # `status` is deliberately the LAST result, because that is what
+        # a gate must ask about. But overwriting was ALSO erasing the
+        # fact that the test had ever failed, and re-running until green
+        # is exactly how a real intermittent fault leaves the record.
+        #
+        # HW-B1-009 is the case: it caught one damaged response frame in
+        # 200 requests on 2026-08-27, then passed three later runs of
+        # 200. The ledger showed PASS and nothing else, and the anomaly -
+        # about 0.125% of responses, on the transport the whole mission
+        # runs over - was legible only to somebody who thought to open
+        # the individual run artifacts and diff them.
+        #
+        # So the failures are kept beside the current status. Nothing
+        # here changes what `status_of` returns, so no gate opens or
+        # closes differently; this is evidence, not control flow.
+        history = list(previous.get("failed_runs") or ())
+
+        if result.status in Status.BAD:
+            history.append({"run_id": run_id, "status": result.status,
+                            "reason": result.reason})
+
+        if history:
+            entry["failed_runs"] = history
+            entry["ever_failed"] = True
+
+        self.data[result.test_id] = entry
 
     def save(self):
         try:

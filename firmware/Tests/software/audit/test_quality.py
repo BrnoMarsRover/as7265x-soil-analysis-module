@@ -318,13 +318,51 @@ def analyse(path):
             continue
 
         # A suite may NAME the real tree to hash it or to read reference
-        # data; what it must not do is build a writable store on it.
-        if "SampleStore(" in stripped and "SandboxBD" not in stripped:
-            if "ARCHIVE_PATH" in stripped or "config.SAMPLES_FILE" in \
-                    stripped:
+        # data; what it must not do is build a WRITABLE store on it.
+        #
+        # EVERY writable store, and the no-argument form too.
+        #
+        # This checked `SampleStore(` alone, and only when the line also
+        # named ARCHIVE_PATH or config.SAMPLES_FILE. It therefore missed
+        # the two ways a suite actually reaches the production archive:
+        #
+        #   DecisionLearningStore()   no argument means BD/training/
+        #   SampleStore()             no argument means BD/samples/
+        #
+        # The first is not hypothetical. `sandbox_mission` did not
+        # redirect the learning store, so code driving a sandboxed
+        # Mission wrote observations straight into the real
+        # `BD/training/decision_learning.sqlite3`. The campaign's BD/
+        # hash check caught it afterwards; nothing caught it before,
+        # and this rule is what should have.
+        # ONE suite is allowed to name the production stores: the one
+        # whose whole job is to police them. `data_integrity` builds a
+        # default store to ASSERT that the default path is the real
+        # archive - the very rule enforced here - and never writes
+        # through it. Exempting it by name keeps the rule sharp for
+        # everybody else instead of weakening the pattern for all.
+        if "data_integrity" in relative:
+            continue
+
+        for store in ("SampleStore", "CalibrationStore",
+                      "DecisionLearningStore", "AcquisitionProfileStore"):
+            call = store + "("
+
+            if call not in stripped or "SandboxBD" in stripped:
+                continue
+
+            after = stripped.split(call, 1)[1].lstrip()
+
+            if after.startswith(")"):
                 findings.append(Finding(
                     "real-BD-write", relative, index,
-                    "opens the production archive directly"))
+                    "{}() with no argument is the production store"
+                    .format(store)))
+
+            elif "ARCHIVE_PATH" in stripped or "config." in stripped:
+                findings.append(Finding(
+                    "real-BD-write", relative, index,
+                    "opens the production {} directly".format(store)))
 
     return findings
 

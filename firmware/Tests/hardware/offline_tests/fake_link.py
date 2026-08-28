@@ -224,6 +224,28 @@ class _FakeSerialLinkModule:
 # ready-made scripts
 # ======================================================================
 
+def _feedback(position, counts_per_rev=4096):
+    """
+    One feedback block, with the key names ST3215.read_feedback uses.
+
+    Kept in one place so a fake cannot drift from the firmware in only
+    some of the places it answers. The names here are copied from
+    ESP32/servo.py read_feedback and must stay copied from it.
+    """
+    return {
+        "position_counts": position,
+        "position_deg": round(position * 360.0 / counts_per_rev, 2),
+        "speed_steps_per_s": 0,
+        "load_permille": 0,
+        "voltage_v": 12.1,
+        "temperature_c": 35,
+        "current_ma": 0.0,
+        "moving": False,
+        "status": 0,
+        "status_flags": [],
+    }
+
+
 def healthy_script(counts_per_rev=4096):
     """
     A device that works. Enough of the real answer shapes to drive the
@@ -258,13 +280,26 @@ def healthy_script(counts_per_rev=4096):
             "mode": 3, "mode_name": "step", "mode_correct": True,
             "expected_mode": 3, "torque_enabled": True,
             "baud_reported": 1000000, "baud_matches": True,
-            "feedback": {"position": state["position"]},
+
+            # `position_counts`, BECAUSE THAT IS WHAT THE FIRMWARE
+            # SENDS. This fake emitted "position", a key
+            # ST3215.read_feedback has never produced, and the servo
+            # adapter was written to read it. The two matched each
+            # other and neither matched the board, so every offline
+            # check passed while `ctx.servo.position()` returned None
+            # on real hardware - including every encoder reading in
+            # B3/H-002.
+            #
+            # A fake may replace a wire. It may not invent the format
+            # carried on it.
+            "feedback": _feedback(state["position"]),
             "steps": [
                 {"step": "uart", "ok": True, "value": {}},
                 {"step": "ping", "ok": True, "value": True},
                 {"step": "id", "ok": True, "value": 1},
+                {"step": "mode", "ok": True, "value": 3},
                 {"step": "feedback", "ok": True,
-                 "value": {"position": state["position"]}},
+                 "value": _feedback(state["position"])},
             ],
             "bus": {"errors": 0, "timeouts": 0, "retries": 0},
         }

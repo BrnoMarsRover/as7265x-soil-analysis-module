@@ -50,8 +50,6 @@
 import config
 
 from servo import (
-    CCW,
-    CW,
     DIRECTIONS,
     ServoError,
     centred_degrees,
@@ -685,32 +683,21 @@ class Carousel:
 
         self.invalidate_position(reason)
 
-        if verdict == self.MOTION_NOT_STARTED:
-            consequence = (
-                "Nothing was moved - the movement was refused before the "
-                "servo was commanded, so the carousel is where it was."
-            )
-
-        elif verdict == self.MOTION_MOVED:
-            consequence = (
-                "THE CAROUSEL MOVED and stopped somewhere that could not "
-                "be verified. Look at the mechanism before assuming which "
-                "slot is where."
-            )
-
-        else:
-            consequence = (
-                "The servo was commanded and it is not known whether the "
-                "carousel moved. Treat its position as unknown and look "
-                "at the mechanism."
-            )
-
+        # THE CONSEQUENCE IS DATA, NOT PROSE, AND IT IS SAID ONCE.
+        #
+        # This used to append one of three paragraphs to the message,
+        # and the PC then printed the same fact again from `motion` as
+        # its `carousel:` line and a third time as an instruction. One
+        # real refusal ran to eleven lines saying three things.
+        #
+        # `motion` and `motion_detail` below already carry the verdict
+        # and the evidence, and every reader derives its own wording
+        # from them - workflow/status.carousel_outcome is the one place
+        # that does it for the operator. So the message states the
+        # failure and stops.
         return CarouselError(
             error.code,
-            "{} failed ({}). {} Position tracking has been invalidated; "
-            "re-synchronize before moving again.".format(
-                reason, error.message, consequence
-            ),
+            "{} failed: {}".format(reason, error.message),
             data={
                 "requested": requested,
                 "measured_travel_deg": measured,

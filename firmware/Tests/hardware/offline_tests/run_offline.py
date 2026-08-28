@@ -38,7 +38,28 @@ SUITES = (
     ("test_runner", "verdicts, cleanup, aborts, blocks, iterations"),
     ("test_safety", "the gates, end to end, through the real CLI"),
     ("test_bodies", "every campaign body, against the fake transport"),
+    ("test_firmware_contract",
+     "the fakes speak the firmware's key names, not their own"),
 )
+
+
+def unregistered():
+    """
+    Suite files on disk that SUITES does not name.
+
+    A SUITE THAT IS NOT LISTED DOES NOT RUN. The same manifest existed
+    in Tests/software/run_software.py, where four regression suites
+    written on 2026-08-27 sat unlisted and never executed while the
+    campaign reported that everything passed. The manifest shape is
+    right - the order is deliberate - but nothing checked it against
+    the directory, so it is checked here.
+    """
+    listed = {name for name, _description in SUITES}
+
+    return sorted(
+        path.stem for path in HERE.glob("test_*.py")
+        if path.stem not in listed
+    )
 
 
 USAGE = """usage: run_offline.py [-h] [PATTERN]
@@ -93,6 +114,21 @@ def main(argv=None):
     print()
     print("No serial port is opened. No device is touched. Nothing here")
     print("is evidence about the hardware.")
+
+    orphans = unregistered()
+
+    if orphans and pattern is None:
+        print()
+        print("!! {} SUITE(S) EXIST BUT ARE NOT LISTED IN SUITES:".format(
+            len(orphans)))
+
+        for name in orphans:
+            print("     {}".format(name))
+
+        print()
+        print("   They did not run. Add them to SUITES.")
+
+        return 1
 
     failures = []
 

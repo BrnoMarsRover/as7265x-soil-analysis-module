@@ -200,9 +200,36 @@ class ServoAdapter(Adapter):
     def stop(self):
         return self.link.request("servo_stop", timeout=self._move_timeout())
 
+    # THE NAME THE FIRMWARE ACTUALLY SENDS, FIRST.
+    #
+    # `ST3215.read_feedback` returns `position_counts`. It always has.
+    # This reader looked for "position", "present_position" and
+    # "current_position" and none of those has ever been a key of that
+    # dict, so `position()` returned None on every real board.
+    #
+    # It passed offline because the fake in offline_tests/fake_link.py
+    # emits "position" - the fake was written to match the reader and
+    # the reader to match the fake, so the pair agreed with each other
+    # and neither agreed with the firmware. That is the one thing a
+    # fake may never do: it replaced a DECISION about the wire format,
+    # not the wire.
+    #
+    # Measured on the bench, 2026-08-27: HW-B2-004 reported
+    # "reads: 20, answered: 0" while HW-B2-002, one test earlier, had
+    # just read position_counts=1 out of the same feedback block.
+    #
+    # This matters far beyond B2-004. Every encoder reading in B3 -
+    # H-002, the campaign the whole servo side waits on - comes through
+    # here, and a None reads exactly like "the encoder told us
+    # nothing", which is the very conclusion H-002 exists to test.
+    POSITION_KEYS = (
+        "position_counts", "position", "present_position",
+        "current_position",
+    )
+
     def position(self):
         """
-        The servo's present position, from the diagnostics feedback step.
+        The servo's present position in encoder counts, or None.
 
         Returns None rather than raising when the report has no
         position: "the servo did not tell us where it is" is a result,
@@ -212,7 +239,7 @@ class ServoAdapter(Adapter):
 
         feedback = (report or {}).get("feedback") or {}
 
-        for key in ("position", "present_position", "current_position"):
+        for key in self.POSITION_KEYS:
             if key in feedback:
                 return feedback[key]
 
@@ -221,7 +248,7 @@ class ServoAdapter(Adapter):
                     step.get("value"), dict):
                 value = step["value"]
 
-                for key in ("position", "present_position"):
+                for key in self.POSITION_KEYS:
                     if key in value:
                         return value[key]
 

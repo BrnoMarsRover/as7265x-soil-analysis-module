@@ -175,7 +175,71 @@ SUITES = (
      "regression", "one test per bug that reached the bench"),
     ("regression/test_linux_bench.py",
      "regression", "the failures observed on the real Linux bench"),
+    ("regression/test_operator_ui.py",
+     "regression", "the operator screens, and what they may not claim"),
+    ("regression/test_learning_ui.py",
+     "regression", "ground truth, components and the matrix boundary"),
+    ("regression/test_damage_capture.py",
+     "regression", "what a damaged frame is made to give up"),
+    ("regression/test_damaged_motion.py",
+     "regression", "a movement whose answer was destroyed in transit"),
+    ("regression/test_operator_flow.py",
+     "regression", "the whole operator journey, through the real loop"),
 )
+
+
+# ----------------------------------------------------------------------
+# the manifest, checked against the tree
+# ----------------------------------------------------------------------
+# A SUITE THAT IS NOT LISTED DOES NOT RUN, AND SAYS NOTHING WHILE IT
+# FAILS TO.
+#
+# SUITES is a hand-written manifest, which is the right shape - the
+# order above is diagnostic and a directory scan cannot reproduce it.
+# But nothing checked that the manifest COVERED the tree, and on
+# 2026-08-27 four regression suites written that same day
+# (operator_ui, learning_ui, damage_capture, damaged_motion - 148
+# checks between them) sat in regression/ without ever being added.
+# The campaign reported "40 suites passed" and was telling the truth
+# about the forty it knew about.
+#
+# That is the same failure as a test that cannot fail: evidence that
+# does not exist, presented as evidence that does. So the manifest is
+# now compared against the directory on every run, and an unlisted
+# suite fails the campaign instead of being quietly skipped.
+#
+# Files here that are TOOLS rather than suites - they are run by hand,
+# take arguments, and report their own way.
+NOT_SUITES = {
+    "run_software.py",
+    "mutation.py",
+    "coverage_report.py",
+    "audit/branch_gaps.py",
+    "audit/call_graph.py",
+    "audit/handler_coverage.py",
+    "audit/module_inventory.py",
+    "audit/test_quality.py",
+    "audit/vocabulary.py",
+}
+
+
+def unregistered():
+    """Every suite file on disk that the manifest does not name."""
+    listed = {relative for relative, _tag, _description in SUITES}
+    found = []
+
+    for path in sorted(HERE.rglob("test_*.py")):
+        if "__pycache__" in path.parts:
+            continue
+
+        relative = path.relative_to(HERE).as_posix()
+
+        if relative in listed or relative in NOT_SUITES:
+            continue
+
+        found.append(relative)
+
+    return found
 
 
 def run(relative):
@@ -342,6 +406,28 @@ def main(argv=None):
     print("  BD/ unchanged  {:>6} files hashed before and after".format(
         len(before)))
     print()
+
+    # Reported even on a filtered run, because an unlisted suite is a
+    # property of the tree rather than of this invocation - but it can
+    # only FAIL the run when everything was asked for, since a pattern
+    # is a deliberate narrowing.
+    orphans = unregistered()
+
+    if orphans:
+        print("!! {} SUITE(S) EXIST BUT ARE NOT IN THE MANIFEST:".format(
+            len(orphans)))
+        print()
+
+        for relative in orphans:
+            print("     {}".format(relative))
+
+        print()
+        print("   They did not run. Add them to SUITES, or to NOT_SUITES")
+        print("   if they are tools rather than suites.")
+        print()
+
+        if pattern is None:
+            return 1
 
     if missing:
         print("{} suite(s) not present: {}".format(

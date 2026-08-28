@@ -55,6 +55,7 @@ for _path in (str(PROJECT_ROOT), str(PC_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+import serial_link                                          # noqa: E402
 from serial_link import (                                   # noqa: E402
     CONNECT_TIMEOUT,
     DEFAULT_BAUDRATE,
@@ -62,9 +63,176 @@ from serial_link import (                                   # noqa: E402
     DeviceError,
     LinkError,
     SerialLink,
+    utc_timestamp,
 )
+from workflow import status as ui_status                     # noqa: E402
 from workflow.prompts import OperatorGone                    # noqa: E402
 from workflow.screen import interactive                     # noqa: E402
+
+
+def preflight(link, save_to=None):
+    """
+    Read-only bench check: what is connected, and is it healthy?
+
+    THE FIRST THING TO RUN AFTER PLUGGING THE MODULE IN, and the thing
+    to run again when something goes strange. It answers, in one pass:
+
+        which device this is, and what firmware it runs
+        whether this client and that firmware agree on the protocol
+        the sensor state, and why if it is not READY
+        the servo link, id, mode, encoder, voltage, temperature
+        whether the carousel position is trusted
+        what the transport has already seen
+
+    IT MOVES NOTHING. Three commands, all reads: `ping`, `get_status`
+    and - only when a servo is already connected - `servo_diagnostics`,
+    which reads registers from the driver's own bounded whitelist. No
+    EPROM write, no torque change, no illumination, no goal position.
+
+    `--save-evidence` writes the whole thing as JSON so a failure can be
+    diagnosed later, or compared against the next run, without anybody
+    having to remember what the screen said.
+    """
+    report = {
+        "captured_utc": utc_timestamp(),
+        "port": link.port,
+        "baud": link.baudrate,
+        "client_expects_protocol": serial_link.EXPECTED_PROTOCOL_VERSION,
+    }
+
+    print()
+    print("FREYA PREFLIGHT - read-only, nothing moves")
+    print("=" * 60)
+
+    # ---- identity -----------------------------------------------
+    try:
+        report["ping"] = link.ping()
+
+    except (DeviceError, LinkError) as error:
+        report["ping_error"] = {"code": error.code, "message": error.message}
+
+        print("Board:      NO ANSWER - {}".format(error.code))
+        print()
+        print(error.message)
+
+        _save_preflight(report, save_to)
+
+        return 1
+
+    link._note_identity(report["ping"])
+
+    print("Board:      {} {}  (protocol {})".format(
+        link.firmware_name or "?", link.firmware_version or "?",
+        link.device_protocol_version))
+
+    if link.protocol_mismatch:
+        print("            !! MISMATCH - this client expects protocol {}"
+              .format(link.protocol_mismatch["expected"]))
+        print("            The device is not running this source.")
+
+    report["protocol_mismatch"] = link.protocol_mismatch
+
+    # ---- state ---------------------------------------------------
+    try:
+        status = link.get_status()
+        report["status"] = status
+
+    except (DeviceError, LinkError) as error:
+        report["status_error"] = {"code": error.code,
+                                  "message": error.message}
+        print("Status:     UNAVAILABLE - {}".format(error.code))
+        _save_preflight(report, save_to)
+
+        return 1
+
+    print("Sensor:     {}".format(ui_status.sensor_label(status)))
+    print("Servo:      {}".format(ui_status.servo_link(status)))
+    print("Carousel:   {}".format(ui_status.carousel_label(status)))
+
+    sensor = status.get("sensor") or {}
+    bus = sensor.get("bus") or {}
+
+    if bus.get("addresses") is not None:
+        print("I2C:        expected {}, found {}".format(
+            sensor.get("address"), bus.get("addresses")))
+
+    first_error = sensor.get("first_init_error")
+
+    if first_error:
+        print("Boot error: {}".format(first_error.get("code")))
+
+    # ---- servo registers, only if a servo is already connected ----
+    if ui_status.servo_online(status):
+        try:
+            diagnostics = link.servo_diagnostics()
+            report["servo_diagnostics"] = diagnostics
+
+            feedback = diagnostics.get("feedback") or {}
+            counters = diagnostics.get("bus") or {}
+
+            print("Servo id:   {}  mode {} ({})".format(
+                diagnostics.get("id"), diagnostics.get("mode"),
+                diagnostics.get("mode_name")))
+            print("Encoder:    {} cnt / {} deg".format(
+                feedback.get("position_counts"),
+                feedback.get("position_deg")))
+            print("Supply:     {} V, {} C".format(
+                feedback.get("voltage_v"), feedback.get("temperature_c")))
+            print("Servo bus:  {} tx / {} rx, {} retries, {} timeouts, "
+                  "{} checksum".format(
+                      counters.get("tx"), counters.get("rx"),
+                      counters.get("retry"), counters.get("timeout"),
+                      counters.get("checksum")))
+
+        except (DeviceError, LinkError) as error:
+            report["servo_diagnostics_error"] = {
+                "code": error.code, "message": error.message}
+            print("Servo diag: FAILED - {}".format(error.code))
+
+    # ---- what this link has already seen --------------------------
+    transport = {
+        "corrupt_frames": link.corrupt_frames,
+        "salvaged_frames": getattr(link, "salvaged_frames", None),
+        "stale_frames": getattr(link, "stale_frames", None),
+        "oversized_lines": getattr(link, "oversized_lines", None),
+        "bytes_read": getattr(link, "bytes_read", None),
+        "damage_reports": list(getattr(link, "damage_reports", []) or []),
+    }
+    report["transport"] = transport
+
+    if link.corrupt_frames:
+        print("Transport:  {} damaged frame(s) already this session"
+              .format(link.corrupt_frames))
+
+    print("=" * 60)
+
+    _save_preflight(report, save_to)
+
+    return 0
+
+
+def _save_preflight(report, save_to):
+    """Write the capture, and say where it went. Never raises."""
+    if not save_to:
+        return
+
+    try:
+        path = Path(save_to)
+
+        if path.is_dir():
+            path = path / "preflight-{}.json".format(
+                report["captured_utc"].replace(":", "").replace("-", ""))
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(report, indent=1, sort_keys=True, default=str),
+            encoding="utf-8")
+
+        print("Evidence:   {}".format(path))
+
+    except OSError as error:
+        print("Evidence could NOT be written to {}: {}".format(
+            save_to, error), file=sys.stderr)
 
 
 def one_shot(link, command, payload_text):
@@ -112,6 +280,14 @@ def build_parser():
     parser.add_argument("--connect-timeout", type=float,
                         default=CONNECT_TIMEOUT,
                         help="seconds to wait for the first ping")
+    parser.add_argument(
+        "--preflight", action="store_true",
+        help="read-only bench check: identity, firmware, sensor, servo, "
+             "carousel, transport counters. Moves nothing and exits.")
+    parser.add_argument(
+        "--save-evidence", metavar="PATH",
+        help="with --preflight, write the whole capture as JSON to a "
+             "file or directory")
     parser.add_argument("--command",
                         help="send one command and exit")
     parser.add_argument("--payload",
@@ -214,6 +390,9 @@ def main(argv=None):
         return 2
 
     try:
+        if args.preflight:
+            return preflight(link, args.save_evidence)
+
         if args.command:
             return one_shot(link, args.command, args.payload)
 

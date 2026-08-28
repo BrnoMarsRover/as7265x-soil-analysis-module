@@ -656,6 +656,10 @@ class ST3215:
 
         self.moving = False
 
+        # The last undecoded PRESENT_POSITION word. Diagnostic only -
+        # see read_position. None until something has read a position.
+        self.last_position_raw = None
+
         # Bus counters, in the same breakdown the supplied reference
         # driver keeps: an intermittent bus shows up as a number rather
         # than as an operator's impression that it is "sometimes flaky".
@@ -1097,8 +1101,26 @@ class ST3215:
         single 0..4095 turn, but the official ReadPos() applies the
         bit-15 sign rule and the memory table allows multi-turn values,
         so the sign is decoded here.
+
+        THE UNDECODED WORD IS KEPT, and it is kept for H-002.
+
+        `decode_signed` maps 0x8002 to -2. On a screen that is
+        indistinguishable from a genuine reading of -2, and the raw word
+        was discarded the instant it was decoded - so nothing downstream
+        could tell "the encoder really is near zero" from "the sign rule
+        is reading a large value as a small one". Those two call for
+        completely different investigations.
+
+        Storing it costs one integer and no extra transaction. Nothing
+        reads `last_position_raw` to make a decision; it exists to be
+        REPORTED beside the decoded value, so tomorrow's evidence can
+        separate the hypotheses instead of inviting a guess.
         """
-        return decode_signed(self.read_word(REG_PRESENT_POSITION))
+        raw = self.read_word(REG_PRESENT_POSITION)
+
+        self.last_position_raw = raw
+
+        return decode_signed(raw)
 
     def read_mode(self, refresh=True):
         """Operating mode, read from the servo rather than assumed."""
@@ -1137,9 +1159,19 @@ class ST3215:
         self.last_status_flags = decode_status_flags(status_byte)
         self.moving = bool(byte(REG_MOVING))
 
+        raw_position = word(REG_PRESENT_POSITION)
+
+        self.last_position_raw = raw_position
+
         return {
             "position_counts": position,
             "position_deg": round(self.counts_to_degrees(position), 2),
+
+            # The undecoded 16-bit word, from THIS transaction. See
+            # read_position: 0x8002 decodes to -2, and without the raw
+            # value the two cannot be told apart. Reported, never acted
+            # on.
+            "position_raw": raw_position,
 
             # Sign in bit 15 for speed and current, bit 10 for load. The
             # load rule is unusual and both the official library and the
@@ -1569,22 +1601,36 @@ class ST3215:
             if not settled:
                 raise ST3215MoveTimeoutError(
                     "Servo {} did not reach its target within {} ms: {} "
-                    "counts were requested, the encoder moved {} counts "
-                    "and is still {} counts away from position {}. The "
-                    "carousel HAS moved; its position is now "
-                    "unknown.".format(
-                        self.servo_id, timeout_ms, requested, travelled,
-                        error, expected
+                    "counts requested, encoder {} -> {}, still {} counts "
+                    "from {}.".format(
+                        self.servo_id, timeout_ms, requested, start,
+                        position, error, expected
                     ),
                     motion=motion,
                 )
 
+            # THE MESSAGE FOLLOWS THE ENCODER, IT DOES NOT OVERRIDE IT.
+            #
+            # This said "THE CAROUSEL HAS MOVED" unconditionally, in the
+            # same breath as reporting that the encoder had measured
+            # zero counts of travel. The two halves of one sentence
+            # contradicted each other, and the half that was asserted in
+            # capitals was the half with no evidence behind it.
+            #
+            # Worse, `motion_verdict` upstream reads `encoder_moved` and
+            # correctly returns UNKNOWN for exactly this case - so the
+            # firmware already knew better and the operator was shown
+            # both answers, one paragraph apart. §4.
+            #
+            # What this layer can support: a goal was written, and here
+            # is what the encoder read. Whether the mechanism turned is
+            # a claim about the physical world, and the encoder is the
+            # only witness software has.
             raise ST3215PositionError(
                 "Servo {} was commanded {} counts, the encoder moved {} "
-                "counts ({:.2f} deg), and it stopped at position {} - {} "
+                "counts ({:.2f} deg), and it reports position {} - {} "
                 "counts from the target {}, outside the {} count "
-                "tolerance. THE CAROUSEL HAS MOVED and its position is "
-                "now unknown.".format(
+                "tolerance.".format(
                     self.servo_id, requested, travelled,
                     self.counts_to_degrees(travelled), position, error,
                     expected, config.ST3215_POSITION_TOLERANCE
@@ -1653,8 +1699,28 @@ class ST3215:
             "counts": counts * slots,
             "moved": slots > 0,
             "legs": legs,
+
+            # THE SUMMARY MUST BE READABLE WITHOUT OPENING `legs`.
+            #
+            # This carried only the last leg's error and position, and
+            # `workflow/carousel.report_slot_move` prints five fields
+            # from it. The other three existed only inside `legs[]`, so
+            # a perfectly good one-slot move reported
+            #
+            #     encoder:   None -> 3072 counts
+            #     error:     0 counts (None deg), tolerance None
+            #
+            # to the operator, on the Carousel Setup screen used to
+            # check the mechanism. The whole move starts where its FIRST
+            # leg started and ends where its last one ended; the
+            # tolerance is a constant of the driver.
+            "start_position": legs[0]["start_position"] if legs else None,
             "position_error": legs[-1]["position_error"] if legs else 0,
+            "position_error_deg": (
+                legs[-1]["position_error_deg"] if legs else 0.0
+            ),
             "actual_position": legs[-1]["actual_position"] if legs else None,
+            "tolerance_counts": config.ST3215_POSITION_TOLERANCE,
             "elapsed_ms": sum(leg["elapsed_ms"] for leg in legs),
         }
 

@@ -15,10 +15,15 @@ be nudged by.
 
 from serial_link import DeviceError, LinkError
 
+# `ui_status`: this module binds a local `status` to the get_status dict
+# in most of its screens, the same shadowing hazard display.py documents.
+from workflow import status as ui_status
+
 from workflow.display import (
     print_bus_scan,
     print_check,
     print_servo_block,
+    print_servo_telemetry,
     report_failure,
     report_link_error,
     report_return_move,
@@ -194,22 +199,30 @@ def menu_initial_calibration(mission):
 
         banner("CAROUSEL SETUP")
 
-        print("Servo: {}".format(servo.get("label")))
-
-        print("Communication: {}".format(
-            "ONLINE" if backend.get("connected") else "NOT ANSWERING"
+        # Compact, and it ends with the carousel. §6.
+        #
+        # The servo telemetry is the useful part of this screen - it is
+        # how an operator sees the mechanism is alive before asking it
+        # to turn - but it said nothing about the carousel, which is the
+        # thing this screen exists to fix. A servo reading 12.1 V at
+        # 35 C with an unknown carousel position looked like a healthy
+        # system.
+        ui_status.print_fields((
+            ("Servo", "{} / ID {}".format(
+                servo.get("label"), backend.get("id")
+            )),
+            ("Link", ui_status.servo_link(status)),
+            ("Mode", backend.get("mode_name")),
+            ("Encoder", "{} cnt / {} deg".format(
+                backend.get("position_counts"), backend.get("position_deg")
+            )),
+            ("Power", "{} V".format(backend.get("voltage_v"))),
+            ("Temp", "{} C".format(backend.get("temperature_c"))),
+            ("Carousel", ui_status.carousel_label(status)),
         ))
-        print("Servo ID:      {}".format(backend.get("id")))
-        print("Encoder:       {} counts ({} deg)".format(
-            backend.get("position_counts"), backend.get("position_deg")
-        ))
-        print("Mode:          {}".format(backend.get("mode_name")))
-        print("Voltage:       {} V".format(backend.get("voltage_v")))
-        print("Temperature:   {} C".format(backend.get("temperature_c")))
 
         print()
-        print("Goal:")
-        print("Align physical Slot 1 exactly under the soil loading hole.")
+        print("Goal: align physical Slot 1 under the soil loading hole.")
         print()
         print("[1] Move one whole slot clockwise")
         print("[2] Move one whole slot counter-clockwise")
@@ -315,21 +328,23 @@ def report_slot_move(data):
         move.get("steps"), move.get("direction"), move.get("degrees") or 0
     ))
 
-    if servo.get("verified"):
-        print("  encoder:   {} -> {} counts".format(
-            servo.get("start_position"), servo.get("actual_position")
-        ))
-        print("  error:     {} counts ({} deg), tolerance {}".format(
-            servo.get("position_error"),
-            servo.get("position_error_deg"),
-            servo.get("tolerance_counts"),
-        ))
-        print("  elapsed:   {} ms".format(servo.get("elapsed_ms")))
-
-    else:
-        print("  commanded: {} ms per slot (timed, not verified)".format(
-            servo.get("step_ms")
-        ))
+    # NO `else` BRANCH ANY MORE. It printed "commanded: {} ms per slot
+    # (timed, not verified)" from `step_ms`, a field of the TIMED servo
+    # backend that was removed in 2026-08. The ST3215 is the only
+    # actuator now, `verified` is hardcoded True in every record
+    # servo.py builds, and the ST3215 has no `step_ms`. The branch was
+    # unreachable and the key was dead - a survivor of that backend
+    # that the repository-wide name check could never find, because a
+    # runtime branch is not a name.
+    print("  encoder:   {} -> {} counts".format(
+        servo.get("start_position"), servo.get("actual_position")
+    ))
+    print("  error:     {} counts ({} deg), tolerance {}".format(
+        servo.get("position_error"),
+        servo.get("position_error_deg"),
+        servo.get("tolerance_counts"),
+    ))
+    print("  elapsed:   {} ms".format(servo.get("elapsed_ms")))
 
 
 def menu_fine_adjust(mission):
@@ -460,8 +475,15 @@ def menu_servo_test(mission):
         print("Servo: {}".format(servo.get("label")))
         print()
 
-        if not servo.get("selected"):
-            print("No servo is selected. Carousel movement is blocked.")
+        # `connected`, NOT `selected` - the key the firmware sends. This
+        # test was always true, so the Carousel Setup screen told every
+        # operator that no servo was selected and offered only "select
+        # the installed servo", even with the ST3215 answering. It is
+        # the screen the operator is sent to in order to RE-SYNC, so
+        # the one path out of a failed measurement led here and then
+        # denied that the working servo existed.
+        if not servo.get("connected"):
+            print("No servo is connected. Carousel movement is blocked.")
             print()
             print("[s] Select the installed servo")
             print("[b] ST3215 bus scan - find out why one does not answer")
@@ -712,6 +734,20 @@ def menu_servo_diagnostics(mission):
             report.get("baud_reported"), report.get("baud")
         ))
 
+    # The engineering view, after the pass/fail walk. Read live rather
+    # than taken from the diagnostics report, so it reflects the servo
+    # now and not what it said at the start of the check. §9.
+    try:
+        backend = (
+            (mission.hardware_status().get("servo") or {}).get("backend")
+            or {}
+        )
+
+    except (LinkError, TimeoutError):
+        backend = {}
+
+    print_servo_telemetry(backend)
+
     print()
     pause()
 
@@ -863,9 +899,27 @@ def report_move_test(result):
     """Per-leg results, in whatever terms the backend can report."""
     print()
 
-    if result.get("verified_movement"):
-        print("  Legs:          {} x {} = {}".format(
-            result.get("repeat"), result.get("legs"), result.get("leg_count")
+    # `verified` IS THE KEY THE FIRMWARE SENDS. `verified_movement` IS
+    # NOT, AND NEVER WAS.
+    #
+    # This is the servo movement test - the screen the bench uses to
+    # characterise the actuator and to investigate H-002. The whole
+    # block below is its output: legs, encoder start and end, net
+    # travel, worst error, closing error and every per-leg line. All of
+    # it was unreachable, so a real movement test printed exactly
+    #
+    #     Movement complete.
+    #
+    # and nothing else. The only place `verified_movement` existed was
+    # a fixture in test_display_shapes.py that invented it, which is
+    # why the rendering test passed.
+    if result.get("verified"):
+        # `legs` is the LIST of per-repeat step counts, not a number,
+        # so printing it raw gave "2 x [1024, -1024] = 4".
+        legs = result.get("legs") or []
+
+        print("  Legs:          {} repeat(s) x {} = {} movement(s)".format(
+            result.get("repeat"), len(legs), result.get("leg_count")
         ))
         print("  Net travel:    {} counts ({} deg)".format(
             result.get("net_counts"), result.get("net_degrees")

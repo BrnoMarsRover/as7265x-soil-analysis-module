@@ -156,6 +156,30 @@ def sandbox_mission(link, bd=None, science=True):
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
 
+    # THE LEARNING STORE TOO. It was the one writable store this helper
+    # did not redirect, so `Mission.__init__` left it pointing at the
+    # real `BD/training/decision_learning.sqlite3` - and any test that
+    # saved ground truth wrote into the actual science archive. The
+    # campaign's BD/ hash check catches that after the fact and fails
+    # the whole run; nothing stopped it happening.
+    #
+    # Opened lazily via the sandbox so the file is created inside the
+    # temporary tree, and closed with it.
+    if mission.learning is not None:
+        try:
+            mission.learning.close()
+
+        except Exception:                              # noqa: BLE001
+            pass
+
+    try:
+        mission.learning = bd.learning_store()
+        mission.learning_error = None
+
+    except Exception as error:                         # noqa: BLE001
+        mission.learning = None
+        mission.learning_error = str(error)
+
     if science:
         # Re-read with the sandboxed calibration store in place, so the
         # active calibration comes from the copy and not from BD/.

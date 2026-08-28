@@ -121,7 +121,7 @@ Read from `firmware/ESP32/config.py`, never copied:
 | `ST3215_HALF_TURN_COUNTS` | 2048 | CONFIGURED |
 | `ST3215_POSITION_TOLERANCE` | 15 | CONFIGURED, and a **guess** (H-001) |
 | `AS7265X_ADDRESS` | 0x49 | CONFIGURED, verified on the real board |
-| `ST3215_TX_PIN` / `RX_PIN` | GPIO17 / GPIO16 | CONFIGURED, and **ASSUMED** wiring |
+| `ST3215_TX_PIN` / `RX_PIN` | GPIO17 / GPIO16 | CONFIGURED, **CONFIRMED on hardware** (`HW-B2-003`, 2026-08-27) |
 | servo-to-carousel gear ratio | 1.0 | **ASSUMED** — H-005, measured by `HW-B3-005` |
 
 Every transition matrix in B5 is **generated** from the slot count, so

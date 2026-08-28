@@ -18,6 +18,14 @@ and deliberately outside the repository.
 
 from BD.channels import CHANNELS, ILLUMINATIONS, WAVELENGTHS
 
+# AS `ui_status`, NOT `status`. Three functions in this file bind a
+# local named `status` to the get_status dict, exactly as six of them
+# once bound `carousel` and shadowed the carousel module. A plain
+# `from workflow import status` would make `status.print_failure` read
+# as a call into this module in some scopes and a dict lookup in
+# others, decided by which function you are standing in.
+from workflow import status as ui_status
+
 from workflow.prompts import (
     RULE,
     banner,
@@ -48,7 +56,7 @@ from BD.samples import (
 
 def report_link_error(error):
     """
-    A refusal, and what it means for the mechanism.
+    A refusal, and what it means for the mechanism. Said once.
 
     THE SECOND HALF IS THE MISSION-CRITICAL HALF.
 
@@ -61,53 +69,24 @@ def report_link_error(error):
 
     So the claim is only made when the firmware makes it. Silence is
     reported as uncertainty, never as stillness.
-    """
-    print()
-    print("Module refused the command:")
-    print("  code   : {}".format(error.code))
-    print("  message: {}".format(error.message))
 
+    THE FORMATTING NOW LIVES IN workflow.status. This function used to
+    hold four branches that each rewrote the same two fields into a
+    different paragraph, beneath a message that had already said it -
+    the refusal an operator showed us ran to eleven lines and repeated
+    "the position is unknown" three times in three different wordings.
+    `status.print_failure` renders the evidence as an aligned block and
+    the consequence as one line. §3.
+    """
     data = error.data or {}
 
-    if data.get("phase"):
-        print("  stage  : {}".format(data["phase"]))
-
-    if data.get("recovery"):
-        print("  carousel: {}".format(data["recovery"].get("message")))
-
-        return
-
-    motion = data.get("motion")
-    detail = data.get("motion_detail") or {}
-
-    if motion == "NOT_STARTED" or (motion is None
-                                   and data.get("moved") is False):
-        print("  carousel: nothing was moved - the command was refused "
-              "before the servo was commanded.")
-
-        return
-
-    if motion == "MOVED":
-        print("  carousel: THE CAROUSEL MOVED. It stopped somewhere that "
-              "could not be verified.")
-
-        travelled = detail.get("travelled_degrees")
-
-        if travelled is not None:
-            print("            the encoder measured {} deg of travel"
-                  .format(travelled))
-
-        print("            LOOK AT THE MECHANISM before assuming which "
-              "slot is where.")
-        print("            Re-sync the carousel before the next movement.")
-
-        return
-
-    if motion == "UNKNOWN" or data.get("moved"):
-        print("  carousel: the servo was commanded and it is NOT known "
-              "whether the carousel moved.")
-        print("            Treat its position as unknown, look at the "
-              "mechanism, and re-sync.")
+    ui_status.print_failure(
+        error.code, data, message=error.message,
+        title="{}{}".format(
+            error.code,
+            "  ({})".format(data["phase"]) if data.get("phase") else "",
+        ),
+    )
 
 
 def report_failure(error):
@@ -310,9 +289,11 @@ def print_system_status(mission):
     print("Controller:       READY ({} {})".format(
         status.get("firmware"), status.get("version")
     ))
-    print("Sensor:           {}".format(
-        "READY" if sensor.get("ready") else "UNAVAILABLE"
-    ))
+    # The firmware's own three-state answer, not the boolean. READY,
+    # UNAVAILABLE and NOT INITIALIZED are different situations and only
+    # two of them are faults - a lazily-initialised sensor that nothing
+    # has asked for yet was being reported as broken. §8.
+    print("Sensor:           {}".format(ui_status.sensor_label(status)))
     print("I2C:              {} on bus {}".format(
         sensor.get("address"), (sensor.get("bus") or {}).get("bus")
     ))
@@ -327,17 +308,26 @@ def print_system_status(mission):
         ))
         print("Mode:             {}".format(settings.get("measurement_mode")))
 
+    # `first_init_error` IS THE KEY THE FIRMWARE SENDS.
+    #
+    # Both branches read `sensor["boot_error"]`, and no firmware has
+    # ever produced that name - AS7265x.status() has always called it
+    # `first_init_error`. So both were dead: a sensor that failed to
+    # initialise printed a bare "UNAVAILABLE" and the code saying why
+    # was silently dropped, on every screen, for the whole release.
+    #
     # A boot failure that was later recovered is a warning, never a
     # reason to report the sensor as unavailable now.
-    if sensor.get("boot_error") and sensor.get("ready"):
+    first_error = sensor.get("first_init_error")
+
+    if first_error and sensor.get("ready"):
         print("Boot warning:     {} (recovered {}x)".format(
-            sensor["boot_error"].get("code"), sensor.get("recovery_count")
+            first_error.get("code"), sensor.get("recovery_count")
         ))
 
-    elif sensor.get("boot_error"):
+    elif first_error:
         print("Boot error:       {} - {}".format(
-            sensor["boot_error"].get("code"),
-            sensor["boot_error"].get("message"),
+            first_error.get("code"), first_error.get("message"),
         ))
 
     if sensor.get("current_error"):
@@ -359,30 +349,54 @@ def print_system_status(mission):
     print("CAROUSEL")
 
     geometry = carousel.get("geometry") or {}
-    encoder = carousel.get("encoder") or {}
 
-    print("Slots:            {} ({:.0f} deg apart, {} counts)".format(
-        carousel.get("slot_count", SLOT_COUNT),
-        geometry.get("slot_spacing_deg", 360.0 / SLOT_COUNT),
-        geometry.get("counts_per_slot"),
-    ))
+    # `reference`, NOT `encoder`. Carousel.status() has never sent an
+    # `encoder` block - the origin and the drift live under `reference`,
+    # and the origin counts one level deeper again. So this screen
+    # printed "Origin: None counts", "Alignment offset: None counts
+    # (None deg)", and never printed drift at all, because the test
+    # that gates it read a key that could not exist.
+    reference = carousel.get("reference") or {}
+    origin = reference.get("origin") or {}
+
+    # `counts_per_slot` is not in the geometry block - it never was.
+    # The carousel reports its geometry in DEGREES, which is what the
+    # mechanism is defined in; counts are the servo's unit and are
+    # printed in the SERVO block below, from the backend that owns
+    # them. This line used to end "None counts".
+    print("Slots:            {} ({:.0f} deg apart, half turn {:.0f} deg)"
+          .format(
+              carousel.get("slot_count", SLOT_COUNT),
+              geometry.get("slot_spacing_deg", 360.0 / SLOT_COUNT),
+              geometry.get("half_turn_deg", 180.0),
+          ))
     print("Synchronized:     {}".format(
         "YES" if carousel.get("position_valid") else "NO"
     ))
     print("Selected slot:    {}".format(carousel.get("selected_slot")))
     print("Loader:           {}".format(carousel.get("current_load_slot")))
     print("Scanner:          {}".format(carousel.get("current_scan_slot")))
-    print("Origin:           {} counts".format(
-        encoder.get("origin_counts")
-    ))
-    print("Alignment offset: {} counts ({} deg)".format(
-        encoder.get("alignment_offset_counts"),
-        encoder.get("alignment_offset_deg"),
+    if origin.get("feedback"):
+        print("Origin:           {} counts ({} deg)".format(
+            origin.get("origin_counts"), origin.get("origin_deg")
+        ))
+
+    else:
+        print("Origin:           not captured")
+
+    # Degrees only: the firmware reports the offset and the drift in
+    # degrees and does NOT send a counts form of either. Printing a
+    # counts column the board never sent is what produced the two
+    # "None counts" lines this replaces.
+    print("Alignment offset: {} deg".format(
+        reference.get("alignment_offset_deg")
     ))
 
-    if encoder.get("drift_counts") is not None:
-        print("Drift vs nominal: {} counts ({} deg)".format(
-            encoder.get("drift_counts"), encoder.get("drift_deg")
+    if reference.get("drift_measurable"):
+        print("Drift vs nominal: {} deg (commanded {}, expected {})".format(
+            reference.get("drift_deg"),
+            reference.get("commanded_travel_deg"),
+            reference.get("expected_travel_deg"),
         ))
 
     if geometry.get("error"):
@@ -399,7 +413,9 @@ def print_system_status(mission):
 
     print_servo_block(servo)
 
-    if servo.get("selected") and not backend.get("connected"):
+    # Same dead key: this warning could never fire, so a servo that was
+    # attached but silent showed no "NOT ANSWERING" line at all.
+    if servo.get("connected") and not backend.get("connected"):
         error = backend.get("error") or {}
 
         if error:
@@ -527,20 +543,70 @@ def print_triad_table(raw, normalized=None, wavelengths=None):
               "parts missing.")
 
 
-def print_quality(report):
-    """Measurement quality, with the reasons spelled out."""
-    if not report:
-        return
-
-    print("Overall: {}".format(report.get("status")))
-
+def _print_quality_checks(report):
+    """The checks that are not PASS, from one quality sub-report."""
     for check in report.get("checks") or []:
-        if check["status"] == "PASS":
+        if check.get("status") == "PASS":
             continue
 
         print("  [{}] {}: {}".format(
-            check["status"], check["check"], check["message"]
+            check.get("status"), check.get("check"), check.get("message")
         ))
+
+
+def print_quality(report):
+    """
+    Measurement quality: the hardware verdict and the normalization one.
+
+    THE REPORT IS SPLIT, AND THIS PRINTED THE OLD FLAT SHAPE.
+
+    `Science.pipeline.split_quality` deliberately separates the two -
+    "the checks were always right, it was the single combined verdict
+    that was wrong" - so the current report has no top-level `status`
+    and no top-level `checks`. This asked for both, so every screen
+    that shows measurement quality printed
+
+        Overall: None
+
+    and then listed nothing, because the loop was iterating an empty
+    list. The reasons a measurement was degraded were computed on every
+    single analysis and shown on none of them.
+
+    The two verdicts are printed separately because that is the whole
+    point of the split: a hardware FAIL means the numbers are suspect,
+    while a normalization problem lowers the weight of what is derived
+    from them and leaves the raw measurement intact.
+    """
+    if not report:
+        return
+
+    hardware = report.get("hardware")
+    normalization = report.get("normalization")
+
+    if hardware or normalization:
+        if hardware:
+            print("Hardware:      {}".format(hardware.get("status")))
+            _print_quality_checks(hardware)
+
+        if normalization:
+            print("Normalization: {}".format(normalization.get("status")))
+            _print_quality_checks(normalization)
+
+        usable = report.get("usable_channels")
+
+        if usable is not None and len(usable) < len(CHANNELS):
+            excluded = [c for c in CHANNELS if c not in usable]
+
+            print("  Channels excluded from comparison: {}".format(
+                ",".join(excluded)))
+
+        return
+
+    # A record migrated from the flat schema still carries the old
+    # single verdict, and is still readable in the records browser.
+    print("Overall: {}".format(report.get("status")))
+
+    _print_quality_checks(report)
 
     invalid = report.get("invalid_channels") or []
 
@@ -745,169 +811,6 @@ def print_database_results(database_results, metrics=("cosine", "rmse",
                 print("     {}".format(line))
 
         print()
-
-
-def print_cross_database(cross, limit=5):
-    """
-    What each of the three databases says, separately, and what that adds
-    up to.
-
-    Never a single ranked list. DB1 says "this looks like something we
-    measured on this instrument"; DB3 says "this looks like a laboratory
-    spectrum of that mineral, after modelling our sensor". Those are
-    different claims, so they are printed as different answers and their
-    scores are never averaged.
-    """
-    if not cross:
-        return
-
-    if cross.get("status") != "OK":
-        print("Cross-database inference: {}".format(cross.get("status")))
-        print("  {}".format(cross.get("reason")))
-
-        return
-
-    print("{:<5} {:<28} {:<26} {:>8}  {}".format(
-        "DB", "Library", "Best match", "Cosine", "Class reliability"
-    ))
-
-    unavailable = []
-
-    for result in cross.get("database_results") or []:
-        key = result.get("database")
-        status = result.get("status")
-
-        if status != "OK":
-            print("{:<5} {:<28} {}".format(
-                key, DATABASE_LABELS.get(key, ""), status
-            ))
-            unavailable.append((key, status, result.get("reason")))
-
-            continue
-
-        print("{:<5} {:<28} {:<26} {:>8}  {}".format(
-            key,
-            DATABASE_LABELS.get(key, ""),
-            str(result.get("best_material"))[:26],
-            score(result.get("best_similarity")),
-            result.get("class_reliability"),
-        ))
-
-    # A database that could not be used says why, in full, below the
-    # table rather than inside a column it would destroy.
-    for key, status, reason in unavailable:
-        if not reason:
-            continue
-
-        print()
-        print("  {} {}:".format(key, status))
-
-        for line in textwrap.wrap(str(reason), 66):
-            print("    {}".format(line))
-
-    # Which calibration each database saw. It differs by design, and a
-    # reader who does not know that would mistrust the numbers.
-    print()
-
-    for result in cross.get("database_results") or []:
-        if result.get("normalization"):
-            print("  {:<5} normalized with {}{}".format(
-                result.get("database"),
-                result.get("normalization"),
-                "  (narrowed to the 18 WHITE bands)"
-                if result.get("comparison_mode") == "PROJECTED_TO_18" else "",
-            ))
-
-    for result in cross.get("database_results") or []:
-        if result.get("status") != "OK":
-            continue
-
-        matches = result.get("matches") or []
-
-        if not matches:
-            continue
-
-        print()
-        print("  {} - top {}".format(result.get("database"), limit))
-
-        for match in matches[:limit]:
-            print("    {:<3} {:<30} {:>8}   rmse {}".format(
-                rank_of(match),
-                str(match.get("material"))[:30],
-                score(match.get("cosine_similarity_percent")),
-                "{:.4f}".format(match["rmse"])
-                if match.get("rmse") is not None else "-",
-            ))
-
-    consensus = cross.get("consensus") or {}
-    confidence = cross.get("confidence") or {}
-
-    print()
-    print("CONSENSUS")
-    print()
-    print("  Level:      {}".format(consensus.get("level")))
-    print("  Material:   {}".format(consensus.get("material") or "-"))
-
-    if consensus.get("nearest_material"):
-        print("  Nearest:    {} (not named as the answer)".format(
-            consensus["nearest_material"]
-        ))
-
-    print("  Family:     {}".format(consensus.get("family") or "-"))
-    print("  Supported by: {}".format(
-        ", ".join(consensus.get("supporting_databases") or []) or "-"
-    ))
-
-    if consensus.get("reason"):
-        print("  Reason:     {}".format(consensus["reason"]))
-
-    for entry in consensus.get("discounted_for_low_reliability") or []:
-        print("  DISCOUNTED: {} said {} - {}".format(
-            entry.get("database"),
-            entry.get("best_material"),
-            entry.get("reason"),
-        ))
-
-    for entry in consensus.get("disagreements") or []:
-        print("  DISAGREES:  {} says {} ({})".format(
-            entry.get("database"),
-            entry.get("best_material"),
-            score(entry.get("best_similarity")),
-        ))
-
-    print()
-    print("  Confidence: {}".format(confidence.get("level")))
-
-    for factor in confidence.get("factors") or []:
-        if factor.get("verdict") == "PASS":
-            continue
-
-        print("    [{}] {}: {}".format(
-            factor.get("verdict"), factor.get("factor"), factor.get("detail")
-        ))
-
-    print("    Confidence is an engineering judgement from the structure")
-    print("    of the evidence, NOT a probability.")
-
-    mixture = cross.get("mixture")
-
-    if mixture:
-        print()
-        print("MIXTURE ANALYSIS  ({})".format(mixture.get("database")))
-        print()
-        print("  Status: {}".format(mixture.get("status")))
-
-        for component in mixture.get("components") or []:
-            print("    {:<30} spectral contribution {:.3f}".format(
-                str(component.get("material"))[:30],
-                component.get("spectral_contribution", 0.0),
-            ))
-
-        if mixture.get("components"):
-            print()
-            print("  Spectral contribution is NOT mass fraction. Converting")
-            print("  one to the other needs prepared mixtures of known")
-            print("  mass, which do not exist for this instrument.")
 
 
 DECISION_HEADLINE = {
@@ -1180,8 +1083,15 @@ def print_servo_block(servo):
 
     print("  Servo:         {}".format(servo.get("label")))
 
-    if not servo.get("selected"):
-        print("  {}".format(servo.get("message")))
+    # `connected`, NOT `selected`. ServoLink.status() has never sent a
+    # `selected` key, so this early return was taken on EVERY call and
+    # the whole block below - link, mode, encoder, voltage, temperature
+    # - was unreachable. Against a live answering servo this function
+    # printed the label and then the literal word "None", because
+    # `message` is only present when nothing is connected.
+    if not servo.get("connected"):
+        print("  {}".format(
+            servo.get("message") or "Not connected."))
 
         return
 
@@ -1201,8 +1111,18 @@ def print_servo_block(servo):
         print("  ** WRONG MODE - run SERVICE: write servo "
               "configuration **")
 
-    print("  Position:      {} counts ({} deg)".format(
-        backend.get("position_counts"), backend.get("position_deg")
+    # THE RAW WORD BESIDE THE DECODED ONE - H-002.
+    #
+    # `decode_signed` maps 0x8002 to -2, which on screen is
+    # indistinguishable from a genuine -2. Diagnostics is where that
+    # distinction belongs: the main screen keeps the decoded value
+    # alone, this screen shows what the register actually held.
+    raw_position = backend.get("position_raw")
+
+    print("  Position:      {} counts ({} deg){}".format(
+        backend.get("position_counts"), backend.get("position_deg"),
+        "" if raw_position is None
+        else "   raw 0x{:04X}".format(raw_position),
     ))
     print("  Moving:        {}".format(backend.get("moving")))
     print("  Torque:        {}".format(backend.get("torque_enabled")))
@@ -1224,6 +1144,107 @@ def print_servo_block(servo):
                   bus.get("tx"), bus.get("rx"), bus.get("retry"),
                   bus.get("timeout"), bus.get("checksum"),
               ))
+
+
+def print_servo_telemetry(backend):
+    """
+    Everything the servo reports about itself. For DIAGNOSTICS only.
+
+    The status block above is deliberately compact - it is read while
+    deciding whether to move a mechanism. This is the engineering view,
+    and it is richer on purpose: §9.
+
+    THE BUS COUNTERS ARE ALWAYS SHOWN HERE, unlike in the status block
+    where they appear only when something has already gone wrong. A
+    clean count is evidence too - it is how you tell "the servo is
+    answering wrongly" from "the servo is barely answering at all", and
+    that distinction is the whole question when an encoder disagrees
+    with what the mechanism visibly did.
+
+    Every field is dropped when the firmware did not report it, so this
+    never invents a zero for something it could not read.
+    """
+    if not backend:
+        return
+
+    print()
+    print("SERVO TELEMETRY")
+    print()
+
+    ui_status.print_fields((
+        ("Servo ID", backend.get("id")),
+        ("UART", "UART{} TX GPIO{} RX GPIO{} @ {} baud".format(
+            backend.get("uart_id"), backend.get("tx_pin"),
+            backend.get("rx_pin"), backend.get("baud"),
+        )),
+        ("Mode", "{} ({}){}".format(
+            backend.get("mode_name"), backend.get("mode"),
+            "" if backend.get("mode_correct") is not False
+            else "  ** EXPECTED {} **".format(backend.get("expected_mode")),
+        )),
+        ("Torque", backend.get("torque_enabled")),
+        ("Moving", backend.get("moving")),
+        # THE RAW WORD BESIDE THE DECODED ONE - H-002.
+        #
+        # `decode_signed` maps 0x8002 to -2, and on a screen that is
+        # indistinguishable from a genuine -2. Until the raw word was
+        # kept, nothing downstream could separate "the encoder really is
+        # near zero" from "the sign rule is reading a large value as a
+        # small one" - two hypotheses needing opposite investigations.
+        # This is the diagnostics view, which is where that belongs.
+        ("Position", None if backend.get("position_counts") is None
+         else "{} cnt / {} deg{}".format(
+             backend.get("position_counts"), backend.get("position_deg"),
+             "" if backend.get("position_raw") is None
+             else "   raw 0x{:04X}".format(backend["position_raw"]))),
+        ("Origin", None if backend.get("origin_counts") is None
+         else "{} cnt".format(backend.get("origin_counts"))),
+        ("Per rev", backend.get("counts_per_rev")),
+        ("Speed", None if backend.get("speed_steps_per_s") is None
+         else "{} steps/s".format(backend.get("speed_steps_per_s"))),
+        ("Load", None if backend.get("load_permille") is None
+         else "{} (0.1%)".format(backend.get("load_permille"))),
+        ("Voltage", None if backend.get("voltage_v") is None
+         else "{} V".format(backend.get("voltage_v"))),
+        ("Current", None if backend.get("current_ma") is None
+         else "{} mA".format(backend.get("current_ma"))),
+        ("Temp", None if backend.get("temperature_c") is None
+         else "{} C".format(backend.get("temperature_c"))),
+        ("Flags", ", ".join(backend.get("status_flags") or []) or None),
+    ))
+
+    bus = backend.get("bus") or {}
+
+    if bus:
+        print()
+        print(ui_status.field("Bus", "{} tx / {} rx".format(
+            bus.get("tx"), bus.get("rx"))))
+        print(ui_status.field("Errors", "{} retries, {} timeouts, "
+                              "{} checksum".format(
+                                  bus.get("retry"), bus.get("timeout"),
+                                  bus.get("checksum"))))
+
+    # THE LAST MOVEMENT, WITH ITS OWN EVIDENCE. What was asked for and
+    # what the encoder read, kept side by side - which is the exact
+    # comparison a disagreement between the encoder and the mechanism
+    # has to be argued from.
+    last = backend.get("last_move")
+
+    if isinstance(last, dict) and last:
+        print()
+        print("LAST MOVEMENT")
+        print()
+
+        ui_status.print_fields((
+            ("Requested", last.get("requested_counts")),
+            ("Encoder", None if last.get("start_position") is None
+             else "{} -> {} cnt".format(
+                 last.get("start_position"), last.get("actual_position"))),
+            ("Expected", last.get("expected_position")),
+            ("Error", last.get("position_error")),
+            ("Elapsed", None if last.get("elapsed_ms") is None
+             else "{} ms".format(last.get("elapsed_ms"))),
+        ))
 
 
 SCAN_ADVICE = {

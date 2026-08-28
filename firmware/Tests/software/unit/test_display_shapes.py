@@ -162,9 +162,6 @@ survives("a real decision in detail",
 survives("real database results",
          lambda: display.print_database_results(
              package.get("database_results")))
-survives("a real cross-database block",
-         lambda: display.print_cross_database(
-             package.get("cross_database")))
 
 
 # ======================================================================
@@ -269,9 +266,9 @@ def match(name="Kaolin", **extra):
     """
     A match as the CURRENT pipeline builds one.
 
-    Both spellings are present on purpose. `print_metric_table` and
-    `print_cross_database` read `cosine_similarity_percent` and
-    `combined_rank`; `print_matches` reads `similarity_percent` and
+    Both spellings are present on purpose. `print_metric_table` reads
+    `cosine_similarity_percent` and `combined_rank`;
+    `print_matches` reads `similarity_percent` and
     `rank`, because it renders `reference_matches` from records
     MIGRATED out of the old flat schema. Getting that wrong is how the
     first version of this suite reported thirty failures that were all
@@ -498,22 +495,6 @@ for label, results in DATABASE_SETS:
     survives("print_database_results with {}".format(label),
              lambda r=results: display.print_database_results(r))
 
-CROSS = (
-    ("nothing", None),
-    ("an empty cross", {}),
-    ("agreement", {"agreement": "AGREE", "materials": ["Kaolin"]}),
-    ("disagreement", {"agreement": "DISAGREE",
-                      "materials": ["Kaolin", "Gypsum"]}),
-    ("a cross with no agreement key", {"materials": []}),
-    ("a list of per-database rows",
-     {"rows": [{"database": "DB1", "material": "Kaolin", "score": 98.0},
-               {"database": "DB2", "material": None, "score": None}]}),
-)
-
-for label, cross in CROSS:
-    survives("print_cross_database with {}".format(label),
-             lambda c=cross: display.print_cross_database(c))
-
 # `print_agreement` is called with a mapping or nothing. A bare string
 # is not a shape any caller produces, so it is not asserted.
 for label, agreement in (("None", None), ("empty", {}),
@@ -590,25 +571,42 @@ for label, settings in SETTINGS:
 # ======================================================================
 checks.section("the servo block, in every backend state")
 
+# `connected` IS THE KEY THE FIRMWARE SENDS; `selected` never existed.
+# These fixtures carried both, which is how the whole tree came to agree
+# with a reader that was testing a key no board has ever sent. The dead
+# one is gone so it cannot be copied out of here into a new fixture.
+#
+# The two levels mean different things and both are exercised below:
+#   servo["connected"]             a driver is attached at all
+#   servo["backend"]["connected"]  and that driver's link answers
 SERVO_STATES = (
-    ("not selected", {"selected": False, "label": "NOT CONNECTED"}),
+    ("not connected", {"connected": False, "label": "NOT CONNECTED",
+                       "message": "The ST3215 is not connected."}),
     ("connected and healthy", {
-        "selected": True, "connected": True, "label": "ST3215",
+        "connected": True, "label": "ST3215",
         "backend": {"connected": True, "id": 1, "position_counts": 2048,
                     "position_deg": 180.0, "mode_name": "STEP",
                     "voltage_v": 11.9, "temperature_c": 34},
-        "capabilities": {"verified_movement": True}}),
-    ("connected with a backend error", {
-        "selected": True, "connected": False, "label": "ST3215",
-        "backend": {"error": {"code": "SERVO_UART_TIMEOUT",
+        # NO invented `capabilities.verified_movement`. That key existed
+        # nowhere but here, and `report_move_test` read it - so the
+        # servo movement test's entire per-leg report was unreachable
+        # while this fixture kept the rendering test green.
+        }),
+    # ATTACHED, AND THE LINK IS DOWN. This said `connected: False` at
+    # the top level, so after the reader was corrected it stopped
+    # reaching the backend-error rendering it is named for and passed
+    # without testing anything.
+    ("attached but the backend errored", {
+        "connected": True, "label": "ST3215",
+        "backend": {"connected": False,
+                    "error": {"code": "SERVO_UART_TIMEOUT",
                               "message": "no answer"}}}),
     ("a backend with null readings", {
-        "selected": True, "connected": True, "label": "ST3215",
+        "connected": True, "label": "ST3215",
         "backend": {"connected": True, "id": None,
                     "position_counts": None, "voltage_v": None,
                     "temperature_c": None}}),
-    ("no backend key", {"selected": True, "connected": True,
-                        "label": "ST3215"}),
+    ("no backend key", {"connected": True, "label": "ST3215"}),
 )
 
 for label, servo in SERVO_STATES:

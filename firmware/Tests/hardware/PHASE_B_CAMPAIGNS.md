@@ -173,8 +173,15 @@ failure     ECHO_ONLY again. TX and RX are crossed and the scan is
 capture     the full scan report: every baud, every ID, both orders
 ```
 
-A previous scan answered only with TX and RX exchanged, and only ID 1
-was probed. Probe the whole range this time.
+**Resolved 2026-08-27.** `HW-B2-003` probed eight baud rates in both
+pin orders and got exactly one answer: ID 1, 1 Mbps, pins **as
+configured** (TX GPIO17 / RX GPIO16), status byte `0x00`. The earlier
+"answers only with TX and RX exchanged" result was the ESP32 receiving
+its own transmission through a UART2 TX signal that `deinit()` does not
+detach; `servo.release_uart_pins()` now prevents it. The failure mode
+above is kept because it is still the right thing to look for — but a
+swapped-order answer today means the loopback has returned, not that
+the wiring is backwards.
 
 ### HW-202 — a probe that fails mid-scan
 

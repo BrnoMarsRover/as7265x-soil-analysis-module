@@ -191,7 +191,10 @@ WALKS = {
     "measure.menu_measure": (["", "", "", ""], ""),
     "measure.menu_clear_slot": (["", ""], ""),
 
-    "records.menu_learning_history": (["0"], "0"),
+    # "1" enters the record review from the history screen, so the walk
+    # covers both; the review itself ends on a pause().
+    "records.menu_learning_history": (["1", ""], "0"),
+    "records.menu_review_observations": ([""], ""),
     "records.menu_sample_database": (["0"], "0"),
 
     "screen.menu_tools": (["0"], "0"),

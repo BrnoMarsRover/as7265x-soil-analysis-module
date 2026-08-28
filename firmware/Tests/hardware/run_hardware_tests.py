@@ -60,7 +60,7 @@ from hardware.core import registry as registry_module     # noqa: E402
 from hardware.core import requirements as requirements_module  # noqa: E402
 from hardware.core.context import RunContext              # noqa: E402
 from hardware.core.evidence import EvidenceWriter         # noqa: E402
-from hardware.core.model import Mode, Status              # noqa: E402
+from hardware.core.model import Mode, Safety, Status      # noqa: E402
 from hardware.core.operator import Operator               # noqa: E402
 from hardware.core.runner import Ledger, Runner           # noqa: E402
 
@@ -709,7 +709,78 @@ def _report(summary, evidence):
         print("*** ABORTED *** - the selection did not finish. Partial "
               "evidence kept.")
 
+    _next_action(summary, evidence)
+
     print()
+
+
+def _next_action(summary, evidence):
+    """
+    After a failure, say what is safe to do next.
+
+    THE QUESTION AN OPERATOR ACTUALLY HAS at the bench is not "how many
+    failed" - it is "what state is the mechanism in, and what may I run
+    now". The report above answered the first and left the second to be
+    reconstructed from the campaign documents.
+
+    Everything here is DERIVED from the results: which tests failed,
+    and whether any of them could physically move something. Nothing is
+    inferred about the mechanism beyond what the safety class of a
+    failed test already licenses.
+    """
+    results = summary.get("results") or []
+
+    failed = [r for r in results if r.get("status") in Status.BAD]
+
+    if not failed:
+        return
+
+    print()
+    print("-" * 78)
+    print("WHAT FAILED, AND WHAT IS SAFE NEXT")
+    print("-" * 78)
+
+    for entry in failed:
+        print("  {:<12} {:<8} {}".format(
+            entry.get("test_id"), entry.get("status"),
+            (entry.get("reason") or "")[:52]))
+
+    # Did anything that failed have the authority to move the carousel?
+    moved = sorted({
+        entry.get("test_id") for entry in failed
+        if entry.get("safety") in Safety.NEEDS_EXTRA_CONFIRMATION
+    })
+
+    print()
+
+    if moved:
+        print("  A test that can command the mechanism failed ({}).".format(
+            ", ".join(moved)))
+        print("  TREAT THE CAROUSEL POSITION AS UNKNOWN until you have")
+        print("  looked at it. Nothing here re-sends a movement, and you")
+        print("  should not either: carousel moves are RELATIVE, so a")
+        print("  command whose answer was lost may already have run.")
+    else:
+        print("  Nothing that failed was allowed to move the mechanism.")
+
+    print()
+    print("  1. capture the bench, read-only, before anything else:")
+    print("       py firmware/PC/rover_science_client.py --port <PORT> \\")
+    print("            --preflight --save-evidence {}".format(
+        evidence.directory))
+    print()
+    print("  2. read the evidence for the failed test(s):")
+    print("       {}".format(Path(evidence.directory) / "summary.json"))
+    print()
+    print("  3. when the cause is understood, continue WITHOUT repeating")
+    print("     what already passed on hardware:")
+    print("       py firmware/Tests/hardware/run_hardware_tests.py \\")
+    print("            --resume {} --confirm-hardware --port <PORT> ...".format(
+        summary.get("run_id")))
+    print()
+    print("  --resume only SKIPS tests that already passed on hardware.")
+    print("  It never replays one, and every remaining test still asks")
+    print("  for its own confirmation.")
 
 
 def _exit_code(results, aborted):
