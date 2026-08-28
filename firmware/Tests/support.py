@@ -449,6 +449,14 @@ SERVO_REG_ACC = 41
 SERVO_REG_GOAL = 42
 SERVO_REG_SPEED = 46
 SERVO_REG_LOCK = 55
+
+# Register 56 is the FOLLOWING ERROR in step servo mode and the absolute
+# angle in position servo mode; register 67 is the commanded trajectory.
+# Measured on hardware 2026-08-28 - see
+# Tests/hardware/artifacts/H-002-evidence-20260828.md. This fake models
+# both, because a fake that modelled register 56 as an absolute position
+# agreed with the driver that was misreading it, and the two of them
+# passed every test together while the bench refused real movements.
 SERVO_REG_POSITION = 56
 SERVO_REG_PRESENT_SPEED = 58
 SERVO_REG_LOAD = 60
@@ -456,6 +464,7 @@ SERVO_REG_VOLTAGE = 62
 SERVO_REG_TEMPERATURE = 63
 SERVO_REG_STATUS = 65
 SERVO_REG_MOVING = 66
+SERVO_REG_TRAJECTORY = 67
 SERVO_REG_CURRENT = 69
 
 SERVO_INST_PING = 0x01
@@ -463,6 +472,11 @@ SERVO_INST_READ = 0x02
 SERVO_INST_WRITE = 0x03
 
 SERVO_COUNTS_PER_REV = 4096
+
+# Where the trajectory register stops. Measured on hardware, not
+# inferred from the 15-bit width: it clamps at 32766, one short of the
+# 32767 the encoding allows.
+SERVO_TRAJECTORY_CLAMP = 32766
 
 SERVO_MODE_POSITION = 0
 SERVO_MODE_STEP = 3
@@ -516,19 +530,38 @@ class FakeST3215:
         short_by          the mechanism stops short of the target
         polls_to_finish   how many polls the movement takes; None means
                           it never arrives and the driver must time out
+        stall             the profile RUNS TO COMPLETION and the shaft
+                          never moves - the torque-starved case, and
+                          the one a fake that conflated the trajectory
+                          with the measurement could not express at all
+
+    THE TWO POSITION REGISTERS ARE MODELLED SEPARATELY, because on the
+    real servo they are separate things:
+
+        self.shaft        where the output shaft actually is. Nothing
+                          but a real movement changes it.
+        self.trajectory   where the servo has been TOLD to be. Open
+                          loop: it reaches the target under `stall`
+                          too.
+
+        register 67       self.trajectory
+        register 56       self.target - self.shaft in step mode, i.e.
+                          the following error; self.shaft in position
+                          servo mode, where it IS the absolute angle
     """
 
     def __init__(self, position=2048, mode=SERVO_MODE_STEP, torque=1,
                  servo_id=1, silent=False, corrupt_checksum=False,
                  answer_as=None, short_by=0, polls_to_finish=1,
                  status=0, min_angle=0, max_angle=0,
-                 drop_goal_ack=False, drop_replies=0):
+                 drop_goal_ack=False, drop_replies=0, stall=False):
         self.servo_id = servo_id
         self.silent = silent
         self.corrupt_checksum = corrupt_checksum
         self.answer_as = answer_as
         self.short_by = short_by
         self.polls_to_finish = polls_to_finish
+        self.stall = stall
 
         # The servo acts on a command but its acknowledgement is lost. For
         # a RELATIVE goal position this is the dangerous case: a driver
@@ -564,7 +597,14 @@ class FakeST3215:
         self._set_word(SERVO_REG_CURRENT, 0)
         self._set_word(SERVO_REG_PRESENT_SPEED, 0)
 
-        self.position = position
+        # The physical truth, and the servo's own idea of it. They start
+        # together: on power-up the trajectory register is seeded from
+        # the absolute encoder and the following error is zero.
+        self.shaft = int(position)
+        self.trajectory = int(position)
+        self.target = int(position)
+
+        self._refresh_position_registers()
 
         self._pending = None
 
@@ -579,13 +619,36 @@ class FakeST3215:
     def _get_word(self, address):
         return self.registers[address] | (self.registers[address + 1] << 8)
 
+    def _refresh_position_registers(self):
+        """
+        Publish the physical state into the two registers that expose it.
+
+        Called after every change to shaft or trajectory, so the wire
+        can never show a combination the mechanism was not in.
+        """
+        self._set_word(SERVO_REG_TRAJECTORY, self.trajectory)
+
+        if self.mode == SERVO_MODE_STEP:
+            self._set_word(SERVO_REG_POSITION, self.target - self.shaft)
+
+        else:
+            self._set_word(SERVO_REG_POSITION, self.shaft)
+
     @property
     def position(self):
-        return servo_decode_signed(self._get_word(SERVO_REG_POSITION))
+        """Where the shaft is. The measurement, not either register."""
+        return self.shaft
 
     @position.setter
     def position(self, value):
-        self._set_word(SERVO_REG_POSITION, value)
+        self.shaft = int(value)
+        self.trajectory = int(value)
+        self.target = int(value)
+        self._refresh_position_registers()
+
+    @property
+    def following_error(self):
+        return self.target - self.shaft
 
     @property
     def mode(self):
@@ -602,33 +665,79 @@ class FakeST3215:
         self.goals.append(goal)
 
         if self.mode == SERVO_MODE_STEP:
-            target = self.position + goal
+            # A step is relative to the COMMANDED position, not to the
+            # measured one. That is what keeps a two-count dead-band
+            # residual from accumulating over a long session, and it is
+            # what the hardware does: eight consecutive +512 steps came
+            # back to exactly +4096.
+            self.target = self.trajectory + goal
+
+            # THE CLAMP, AND WHAT MAKES IT DANGEROUS.
+            #
+            # Measured on hardware: the trajectory register stops at
+            # +-32766 and the servo then refuses to move in EITHER
+            # direction while still reporting a following error of
+            # about 2. A movement there looks verified and does not
+            # happen, which is the one outcome the driver may never
+            # produce - so the fake reproduces it exactly rather than
+            # letting the register run on forever.
+            if self.target > SERVO_TRAJECTORY_CLAMP:
+                self.target = SERVO_TRAJECTORY_CLAMP
+
+            elif self.target < -SERVO_TRAJECTORY_CLAMP:
+                self.target = -SERVO_TRAJECTORY_CLAMP
 
         else:
-            target = goal
+            self.target = goal
 
-        target -= self.short_by
+        # The profile generator is open loop. It gets there regardless.
+        self.trajectory = self.target
+        self.registers[SERVO_REG_MOVING] = 1
 
-        if self.polls_to_finish is None:
-            # Never arrives. The driver has to time out and say so.
-            self.registers[SERVO_REG_MOVING] = 1
+        if self.stall:
+            # Torque-starved: the command runs, the shaft does not
+            # follow, and the following error stays at the full
+            # commanded distance. Observed on hardware with the torque
+            # limit written to 0.
             self._pending = None
+            self._refresh_position_registers()
 
             return
 
-        self.registers[SERVO_REG_MOVING] = 1
-        self._pending = [target, max(1, int(self.polls_to_finish))]
+        if self.polls_to_finish is None:
+            # Never arrives. The driver has to time out and say so.
+            self._pending = None
+            self._refresh_position_registers()
+
+            return
+
+        self._pending = [
+            self.target - self.short_by,
+            max(1, int(self.polls_to_finish)),
+        ]
+
+        self._refresh_position_registers()
 
     def _advance(self):
+        if self.stall:
+            # The profile finishes even though nothing moved, exactly as
+            # the real servo does: `moving` drops while the following
+            # error stays at the full distance. A driver that trusted
+            # the moving flag alone would call this a success.
+            self.registers[SERVO_REG_MOVING] = 0
+
+            return
+
         if self._pending is None:
             return
 
         self._pending[1] -= 1
 
         if self._pending[1] <= 0:
-            self.position = self._pending[0] % SERVO_COUNTS_PER_REV
+            self.shaft = self._pending[0]
             self.registers[SERVO_REG_MOVING] = 0
             self._pending = None
+            self._refresh_position_registers()
 
     # -- transport ----------------------------------------------------
 
@@ -734,6 +843,22 @@ class FakeST3215:
             for offset, value in enumerate(data):
                 self.registers[address + offset] = value
 
+            if address == SERVO_REG_MODE:
+                # A mode change reseeds the trajectory register from the
+                # ABSOLUTE ENCODER, which is single-turn. That is what
+                # makes it the recovery for a clamped register and not
+                # merely a no-op: on hardware a servo sitting at 32766
+                # came back reading 2957, its true angle within one
+                # revolution, and moved normally from there.
+                #
+                # Folding to one turn is the whole mechanism. Reseeding
+                # to the multi-turn value would leave the register just
+                # as close to the clamp as before.
+                self.shaft %= SERVO_COUNTS_PER_REV
+                self.trajectory = self.shaft
+                self.target = self.shaft
+                self._refresh_position_registers()
+
             # Writing the goal block is what starts a movement. The
             # firmware writes acceleration, goal position, goal time and
             # goal speed in one transaction, exactly as the reference
@@ -749,6 +874,12 @@ class FakeST3215:
                 goal = servo_decode_signed(data[0] | (data[1] << 8))
                 self._start_move(goal)
                 goal_write = True
+
+            if goal_write:
+                # Writing the goal block turns the torque switch back on
+                # by itself. Measured: the switch was written to 0 and
+                # read back 1 immediately after the next goal write.
+                self.registers[SERVO_REG_TORQUE] = 1
 
             if goal_write and self.drop_goal_ack:
                 # Acted on, but the acknowledgement never arrives.

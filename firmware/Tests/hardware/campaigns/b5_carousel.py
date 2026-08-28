@@ -20,7 +20,7 @@ for this plate and would still be correct for an eight-slot one.
 
 from ..core.model import (Automation, IterationKind, Requirement,
                           Safety)
-from ..core.analysis import failure_rate, summarize
+from ..core.analysis import centred_error, failure_rate, summarize
 
 
 CAMPAIGN = "B5"
@@ -719,7 +719,18 @@ def _drift(ctx):
 
         positions.append(here)
 
-        drift = (here - origin) if None not in (here, origin) else None
+        # CIRCULAR, BECAUSE THE AXIS IS. A carousel that has completed
+        # exactly one revolution is at the angle it started from, and
+        # the position it reports is multi-turn - it is derived from
+        # the servo's accumulating trajectory register, so a plain
+        # subtraction after one rotation reads 4096 counts of "drift"
+        # for a mechanism that did not drift at all. `centred_error` is
+        # what production compares two positions with, everywhere; the
+        # measurement is only meaningful in the same terms.
+        drift = (
+            centred_error(here - origin, ctx.profile.counts_per_rev)
+            if None not in (here, origin) else None
+        )
 
         drifts.append(drift)
 

@@ -25,7 +25,7 @@ names four assumptions and tests none - into a table.
 
 from ..core.model import (Automation, IterationKind, Requirement,
                           Safety)
-from ..core.analysis import summarize
+from ..core.analysis import centred_error, summarize
 
 
 CAMPAIGN = "B2"
@@ -167,6 +167,86 @@ def register(registry):
         requires=("servo.read_position",),
         run=_repeated_reads, cleanup=_release,
         default_iterations=20, max_iterations=500,
+        assumption="H-002", defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B2-013", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-016",),
+        iteration_kind=IterationKind.MOVEMENT,
+        characterization_min_iterations=3,
+        title="The reported position CHANGES when the carousel moves",
+        objective="Prove the one property production depends on, which "
+                  "no read-only check can establish: that the number "
+                  "the driver verifies movements against actually "
+                  "tracks the mechanism.",
+        hardware_setup="Servo connected, carousel free to turn.",
+        preconditions="HW-B2-002 and HW-B2-004 passed.",
+        procedure=(
+            "read the position with nothing commanded",
+            "command a movement of one slot",
+            "read the position again",
+            "check the difference equals the commanded counts, within "
+            "the production tolerance",
+            "repeat in the opposite direction and check it comes back",
+        ),
+        expected="The reported position changes by the commanded "
+                 "amount, in the commanded direction, every time.",
+        failure_criteria="A position that does not change, or changes "
+                         "by something unrelated to the command. That "
+                         "is the bench observation of H-002 and it "
+                         "means the driver is verifying movements "
+                         "against a quantity that is not a position.",
+        captures=("the position before and after each leg",
+                  "the commanded counts", "the difference",
+                  "the following error and the trajectory register"),
+        safety=Safety.MOTION, automation=Automation.AUTOMATIC,
+        requires=("servo.test_move", "servo.read_position",
+                  "servo.connect"),
+        run=_position_tracks_movement, cleanup=_release,
+        default_iterations=3, max_iterations=50,
+        assumption="H-002", defect_prefix="HW-SERVO",
+        notes="THIS TEST REPLACES THE CONFIDENCE THE OLD `feedback` "
+              "DIAGNOSTIC STEP GAVE AND DID NOT EARN. That step "
+              "reported PASS on a bench where a completed half turn "
+              "measured two counts of travel, because reading a "
+              "register successfully was all it ever checked. The "
+              "step is called `telemetry_read` now and says in its "
+              "own report that it does not establish this.",
+    )
+
+    registry.test(
+        test_id="HW-B2-014", campaign=CAMPAIGN, layer="B2",
+        requirements=("HW-REQ-SERVO-016", "HW-REQ-SERVO-008"),
+        title="Diagnostics does not claim more than it proves",
+        objective="Check that the read-only diagnostic report says, in "
+                  "itself, what it does not establish - so a screen of "
+                  "PASS lines cannot be read as a qualified actuator.",
+        hardware_setup="Servo connected. NOTHING MOVES.",
+        preconditions="HW-B2-002 passed.",
+        procedure=(
+            "send servo_diagnostics",
+            "check no step is called `feedback`",
+            "check the report states what the telemetry read does and "
+            "does not prove",
+            "check it names the register semantics for the mode the "
+            "servo is actually in",
+            "check the telemetry carries the following error and the "
+            "trajectory register separately from the position",
+        ),
+        expected="A report whose own text bounds its claim, and which "
+                 "exposes the two registers the position is derived "
+                 "from.",
+        failure_criteria="A diagnostic that reports position feedback "
+                         "as PASS with nothing said about the limit of "
+                         "that claim. That wording is what let H-002 "
+                         "survive a green board.",
+        captures=("the step names", "the claim and its stated limit",
+                  "the position semantics string",
+                  "the telemetry keys"),
+        safety=Safety.COMMUNICATION, automation=Automation.AUTOMATIC,
+        requires=("servo.diagnostics", "servo.connect"),
+        run=_diagnostics_bounds_its_claim, cleanup=_release,
         assumption="H-002", defect_prefix="HW-SERVO",
     )
 
@@ -742,6 +822,174 @@ def _repeated_reads(ctx):
             "is not stable at rest cannot be used to measure a "
             "movement, so B3 would be measuring the read rather than "
             "the mechanism.")
+
+
+def _position_tracks_movement(ctx):
+    """
+    Move the carousel and prove the reported position followed it.
+
+    THE POINT OF THIS TEST IS THAT IT MOVES. Every read-only check in
+    this campaign is compatible with a driver reading the wrong
+    register, because reading the wrong register succeeds. Only a
+    commanded movement can show that the number production verifies
+    against is a position at all.
+    """
+    ctx.require("servo.test_move", "servo.read_position", "servo.connect")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+
+    tolerance = ctx.profile.production["servo"]["position_tolerance"]
+    slot_deg = ctx.profile.production["carousel"]["slot_spacing_deg"]
+    per_rev = ctx.profile.counts_per_rev
+
+    legs = []
+
+    for index in range(1, ctx.iterations() + 1):
+        for direction, degrees in (("cw", slot_deg), ("ccw", -slot_deg)):
+            before = ctx.servo.feedback()
+            start = before.get("position_counts")
+
+            transaction = ctx.servo.move_degrees(degrees)
+            record = transaction["data"] or {}
+
+            after = ctx.servo.feedback()
+            end = after.get("position_counts")
+
+            commanded = record.get("net_counts")
+
+            if start is None or end is None or commanded is None:
+                travelled = None
+                error = None
+
+            else:
+                travelled = centred_error(end - start, per_rev)
+                error = travelled - commanded
+
+            leg = {
+                "iteration": index,
+                "direction": direction,
+                "commanded_degrees": degrees,
+                "commanded_counts": commanded,
+                "position_before": start,
+                "position_after": end,
+                "travelled": travelled,
+                "error": error,
+                "following_error_before":
+                    before.get("following_error_counts"),
+                "following_error_after":
+                    after.get("following_error_counts"),
+                "trajectory_before": before.get("trajectory_counts"),
+                "trajectory_after": after.get("trajectory_counts"),
+            }
+
+            legs.append(leg)
+
+            ctx.measure(stage="tracking", **leg)
+
+            ctx.check(
+                travelled is not None,
+                "leg {} {}: the position was readable before and "
+                "after".format(index, direction),
+                evidence=leg)
+
+            ctx.check(
+                error is not None and abs(error) <= tolerance,
+                "leg {} {}: the reported position moved by the "
+                "commanded {} counts (measured {}, error {})".format(
+                    index, direction, commanded, travelled, error),
+                evidence=leg)
+
+    ctx.record("position_tracking", legs=legs,
+               errors=summarize([leg["error"] for leg in legs
+                                 if leg["error"] is not None]))
+
+    stuck = [leg for leg in legs
+             if leg["travelled"] is not None
+             and abs(leg["travelled"]) < abs(leg["commanded_counts"] or 0) / 2]
+
+    if stuck:
+        ctx.defect(
+            title="the reported position does not track the mechanism",
+            observed="{} of {} legs moved less than half the commanded "
+                     "distance: {}".format(
+                         len(stuck), len(legs), stuck[:3]),
+            expected="the reported position changes by the commanded "
+                     "counts on every leg",
+            reproduction=("run HW-B2-013",),
+            suspected_layer="the position read path - which register is "
+                            "being read, and what it means in this mode",
+            evidence={"legs": legs},
+        )
+
+        ctx.note(
+            "This is H-002 as originally observed. Before concluding "
+            "the mechanism slipped, check WHICH register the driver is "
+            "reading: in step servo mode register 56 is the following "
+            "error, not the position, and a completed movement leaves "
+            "it at about 2 both before and after.")
+
+
+def _diagnostics_bounds_its_claim(ctx):
+    """
+    Read the diagnostic report and check its own text bounds its claim.
+
+    A test about wording, and deliberately so. `feedback PASS` over a
+    servo whose position feedback was being misread is not a wrong
+    measurement, it is a true statement that reads as a stronger one -
+    and that is what kept H-002 alive on a green board for a day.
+    """
+    ctx.require("servo.diagnostics", "servo.connect")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+
+    report = ctx.servo.diagnostics()["data"] or {}
+    steps = [step.get("step") for step in report.get("steps") or []]
+
+    ctx.record("diagnostic_claim",
+               steps=steps,
+               proves=report.get("telemetry_read_proves"),
+               does_not_prove=report.get("telemetry_read_does_not_prove"),
+               semantics=report.get("position_semantics"))
+
+    ctx.check(report.get("moved") is False,
+              "the diagnostic moved nothing",
+              evidence={"moved": report.get("moved")})
+
+    ctx.check("feedback" not in steps,
+              "no step is called `feedback` - the name promised "
+              "evidence the step could not produce",
+              evidence={"steps": steps})
+
+    ctx.check("telemetry_read" in steps,
+              "the telemetry step is named for what it does",
+              evidence={"steps": steps})
+
+    ctx.check(bool(report.get("telemetry_read_does_not_prove")),
+              "and the report states what it does NOT establish",
+              evidence={"text": report.get("telemetry_read_does_not_prove")})
+
+    ctx.check(bool(report.get("position_semantics")),
+              "the report names what the position registers mean in "
+              "the mode the servo is actually in",
+              evidence={"text": report.get("position_semantics")})
+
+    feedback = ctx.servo.feedback()
+
+    for key in ("position_counts", "following_error_counts",
+                "trajectory_counts", "angle_deg"):
+        ctx.check(key in feedback,
+                  "the telemetry carries `{}`".format(key),
+                  evidence={"keys": sorted(feedback)})
+
+    if feedback.get("trajectory_counts") is not None:
+        ctx.check(
+            feedback.get("position_counts")
+            == feedback["trajectory_counts"]
+            - feedback["following_error_counts"],
+            "and the measured position IS the trajectory minus the "
+            "following error, so the derivation can be checked rather "
+            "than trusted",
+            evidence={"feedback": feedback})
 
 
 def _calibration_matches(ctx):

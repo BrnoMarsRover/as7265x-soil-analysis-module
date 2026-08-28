@@ -238,6 +238,76 @@ for word in ("písek", "půda", "hlína", "Žlutý písek"):
               "{} - spelled with its diacritics - is recognised as "
               "matrix language".format(ascii(word)))
 
+
+# ======================================================================
+checks.section("Soil is a CHOICE, not an explanation you cannot act on")
+
+# THE UX DEFECT. Typing "soil" in the mixture flow was answered with a
+# correct and complete explanation, and then the same COMPONENT prompt.
+# The operator could type it as often as they liked and get the lecture
+# every time; the only way forward was to know that [c] finishes the
+# component list and that a separate matrix field appears afterwards.
+_value, printed = drive(
+    ["c"],
+    lambda: materials.select_material(FakeMission(), allow_matrix=True))
+
+checks.ok("[s]" in printed and "soil" in printed.lower(),
+          "the mixture screen offers soil as a listed option")
+
+checks.ok("matrix" in printed.lower(),
+          "and names it the MATRIX where it is offered")
+
+# The plain single-material screen must NOT offer it: soil is not an
+# answer to "which library material is this".
+_value, printed = drive(
+    ["c"], lambda: materials.select_material(FakeMission()))
+
+checks.ok("[s]" not in printed,
+          "the single-material screen does not offer it - there, soil "
+          "is not an answer to the question being asked")
+
+# Choosing it by key.
+choice, printed = drive(
+    ["s", ""],
+    lambda: materials.select_material(FakeMission(), allow_matrix=True))
+
+checks.ok(isinstance(choice, materials.MatrixChoice),
+          "[s] returns a MatrixChoice")
+checks.equal(getattr(choice, "label", None), "soil",
+             "defaulting to 'soil', which is what is in the bowl")
+checks.equal(getattr(choice, "role", None), "MATRIX",
+             "and it carries the MATRIX role, not a material role")
+
+# It is NOT a material, and nothing about it can be mistaken for one.
+checks.ok(not hasattr(choice, "key"),
+          "it has no material key, so it cannot become a library entry")
+checks.ok(not hasattr(choice, "material_id"),
+          "and no material id")
+checks.ok(TAXONOMY.get("soil") is None,
+          "and the taxonomy still has no material called soil - the UI "
+          "did not invent a reference spectrum to make itself tidy")
+
+# Typing the word works too, and keeps what was typed.
+choice, printed = drive(
+    ["red sandy soil", ""],
+    lambda: materials.select_material(FakeMission(), allow_matrix=True))
+
+checks.ok(isinstance(choice, materials.MatrixChoice),
+          "typing a matrix word reaches the same question instead of "
+          "the explanation-and-back-to-the-start loop")
+checks.equal(getattr(choice, "label", None), "red sandy soil",
+             "and the operator's own words are what gets stored")
+
+# A REAL MATERIAL STILL WINS. The matrix branch sits below the exact
+# resolve and below the search, so a library name is never swallowed.
+choice, _printed = drive(
+    ["Bentonite"],
+    lambda: materials.select_material(FakeMission(), allow_matrix=True))
+
+checks.ok(not isinstance(choice, materials.MatrixChoice),
+          "a real material name still resolves to the material, even "
+          "with the matrix option enabled")
+
 checks.ok(materials.looks_like_matrix("PISEK")
           and materials.looks_like_matrix("PÍSEK"),
           "and case does not matter, with or without the accent")

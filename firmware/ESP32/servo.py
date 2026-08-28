@@ -235,20 +235,107 @@ GOAL_BLOCK_LENGTH = (REG_GOAL_SPEED + 2) - REG_ACCELERATION   # 7
 REG_LOCK = 55
 
 # --- SRAM, read only --------------------------------------------------
-REG_PRESENT_POSITION = 56        # 2 bytes, sign-magnitude bit 15
+#
+# REGISTER 56 IS NOT THE ABSOLUTE POSITION IN STEP SERVO MODE, AND THAT
+# MISREADING IS WHAT H-002 WAS.
+#
+# The memory table calls 0x38 "present position" and that is true in
+# position servo mode (mode 0), where it is the absolute single-turn
+# encoder angle. In STEP servo mode (mode 3) - the mode this carousel
+# runs in - the same register carries the FOLLOWING ERROR: the signed
+# distance from where the shaft actually is to the target of the
+# current step command, sign-magnitude in bit 15 like every other
+# signed field here.
+#
+# Measured on the bench, 2026-08-28, servo ID 1 at 12.1 V:
+#
+#     goal +200  ->  200 186 163 130 87 54 27 10 2, resting at 2
+#     goal -400  ->  -397 -385 ... -20 -6 -2, resting at 0x8002
+#     five consecutive +40 steps -> the resting value stays 1..2. It
+#         does not accumulate, which an absolute position must.
+#
+# So a verified 2048-count half turn read "2 before, 2 after" not
+# because nothing moved but because the servo had finished: the error
+# was 2 counts at the start and 2 counts at the end. The driver was
+# comparing an error against an absolute position and refusing a
+# movement the mechanism had performed correctly.
+#
+# See Tests/hardware/artifacts/H-002-evidence-20260828.md.
+REG_POSITION_FEEDBACK = 56       # 2 bytes, sign-magnitude bit 15;
+                                 # absolute angle in MODE_POSITION,
+                                 # following error in MODE_STEP
 REG_PRESENT_SPEED = 58           # 2 bytes, sign-magnitude bit 15
 REG_PRESENT_LOAD = 60            # 2 bytes, sign in BIT 10, per mille
 REG_PRESENT_VOLTAGE = 62         # 1 byte, x0.1 V
 REG_PRESENT_TEMPERATURE = 63     # 1 byte, degrees C
 REG_SERVO_STATUS = 65            # alarm bitmask
-REG_MOVING = 66                  # 1 while in motion
+REG_MOVING = 66                  # 1 while the profile is running
+
+# REGISTER 67 IS THE COMMANDED TRAJECTORY, AND IT IS WHAT MAKES A REAL
+# ABSOLUTE POSITION AVAILABLE IN STEP MODE.
+#
+# Two bytes, little-endian, sign-magnitude bit 15, MULTI-TURN: it
+# accumulates past 4096 and crosses the encoder seam with no
+# discontinuity. It is the servo's own profile-generator output, so it
+# is OPEN LOOP - it advances by the full commanded amount whether or
+# not the shaft can follow.
+#
+# Proved open loop by starving it: with the torque limit (register 48)
+# written to 0 and +512 commanded, register 67 still advanced
+# 3015 -> 3527 while register 56 sat at 514 and the load read 0. The
+# shaft cannot have moved with no torque. Restoring the limit collapsed
+# 514 -> 2 as the mechanism caught up.
+#
+# That pair is the whole point. 67 is where the servo was TOLD to be
+# and 56 is how far the shaft is from there, so
+#
+#     measured absolute position = reg67 - reg56
+#
+# is a genuine closed-loop measurement, and it is the only one this
+# mode offers without a mode change. Confirmed against ground truth
+# taken by switching to position servo mode with the torque off:
+# step mode gave 3527 - 2 = 3525, and mode 0 read 3525, 3525, 3525.
+REG_TRAJECTORY_POSITION = 67     # 2 bytes, sign-magnitude bit 15,
+                                 # multi-turn, OPEN LOOP
+
 REG_PRESENT_CURRENT = 69         # 2 bytes, sign-magnitude bit 15, x6.5 mA
 
 # Registers 56..70 are contiguous, so the whole feedback block is one
 # transaction - which is what the reference library's FeedBack() does.
-# Every value then belongs to the same instant.
-FEEDBACK_FIRST = REG_PRESENT_POSITION
-FEEDBACK_LENGTH = (REG_PRESENT_CURRENT + 2) - REG_PRESENT_POSITION   # 15
+# Every value then belongs to the same instant, and that matters more
+# now than it did: the position is DERIVED from two of these registers,
+# so reading them separately would subtract values from two different
+# moments and manufacture an error that never existed.
+FEEDBACK_FIRST = REG_POSITION_FEEDBACK
+FEEDBACK_LENGTH = (REG_PRESENT_CURRENT + 2) - REG_POSITION_FEEDBACK   # 15
+
+# THE TRAJECTORY REGISTER CLAMPS, AND A CLAMPED SERVO LIES.
+#
+# Measured, 2026-08-28, by walking it there in fifteen half-turn legs:
+#
+#     leg 14   32197, delta +2048
+#     leg 15   32766, delta +569   <- clamped at 0x7FFE
+#     legs 16-22   32766, delta 0, following error 1..2 every time
+#
+# Past the clamp the servo does not move AT ALL - not forwards, and
+# tested separately, not backwards either: -567, -2048 and +2048 all
+# left it at 32766 with the mechanism stationary. And it reports a
+# following error of about 2 throughout, which on its own reads exactly
+# like a movement that completed.
+#
+# That is the one failure this whole subsystem exists to prevent: a
+# movement that would report VERIFIED and did not happen. So the driver
+# refuses to move when the register is close to the limit, BEFORE the
+# command rather than after it, and the position comparison catches it
+# independently if it ever gets past here.
+#
+# RECOVERY IS A MODE ROUND TRIP, NOT A POWER CYCLE. Proven on the same
+# saturated servo: switching to position servo mode and back reseeded
+# register 67 from the absolute encoder (32766 -> 2957, the true
+# single-turn angle), zeroed the following error, and movement worked
+# immediately afterwards. That is what `servo_configure` already does.
+TRAJECTORY_LIMIT = 32766
+TRAJECTORY_GUARD = 28672         # seven revolutions of headroom used up
 
 
 # ======================================================================
@@ -656,9 +743,19 @@ class ST3215:
 
         self.moving = False
 
-        # The last undecoded PRESENT_POSITION word. Diagnostic only -
-        # see read_position. None until something has read a position.
+        # The last undecoded register words, and the two quantities the
+        # measured position is derived from. Diagnostic only - see
+        # read_position. None until something has read a position.
         self.last_position_raw = None
+        self.last_trajectory_raw = None
+        self.last_following_error = 0
+        self.last_trajectory = None
+
+        # How many times the trajectory register has been folded back
+        # inside one revolution. Telemetry: each one is two EPROM
+        # writes, and a count that climbs unexpectedly fast means the
+        # carousel is being driven one way far more than the other.
+        self.reseeds = 0
 
         # Bus counters, in the same breakdown the supplied reference
         # driver keeps: an intermittent bus shows up as a number rather
@@ -732,7 +829,12 @@ class ST3215:
             "mode_name": MODE_NAMES.get(self.mode, str(self.mode)),
             "mode_correct": self.mode == config.ST3215_MODE,
             "position_counts": position,
-            "position_deg": round(self.counts_to_degrees(position), 2),
+            "shaft_deg": round(
+                counts_to_degrees(
+                    wrap_counts(position, self.counts_per_rev),
+                    self.counts_per_rev,
+                ), 2
+            ),
         }
 
     def deinitialize(self):
@@ -1094,33 +1196,104 @@ class ST3215:
 
     def read_position(self):
         """
-        Present encoder position, in counts.
+        Where the output shaft ACTUALLY IS, in encoder counts.
 
-        REFERENCE DRIVER DIFFERS: the supplied st3215_position() returns a
-        plain uint16_t. That is harmless while the servo stays inside a
-        single 0..4095 turn, but the official ReadPos() applies the
-        bit-15 sign rule and the memory table allows multi-turn values,
-        so the sign is decoded here.
+        Mode-dependent, because the servo's registers are:
 
-        THE UNDECODED WORD IS KEPT, and it is kept for H-002.
+            MODE_POSITION   register 56 is the absolute angle
+            MODE_STEP       register 56 is the following error, and the
+                            absolute position is register 67 minus it
 
-        `decode_signed` maps 0x8002 to -2. On a screen that is
-        indistinguishable from a genuine reading of -2, and the raw word
-        was discarded the instant it was decoded - so nothing downstream
-        could tell "the encoder really is near zero" from "the sign rule
-        is reading a large value as a small one". Those two call for
-        completely different investigations.
+        This used to return register 56 unconditionally, which in step
+        servo mode returned the following error and called it a
+        position. That single misreading is H-002: it made a completed
+        180 degree transfer report "2 counts before, 2 counts after",
+        and the driver - whose arithmetic was correct throughout -
+        refused a movement the mechanism had performed.
 
-        Storing it costs one integer and no extra transaction. Nothing
-        reads `last_position_raw` to make a decision; it exists to be
-        REPORTED beside the decoded value, so tomorrow's evidence can
-        separate the hypotheses instead of inviting a guess.
+        ONE TRANSACTION, NOT TWO. The two registers are read together
+        so they belong to the same instant. Subtracting values sampled
+        at different moments during a movement would invent a following
+        error out of the time between the reads.
+
+        REFERENCE DRIVER DIFFERS: the supplied st3215_position() returns
+        a plain uint16_t of register 56. In step mode that is neither a
+        position nor unsigned.
+
+        THE UNDECODED WORDS ARE KEPT, and they are kept for the same
+        reason H-002 needed them: `decode_signed` maps 0x8002 to -2, and
+        on a screen that is indistinguishable from a genuine reading of
+        -2. `last_position_raw` and `last_trajectory_raw` are REPORTED
+        beside the decoded values and never used to make a decision.
         """
-        raw = self.read_word(REG_PRESENT_POSITION)
+        if self.read_mode(refresh=False) == MODE_POSITION:
+            raw = self.read_word(REG_POSITION_FEEDBACK)
 
-        self.last_position_raw = raw
+            self.last_position_raw = raw
+            self.last_trajectory_raw = None
+            self.last_trajectory = None
+            self.last_following_error = 0
 
-        return decode_signed(raw)
+            return decode_signed(raw)
+
+        # 56..68 inclusive, which reaches the trajectory register and
+        # takes in the moving flag at register 66 on the way. One
+        # transaction, so the position, the following error and "is it
+        # still running" all describe the same instant - the poll loop
+        # used to read the flag in a SECOND transaction and compare it
+        # against a position from a slightly earlier one.
+        data = self.read_register(
+            REG_POSITION_FEEDBACK,
+            (REG_TRAJECTORY_POSITION + 2) - REG_POSITION_FEEDBACK,
+        )
+
+        self.moving = bool(data[REG_MOVING - REG_POSITION_FEEDBACK])
+
+        return self._position_from_block(data, REG_POSITION_FEEDBACK)
+
+    def _position_from_block(self, data, first):
+        """
+        Decode position, following error and trajectory from one read.
+
+        Shared by read_position and read_feedback so the two can never
+        disagree about what the registers mean.
+        """
+        def word(register):
+            index = register - first
+
+            return bytes_word(data[index], data[index + 1])
+
+        position_raw = word(REG_POSITION_FEEDBACK)
+        trajectory_raw = word(REG_TRAJECTORY_POSITION)
+
+        self.last_position_raw = position_raw
+        self.last_trajectory_raw = trajectory_raw
+        self.last_following_error = decode_signed(position_raw)
+        self.last_trajectory = decode_signed(trajectory_raw)
+
+        return self.last_trajectory - self.last_following_error
+
+    def read_following_error(self):
+        """
+        How far the shaft is from the target of the current step command.
+
+        The honest "is the mechanism keeping up" signal, and the only
+        one this mode has: with the torque limit at zero it stayed at
+        the full commanded distance while the trajectory register ran
+        away to the target on its own.
+
+        Zero, and meaningless, until a goal has been written since the
+        servo last changed mode.
+        """
+        self.read_position()
+
+        return self.last_following_error
+
+    def read_trajectory(self):
+        """Commanded multi-turn trajectory position. Open loop."""
+        self.read_position()
+
+        return self.last_trajectory
 
     def read_mode(self, refresh=True):
         """Operating mode, read from the servo rather than assumed."""
@@ -1152,26 +1325,69 @@ class ST3215:
         def byte(register):
             return data[register - FEEDBACK_FIRST]
 
-        position = decode_signed(word(REG_PRESENT_POSITION))
+        position = self._position_from_block(data, FEEDBACK_FIRST)
         status_byte = byte(REG_SERVO_STATUS)
 
         self.last_status = status_byte
         self.last_status_flags = decode_status_flags(status_byte)
         self.moving = bool(byte(REG_MOVING))
 
-        raw_position = word(REG_PRESENT_POSITION)
-
-        self.last_position_raw = raw_position
-
         return {
+            # THE MEASURED POSITION, and the three numbers it is built
+            # from, so no screen has to take the derivation on trust.
             "position_counts": position,
-            "position_deg": round(self.counts_to_degrees(position), 2),
 
-            # The undecoded 16-bit word, from THIS transaction. See
+            # THE RAW COUNT FOLDED INTO ONE TURN, AND NAMED FOR THAT.
+            #
+            # This used to be `position_deg`, the raw count run through
+            # counts_to_degrees - and the raw count is multi-turn, so on
+            # a servo that had been running a while it read "2329.37
+            # deg" and meant nothing at all. Whatever angle a screen
+            # wants, it is either `angle_deg` below, which is the
+            # carousel's own coordinate, or this, which is where the
+            # servo shaft sits within one revolution.
+            "shaft_deg": round(
+                counts_to_degrees(
+                    wrap_counts(position, self.counts_per_rev),
+                    self.counts_per_rev,
+                ), 2
+            ),
+
+            # Following error: register 56 as the servo actually means
+            # it in this mode. This is the closed-loop half.
+            "following_error_counts": self.last_following_error,
+            "following_error_deg": round(
+                self.counts_to_degrees(self.last_following_error), 3
+            ),
+
+            # Commanded trajectory: register 67. Open loop - it reaches
+            # the target whether or not the mechanism does.
+            "trajectory_counts": self.last_trajectory,
+
+            # How much one-directional travel is left before the
+            # register clamps and the servo starts refusing movements
+            # while reporting them as complete. Reported ALWAYS, not
+            # only once it is nearly gone: this is a slow drift over a
+            # long session, and the operator should be able to watch it
+            # rather than meet it in the middle of a measurement.
+            "trajectory_headroom": (
+                None if self.last_trajectory is None
+                else TRAJECTORY_LIMIT - abs(self.last_trajectory)
+            ),
+            "trajectory_limit": TRAJECTORY_LIMIT,
+            "trajectory_reseeds": self.reseeds,
+
+            # The logical carousel coordinate, or None when no origin
+            # has been captured. THIS is what an operator reads.
+            "angle_deg": self.angle_deg(position),
+            "origin_counts": self.origin_counts,
+
+            # The undecoded 16-bit words, from THIS transaction. See
             # read_position: 0x8002 decodes to -2, and without the raw
             # value the two cannot be told apart. Reported, never acted
             # on.
-            "position_raw": raw_position,
+            "position_raw": self.last_position_raw,
+            "trajectory_raw": self.last_trajectory_raw,
 
             # Sign in bit 15 for speed and current, bit 10 for load. The
             # load rule is unusual and both the official library and the
@@ -1270,9 +1486,79 @@ class ST3215:
                 "supported for the carousel; {} was requested.".format(mode)
             )
 
+        self._mode_round_trip(mode)
+
+        # The origin belonged to the OLD trajectory frame. An explicit
+        # reconfiguration is the operator saying they have changed
+        # something about the servo, so the origin is DROPPED rather
+        # than carried across - unlike the automatic reseed below,
+        # which knows nothing else changed and keeps it.
+        self.origin_counts = None
+
+        return {
+            "servo": self.name,
+            "mode": mode,
+            "mode_name": MODE_NAMES.get(mode, str(mode)),
+            "min_angle_limit": self.read_word(REG_MIN_ANGLE_LIMIT),
+            "max_angle_limit": self.read_word(REG_MAX_ANGLE_LIMIT),
+            "trajectory_reseeded": True,
+            "trajectory_counts": self.last_trajectory,
+            "position_counts": self.read_position_or_none(),
+            "origin_cleared": True,
+            "note": "Written to EPROM; it survives a power cycle. The "
+                    "trajectory register was reseeded from the absolute "
+                    "encoder and NOTHING MOVED, so the carousel is still "
+                    "physically where it was - but the origin referred to "
+                    "the old register frame and has been dropped. "
+                    "Re-synchronize before moving.",
+        }
+
+    def _mode_round_trip(self, mode):
+        """
+        Write the operating mode, passing through position servo mode.
+
+        THE ROUND TRIP IS THE RESEED. Register 67 accumulates and stops
+        dead at +-32766, after which the servo will not move in either
+        direction and still reports a following error of about 2 - a
+        movement that looks verified and does not happen.
+
+        Passing through position servo mode reseeds 67 from the absolute
+        encoder, folding it back inside one revolution, and zeroes the
+        following error. Measured on a servo that was actually clamped:
+        32766 became 2957, its true single-turn angle, and movement
+        worked immediately afterwards. Writing the same mode value over
+        itself has NOT been shown to reseed anything, so the trip
+        through mode 0 is taken deliberately rather than skipped when
+        the servo is already in the mode being asked for.
+
+        TORQUE OFF FOR THE WHOLE SEQUENCE. The goal register keeps its
+        last value across a mode change, and in position servo mode that
+        value is an ABSOLUTE target. A servo holding torque while it
+        passes through mode 0 with a stale step count in its goal
+        register would drive to that count as an angle - an unrequested
+        movement of up to half a turn, from a command that was only
+        supposed to write a setting. That is also how it was measured:
+        the shaft was free throughout, and nothing moved.
+        """
+        torque_was_on = False
+
+        try:
+            torque_was_on = self.read_torque_enabled()
+
+        except ServoError:
+            pass
+
+        if torque_was_on:
+            self.disable_torque()
+            time.sleep_ms(config.ST3215_SETTLE_MS)
+
         self.write_byte(REG_LOCK, LOCK_OPEN)
 
         try:
+            if mode == MODE_STEP:
+                self.write_byte(REG_MODE, MODE_POSITION)
+                time.sleep_ms(config.ST3215_SETTLE_MS)
+
             self.write_byte(REG_MODE, mode)
             self.write_word(REG_MIN_ANGLE_LIMIT, 0)
             self.write_word(REG_MAX_ANGLE_LIMIT, 0)
@@ -1282,13 +1568,67 @@ class ST3215:
 
         self.mode = mode
 
+        time.sleep_ms(config.ST3215_SETTLE_MS)
+
+        if torque_was_on:
+            self.enable_torque()
+            time.sleep_ms(config.ST3215_SETTLE_MS)
+
+        return self.read_position()
+
+    def reseed_trajectory(self):
+        """
+        Fold the trajectory register back inside one revolution.
+
+        MOVES NOTHING, AND KEEPS THE LOGICAL ANGLE EXACTLY.
+
+        This is maintenance, not recovery, because it is not rare: the
+        carousel takes the shortest path to each slot, so a run that
+        works through slots 1-2-3-4-1 advances one slot every time and
+        the register accumulates a full revolution every four samples.
+        It reaches the clamp after about thirty-two slot advances, which
+        on a working day is routine rather than exceptional.
+
+        A hard refusal there would strand a run every thirty samples and
+        ask the operator to re-synchronize a carousel that has not
+        moved. So the driver does it itself, and the one thing that
+        makes that safe is that NOTHING PHYSICAL CHANGES: the shaft is
+        where it was, and only the number describing it has been folded.
+
+        The origin is folded by the SAME amount, so `angle_deg` reads
+        identically either side of this call. That is what makes the
+        operation invisible where it should be invisible and reportable
+        where it matters - it is counted, and the count is telemetry.
+        """
+        self.require_ready()
+
+        before = self.read_position()
+        trajectory_before = self.last_trajectory
+        origin_before = self.origin_counts
+
+        after = self._mode_round_trip(config.ST3215_MODE)
+
+        if origin_before is not None:
+            # Carry the logical angle across unchanged. Everything is
+            # modulo one revolution, so this is exact.
+            self.origin_counts = after - centred_error(
+                before - origin_before, self.counts_per_rev
+            )
+
+        self.reseeds += 1
+
         return {
             "servo": self.name,
-            "mode": mode,
-            "mode_name": MODE_NAMES.get(mode, str(mode)),
-            "min_angle_limit": self.read_word(REG_MIN_ANGLE_LIMIT),
-            "max_angle_limit": self.read_word(REG_MAX_ANGLE_LIMIT),
-            "note": "Written to EPROM; it survives a power cycle.",
+            "reseeded": True,
+            "moved": False,
+            "trajectory_before": trajectory_before,
+            "trajectory_after": self.last_trajectory,
+            "position_before": before,
+            "position_after": after,
+            "origin_before": origin_before,
+            "origin_after": self.origin_counts,
+            "angle_deg": self.angle_deg(after),
+            "reseeds": self.reseeds,
         }
 
     def require_mode(self, mode=None):
@@ -1440,14 +1780,72 @@ class ST3215:
             read start -> command -> poll to completion -> settle ->
             read again -> compare -> report
 
-        There is no sleep-and-hope path anywhere in here. A movement that
-        cannot be proved raises, and the caller invalidates its position
-        rather than assuming success.
+        There is no sleep-and-hope path anywhere in here, and there is no
+        blind-success path either. THREE independent pieces of evidence
+        are collected, because they fail in different ways:
+
+            the measured position      register 67 minus register 56 -
+                                       closed loop, this is the verdict
+            the trajectory travelled   register 67 alone - open loop, so
+                                       it proves the servo ACCEPTED and
+                                       RAN the command even when the
+                                       mechanism did not follow
+            the moving flag            the profile's own state
+
+        Separating them is what lets a report distinguish "the servo
+        never started" from "the servo ran and the carousel did not
+        move" - two faults with completely different causes that both
+        used to arrive as one position mismatch.
+
+        A movement whose position cannot be READ afterwards is reported
+        UNVERIFIED and does not raise. That is not the same thing as a
+        failure and it must not be dressed up as one: the goal was
+        written, the profile ran, and the one thing missing is the
+        confirming measurement.
         """
         started_at = time.ticks_ms()
 
         if start is None:
             start = self.read_position()
+
+        trajectory_start = self.last_trajectory
+        reseeded = None
+
+        # RESEED BEFORE THE MOVEMENT, NEVER DURING IT.
+        #
+        # The register is checked here, with the mechanism stationary
+        # and nothing in flight, because the reseed itself takes the
+        # servo through position servo mode with the torque off. That is
+        # a safe thing to do to a carousel standing still and an unsafe
+        # thing to do to one halfway to the scanner.
+        if (trajectory_start is not None
+                and abs(trajectory_start) > TRAJECTORY_GUARD
+                and absolute is False):
+            reseeded = self.reseed_trajectory()
+
+            start = reseeded["position_after"]
+            trajectory_start = self.last_trajectory
+
+        if (trajectory_start is not None
+                and abs(trajectory_start) > TRAJECTORY_GUARD):
+            # The trajectory register is sign-magnitude in 15 bits and
+            # what it does at saturation has never been observed. Stop
+            # short of finding out during a measurement.
+            raise ST3215Error(
+                "Servo {} has accumulated {} counts of commanded "
+                "trajectory, {} counts from the register's {} clamp. At "
+                "the clamp the servo stops moving in BOTH directions and "
+                "still reports a following error of about 2, so a "
+                "movement would look verified and would not happen. Run "
+                "the servo configuration command to reseed the register "
+                "from the absolute encoder, then re-synchronize the "
+                "carousel.".format(
+                    self.servo_id, trajectory_start,
+                    TRAJECTORY_LIMIT - abs(trajectory_start),
+                    TRAJECTORY_LIMIT,
+                ),
+                code="SERVO_TRAJECTORY_LIMIT",
+            )
 
         if requested is None:
             if absolute:
@@ -1474,9 +1872,24 @@ class ST3215:
             # Enabling torque can itself take up a little slack, so the
             # movement is measured from AFTER that, never before.
             start = self.read_position()
+            trajectory_start = self.last_trajectory
             torque_enabled_here = True
 
-        expected = wrap_counts(start + requested, self.counts_per_rev)
+        # IN THE SAME FRAME AS `start` AND `actual_position`.
+        #
+        # This was `wrap_counts(start + requested)`, which folded the
+        # target into 0..4095 while the measured position is multi-turn.
+        # The comparison below is `centred_error`, so it was CORRECT
+        # either way - but the record then carried
+        #
+        #     start 26503   expected 3975   actual 28548
+        #
+        # and the movement report is read by somebody trying to work out
+        # what the mechanism did. Three numbers in two frames is not a
+        # report anyone can argue from. The wrap bought nothing: the
+        # comparison folds the difference regardless, so a seam crossing
+        # is still a non-event.
+        expected = start + requested
 
         command = self.write_goal(goal, speed, acceleration)
 
@@ -1510,9 +1923,13 @@ class ST3215:
 
             polls += 1
 
+            # ONE transaction per poll. `read_position` brings the
+            # moving flag back with the position it belongs to, so the
+            # two can no longer describe different instants - and the
+            # bus carries half as much traffic during a movement.
             position = self.read_position()
 
-            if self.read_moving():
+            if self.moving:
                 seen_moving = True
                 idle_polls = 0
 
@@ -1541,14 +1958,93 @@ class ST3215:
         if config.ST3215_SETTLE_MS > 0:
             time.sleep_ms(config.ST3215_SETTLE_MS)
 
-        position = self.read_position()
-        error = centred_error(expected - position, self.counts_per_rev)
-        within = abs(error) <= config.ST3215_POSITION_TOLERANCE
+        # THE CONFIRMING READ IS ALLOWED TO FAIL WITHOUT THE MOVEMENT
+        # FAILING. A transport fault here means the position is
+        # unconfirmed, not that the carousel is broken.
+        unverified_reason = None
+
+        try:
+            position = self.read_position()
+            trajectory_end = self.last_trajectory
+            following_error = self.last_following_error
+
+        except ServoError as error:
+            position = None
+            trajectory_end = None
+            following_error = None
+            unverified_reason = (
+                "the position could not be read after the movement: "
+                "{}".format(error.message)
+            )
+
+        if position is None:
+            travelled = None
+            error = None
+            within = None
+            verification = "UNVERIFIED"
+
+        else:
+            error = centred_error(expected - position, self.counts_per_rev)
+            travelled = centred_error(
+                position - start, self.counts_per_rev
+            )
+            within = abs(error) <= config.ST3215_POSITION_TOLERANCE
+            verification = "VERIFIED" if within else "FAILED"
+
+        if trajectory_start is None or trajectory_end is None:
+            trajectory_travelled = None
+            trajectory_ran = None
+        else:
+            trajectory_travelled = trajectory_end - trajectory_start
+            trajectory_ran = (
+                abs(trajectory_travelled - requested)
+                <= config.ST3215_POSITION_TOLERANCE
+            )
+
+        # A SECOND, INDEPENDENT CONDITION FOR "VERIFIED".
+        #
+        # The position comparison alone already catches a clamped
+        # trajectory register, because `expected` is start plus the
+        # request and the mechanism did not move. This is here because
+        # it catches it for the RIGHT REASON and says so: the profile
+        # never ran. Belt and braces on the one failure mode where the
+        # servo's own error register reads healthy while the carousel
+        # stands still.
+        if verification == "VERIFIED" and trajectory_ran is False:
+            verification = "FAILED"
+            within = False
 
         record = {
             "servo": self.name,
             "moved": bool(requested),
-            "verified": True,
+
+            # `verified` is now what the word says: a measurement
+            # confirmed it. It used to be the constant True.
+            "verified": verification == "VERIFIED",
+            "verification": verification,
+            "unverified_reason": unverified_reason,
+
+            # The open-loop half of the evidence. Equal to
+            # requested_counts whenever the servo accepted and ran the
+            # command, INCLUDING when the mechanism failed to follow -
+            # which is exactly what makes it worth reporting separately.
+            "trajectory_start": trajectory_start,
+            "trajectory_end": trajectory_end,
+            "trajectory_travelled": trajectory_travelled,
+            "trajectory_ran": trajectory_ran,
+
+            # Set when the register was folded back before this move.
+            # Reported rather than hidden: it writes EPROM and it is the
+            # one moment the raw frame jumps, so it belongs in the
+            # record even though the logical angle did not change.
+            "trajectory_reseeded": reseeded,
+            "following_error": following_error,
+            "measured_travel": travelled,
+            "measured_travel_deg": (
+                None if travelled is None
+                else round(self.counts_to_degrees(travelled), 3)
+            ),
+
             "mode": self.mode,
             "requested_counts": requested,
             "requested_degrees": round(
@@ -1560,7 +2056,10 @@ class ST3215:
             "expected_position": expected,
             "actual_position": position,
             "position_error": error,
-            "position_error_deg": round(self.counts_to_degrees(error), 3),
+            "position_error_deg": (
+                None if error is None
+                else round(self.counts_to_degrees(error), 3)
+            ),
             "tolerance_counts": config.ST3215_POSITION_TOLERANCE,
             "within_tolerance": within,
             "speed": command["speed"],
@@ -1576,12 +2075,21 @@ class ST3215:
 
         self.last_move = record
 
+        if verification == "UNVERIFIED":
+            # NOT A FAILURE, AND IT MUST NOT BE RAISED AS ONE.
+            #
+            # The goal was written, the profile ran and the servo
+            # reported itself stopped. The single thing missing is the
+            # confirming read, so the honest report is a completed
+            # movement whose position nobody has checked. The carousel
+            # downgrades its own confidence from this; it does not
+            # abort a science measurement over a lost status packet.
+            return record
+
         if not within:
             # The goal HAS been written and the poll loop HAS run, so
             # whatever else is true, this is not a movement that never
-            # started. `travelled` is what the encoder actually saw.
-            travelled = centred_error(position - start, self.counts_per_rev)
-
+            # started.
             motion = {
                 "commanded": True,
                 "goal_written": True,
@@ -1596,6 +2104,18 @@ class ST3215:
                 "position_error": error,
                 "tolerance_counts": config.ST3215_POSITION_TOLERANCE,
                 "settled": settled,
+
+                # WHICH HALF BROKE. The trajectory register is open
+                # loop, so it advances by the full commanded amount
+                # whenever the servo accepted and ran the command. If
+                # it did and the measurement did not follow, the fault
+                # is mechanical - a stall, a slipping coupling, an
+                # exhausted torque budget. If the trajectory did NOT
+                # advance either, the command never took effect and the
+                # fault is electrical or in the protocol.
+                "trajectory_travelled": trajectory_travelled,
+                "trajectory_ran": trajectory_ran,
+                "following_error": following_error,
             }
 
             if not settled:
@@ -1690,9 +2210,18 @@ class ST3215:
         for _ in range(slots):
             legs.append(self.move_relative(counts))
 
+        unverified = [
+            leg for leg in legs if leg.get("verification") != "VERIFIED"
+        ]
+
         record = {
             "servo": self.name,
-            "verified": True,
+            "verified": not unverified,
+            "verification": "UNVERIFIED" if unverified else "VERIFIED",
+            "unverified_reason": (
+                unverified[-1].get("unverified_reason")
+                if unverified else None
+            ),
             "direction": direction,
             "slots": slots,
             "degrees": slots * self.slot_step_deg(),
@@ -1740,7 +2269,10 @@ class ST3215:
 
             record = {
                 "servo": self.name,
+
+                # Nothing moved, so there is nothing left unproven.
                 "verified": True,
+                "verification": "VERIFIED",
                 "moved": False,
                 "requested_degrees": degrees,
                 "requested_counts": 0,
@@ -1790,10 +2322,18 @@ class ST3215:
 
     def capture_origin(self):
         """
-        Store the encoder reading the operator has just confirmed.
+        Make wherever the carousel is NOW the logical zero.
 
-        Nothing moves. This is what ties the logical slot numbering to a
-        real measurement rather than to an assumption.
+        Nothing moves. The operator is asserting a physical fact the
+        firmware cannot measure - that the mechanism is at its loading
+        reference - and this records the measured encoder count that
+        goes with it.
+
+        The raw count is arbitrary and stays arbitrary: 2, 731, 4090 are
+        all equally good origins. What matters is that from this instant
+        `angle_deg` reads exactly 0.0, which it does by construction
+        because the origin is subtracted from the same measurement it
+        was taken from.
         """
         self.require_ready()
 
@@ -1803,33 +2343,69 @@ class ST3215:
             "servo": self.name,
             "feedback": True,
             "origin_counts": self.origin_counts,
-            "origin_deg": round(
-                self.counts_to_degrees(self.origin_counts), 2
-            ),
+
+            # The logical coordinate this establishes. Always 0.0 - it
+            # is reported rather than assumed so a test can prove it,
+            # and so the screen has one field to read for both the
+            # origin case and every case after it.
+            "angle_deg": self.angle_deg(self.origin_counts),
+
+            # Raw telemetry, kept separate and never confused with the
+            # carousel coordinate above.
+            "position_raw": self.last_position_raw,
+            "trajectory_counts": self.last_trajectory,
+            "following_error_counts": self.last_following_error,
         }
+
+    def angle_deg(self, position=None):
+        """
+        The LOGICAL carousel angle: signed degrees from the origin.
+
+        Reduced to (-180, +180], which is the representation a four-slot
+        carousel wants: +90 is one slot clockwise, -90 one slot
+        anticlockwise, and a half turn is +180 from either side because
+        at exactly half a turn the two directions arrive at the same
+        physical place.
+
+        None when no origin has been captured. That is the honest answer
+        and it is NOT the same as 0.0: an un-synchronized carousel has
+        no zero to be at.
+
+        The raw encoder count is deliberately NOT this number. It is a
+        servo-frame quantity with an arbitrary offset, it is multi-turn,
+        and reporting it in degrees as though it were the carousel's
+        angle is what made a freshly synchronized carousel read
+        "0.18 deg" instead of "0.0 deg".
+        """
+        if self.origin_counts is None:
+            return None
+
+        if position is None:
+            position = self.read_position_or_none()
+
+            if position is None:
+                return None
+
+        return round(
+            counts_to_degrees(
+                centred_error(
+                    position - self.origin_counts, self.counts_per_rev
+                ),
+                self.counts_per_rev,
+            ),
+            2,
+        )
 
     def travel_since_origin_deg(self):
         """
         Measured angle travelled since capture_origin(), or None.
 
-        Reduced to (-180, +180]: the carousel compares it against an
-        equally reduced expectation, which is the only comparison that
-        means anything on a rotary axis.
+        The same number as angle_deg - travel from the origin IS the
+        logical angle - kept as a separate name because the carousel
+        compares it against an expected TRAVEL. One implementation, so
+        the two can never drift apart.
         """
-        if self.origin_counts is None:
-            return None
-
-        try:
-            position = self.read_position()
-
-        except ServoError:
-            return None
-
-        return self.counts_to_degrees(
-            centred_error(
-                position - self.origin_counts, self.counts_per_rev
-            )
-        )
+        return self.angle_deg()
 
     def read_position_or_none(self):
         """
@@ -1988,11 +2564,22 @@ class ST3215:
                 end_position - start_position - net, self.counts_per_rev
             )
 
+        # `verified` was the constant True, and the movement report is
+        # the screen that characterizes the actuator - so it was the one
+        # place least able to afford a claim nothing checked. A test
+        # move is verified only when every leg was.
+        unverified = [
+            entry for entry in results
+            if entry.get("verification") != "VERIFIED"
+        ]
+
         return {
             "servo": self.name,
             "kind": kind,
             "moved": True,
-            "verified": True,
+            "verified": not unverified,
+            "verification": "UNVERIFIED" if unverified else "VERIFIED",
+            "unverified_legs": len(unverified),
             "repeat": int(repeat),
             "legs": legs,
             "leg_count": len(results),
@@ -2006,7 +2593,8 @@ class ST3215:
                 else round(self.counts_to_degrees(closing), 3)
             ),
             "worst_position_error": max(
-                [abs(entry["position_error"]) for entry in results] or [0]
+                [abs(entry["position_error"]) for entry in results
+                 if entry.get("position_error") is not None] or [0]
             ),
             "tolerance_counts": config.ST3215_POSITION_TOLERANCE,
             "movements": results,
@@ -2120,7 +2708,22 @@ class ST3215:
                 "min": self.read_word(REG_MIN_ANGLE_LIMIT),
                 "max": self.read_word(REG_MAX_ANGLE_LIMIT),
             })
-            feedback = step("feedback", self.read_feedback)
+            # NAMED FOR WHAT IT PROVES, WHICH IS LESS THAN "feedback".
+            #
+            # This step was called `feedback` and it passed on the bench
+            # while the position it reported was a following error the
+            # driver was reading as an absolute position. It passed
+            # because reading a register successfully is all it has ever
+            # done - and "feedback PASS" over a servo whose position
+            # feedback was being misinterpreted is exactly the false
+            # confidence that let H-002 survive.
+            #
+            # A static read cannot prove that a register TRACKS the
+            # mechanism. Only a movement can, and diagnostics moves
+            # nothing by design. So this reports what it read, says in
+            # the report what it does not establish, and names the test
+            # that does.
+            feedback = step("telemetry_read", self.read_feedback)
 
             report["ok"] = True
             report["connected"] = True
@@ -2135,6 +2738,25 @@ class ST3215:
             )
             report["feedback"] = feedback
             report["status_flags"] = list(self.last_status_flags)
+
+            # Said in the report, not only in a comment, because the
+            # operator reading a screen full of PASS lines is the person
+            # who needs to know the limit of what they mean.
+            report["telemetry_read_proves"] = (
+                "the servo answers and its telemetry registers decode"
+            )
+            report["telemetry_read_does_not_prove"] = (
+                "that the position tracks the mechanism; only a real "
+                "movement can, and diagnostics moves nothing. Run "
+                "servo_test_move, or HW-B2-013 / HW-B3-006."
+            )
+            report["position_semantics"] = (
+                "step servo mode: register 56 is the FOLLOWING ERROR "
+                "and register 67 is the commanded trajectory; the "
+                "measured position is 67 minus 56"
+                if mode == MODE_STEP else
+                "position servo mode: register 56 is the absolute angle"
+            )
 
             if not report["mode_correct"]:
                 report["ok"] = False

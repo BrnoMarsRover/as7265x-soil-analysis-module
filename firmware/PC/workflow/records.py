@@ -515,9 +515,15 @@ def capture_ground_truth(mission, measurement_id, result, save_prompt=True):
     return record
 
 
-def ask_material(mission, prompt="Select material"):
+def ask_material(mission, prompt="Select material", allow_matrix=False):
     """
     Resolve a material through the controlled vocabulary.
+
+    `allow_matrix` lets the caller accept a MatrixChoice as well as a
+    MaterialIdentity. Off by default, because most screens are asking
+    "which library material is this", and soil is not an answer to that
+    question. The prepared-mixture screen turns it on, because there it
+    is the commonest answer there is.
 
     THE LIST IS SHOWN. This used to be a bare free-text field that
     refused what it could not resolve without ever saying what it would
@@ -525,7 +531,9 @@ def ask_material(mission, prompt="Select material"):
     they could enter one. `workflow.materials` owns the picker now -
     §11, §13 - and this stays as the name every caller already uses.
     """
-    return materials.select_material(mission, prompt=prompt)
+    return materials.select_material(
+        mission, prompt=prompt, allow_matrix=allow_matrix
+    )
 
 
 def ask_family(mission):
@@ -587,28 +595,45 @@ def ask_mixture(mission):
     print("             -> Activated Carbon 30 %")
     print("  MATRIX     what you mixed it INTO. Ordinary soil or sand:")
     print("             real, usually most of the sample, and in no")
-    print("             library. Named separately, asked for at the end.")
+    print("             library. Pick [s] at the list, or just type it.")
     print()
     print("Percentages by mass. Cancel at the material list finishes the")
-    print("component list and moves on to the matrix.")
+    print("ingredient list.")
 
     while True:
         _print_mixture_table(components)
 
         identity = ask_material(
             mission,
-            prompt="Component {} - select material".format(
+            prompt="Ingredient {} - select material or matrix".format(
                 len(components) + 1
             ),
+            allow_matrix=True,
         )
 
         if identity is None:
             break
 
-        if any(part.get("material_key") == identity.key
-               for part in components):
+        # A MatrixChoice is not a MaterialIdentity and is deliberately
+        # not made to look like one: it has a label and no key, so it
+        # cannot become a library entry with a spectrum it has not got.
+        is_matrix = isinstance(identity, materials.MatrixChoice)
+
+        if is_matrix:
+            duplicate = any(
+                (part.get("matrix_label") or "").strip().lower()
+                == identity.label.lower()
+                for part in components
+            )
+        else:
+            duplicate = any(
+                part.get("material_key") == identity.key
+                for part in components
+            )
+
+        if duplicate:
             print()
-            print("{} is already in the mixture. One material, one "
+            print("{} is already in the mixture. One ingredient, one "
                   "proportion.".format(identity.display_name))
 
             continue
@@ -619,17 +644,26 @@ def ask_mixture(mission):
         )
 
         if percent is None:
-            print("Component dropped.")
+            print("Ingredient dropped.")
 
             continue
 
-        components.append({
-            "role": "COMPONENT",
-            "material_key": identity.key,
-            "material_id": identity.material_id,
-            "family_id": identity.family_id,
-            "prepared_mass_fraction": percent / 100.0,
-        })
+        if is_matrix:
+            components.append({
+                "role": "MATRIX",
+                "material_key": None,
+                "matrix_label": identity.label,
+                "prepared_mass_fraction": percent / 100.0,
+            })
+
+        else:
+            components.append({
+                "role": "COMPONENT",
+                "material_key": identity.key,
+                "material_id": identity.material_id,
+                "family_id": identity.family_id,
+                "prepared_mass_fraction": percent / 100.0,
+            })
 
     if not components:
         return None
@@ -642,7 +676,13 @@ def ask_mixture(mission):
 
     print()
 
-    if remainder > 1e-9:
+    # KEPT AS A BACKSTOP, NOT AS THE ONLY WAY IN. The matrix is now
+    # selectable in the ingredient list with its own proportion, so this
+    # only fires when the numbers do not add up and nothing has claimed
+    # the difference - which is exactly the moment it is useful.
+    has_matrix = any(part.get("role") == "MATRIX" for part in components)
+
+    if remainder > 1e-9 and not has_matrix:
         print("The named components account for {:.1f} %. What is the "
               "remaining {:.1f} %?".format(weighed * 100.0,
                                            remainder * 100.0))

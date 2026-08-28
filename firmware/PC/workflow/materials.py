@@ -90,6 +90,38 @@ def looks_like_matrix(text):
     return any(word in folded for word in MATRIX_WORDS)
 
 
+class MatrixChoice:
+    """
+    The operator picked the matrix rather than a library material.
+
+    A DISTINCT TYPE, NOT A FAKE MaterialIdentity. Soil is visible and
+    selectable on the material screen now, and the one thing that must
+    not follow from that is soil quietly becoming a library entry with
+    a reference spectrum it does not have. Nothing can score a
+    measurement against this object; it carries a label and a role and
+    that is all it can ever carry.
+
+    `label` is the operator's own words, stored as typed.
+    """
+
+    role = "MATRIX"
+
+    def __init__(self, label):
+        self.label = str(label).strip()
+
+    @property
+    def display_name(self):
+        return self.label
+
+    def __repr__(self):
+        return "MatrixChoice({!r})".format(self.label)
+
+
+# What the matrix option offers before the operator types anything.
+# Soil first because it is what this instrument is for.
+MATRIX_SUGGESTIONS = ("soil", "sand", "regolith")
+
+
 def bench_materials(taxonomy):
     """The materials measured on this instrument, in display order."""
     return [
@@ -167,12 +199,56 @@ def search_materials(taxonomy, text, bench_first=True):
     return matches
 
 
-def select_material(mission, prompt="Select material"):
+def _ask_matrix_label(typed=None):
+    """
+    Name the matrix, defaulting to what the operator already typed.
+
+    Separated so both routes into it - the [s] option and typing
+    "soil" at the prompt - end in exactly the same question.
+    """
+    default = (typed or "").strip() or "soil"
+
+    print()
+    print("MATRIX - what the components were mixed INTO")
+    print()
+    print("This is a real substance with a real mass and NO reference")
+    print("spectrum: nothing scores a measurement against it. It is")
+    print("recorded by name and counted in the 100 %, and it is not")
+    print("turned into a library material.")
+    print()
+    print("Examples: {}.".format(", ".join(MATRIX_SUGGESTIONS)))
+    print()
+
+    label = ask("Matrix name [{}]".format(default))
+
+    if label is None:
+        return None
+
+    label = label.strip() or default
+
+    return MatrixChoice(label)
+
+
+def select_material(mission, prompt="Select material",
+                    allow_matrix=False):
     """
     Pick one material from the controlled vocabulary, or None to cancel.
 
-    Returns a MaterialIdentity, or None. A typed name is never turned
-    into a label without the taxonomy resolving it.
+    Returns a MaterialIdentity, a MatrixChoice when `allow_matrix` is
+    set and the operator chose the matrix, or None to cancel. A typed
+    name is never turned into a label without the taxonomy resolving
+    it - except the matrix, which is deliberately not a library name and
+    is stored as its own role.
+
+    SOIL IS ON THE MENU WHEN THE CALLER CAN USE IT.
+
+    It used to be reachable only by typing it, being told at length
+    that soil is not a library material, and being returned to the same
+    "COMPONENT 2 - SELECT MATERIAL" prompt - so the operator could type
+    "soil" as many times as they liked and get the same lecture. The
+    explanation was correct and the screen was a dead end. Now the
+    option is listed, typing a matrix word takes it, and the difference
+    between a COMPONENT and the MATRIX is still recorded exactly.
 
     SEARCH IS A FIRST-CLASS ACTION, NOT A FAILED LOOKUP.
 
@@ -217,6 +293,11 @@ def select_material(mission, prompt="Select material"):
             print("  [number]  select")
             print("  [text]    search again")
             print("  [l]       back to the full list")
+
+            if allow_matrix:
+                print("  [s]       soil / sand - the MATRIX, no reference "
+                      "spectrum")
+
             print("  [c]       cancel")
 
         else:
@@ -243,6 +324,10 @@ def select_material(mission, prompt="Select material"):
                 print("  [a]       also show the {} reference catalogue "
                       "materials".format(len(catalogue)))
 
+            if allow_matrix:
+                print("  [s]       soil / sand - the MATRIX, no reference "
+                      "spectrum")
+
             print("  [c]       cancel")
 
         answer = ask("Material")
@@ -256,6 +341,19 @@ def select_material(mission, prompt="Select material"):
             results = None
 
             continue
+
+        # The advertised key for the matrix. Typing the word works too,
+        # but that is handled at the bottom of the loop so an exact
+        # library name and a search still win first: if somebody ever
+        # adds a material legitimately called "Soil Standard", it
+        # resolves as a material.
+        if allow_matrix and folded == "s":
+            choice = _ask_matrix_label()
+
+            if choice is None:
+                continue
+
+            return choice
 
         if folded == "a" and results is None and not showing_all                 and catalogue:
             showing_all = True
@@ -302,10 +400,25 @@ def select_material(mission, prompt="Select material"):
             continue
 
         results = None
-        _explain_no_match(answer)
+
+        # NOTHING MATCHED, AND THE WORD DESCRIBES THE MATRIX.
+        #
+        # Below the exact resolve and below the search, so a real
+        # material always wins - but above the explanation, because
+        # explaining is not what the operator needed. They named what
+        # is in the bowl; take it.
+        if allow_matrix and looks_like_matrix(answer):
+            choice = _ask_matrix_label(answer)
+
+            if choice is None:
+                continue
+
+            return choice
+
+        _explain_no_match(answer, allow_matrix=allow_matrix)
 
 
-def _explain_no_match(text):
+def _explain_no_match(text, allow_matrix=False):
     """
     Nothing matched. Say where the thing they described actually goes.
 
@@ -316,14 +429,19 @@ def _explain_no_match(text):
     print()
 
     if looks_like_matrix(text):
+        # Only reachable where the matrix CANNOT be chosen - the plain
+        # "what is this sample" screen. Where it can, the caller took
+        # the operator to the matrix question instead of reading them
+        # this. Ending an explanation at the same prompt that produced
+        # it is a loop, and it was one.
         print("Ordinary soil, sand and dirt are not library materials:")
         print("they have no reference spectrum, so nothing could be")
         print("scored against them.")
         print()
-        print("They are not missing - they are the MATRIX. Record this")
-        print("as a KNOWN PREPARED MIXTURE: the library material you")
-        print("weighed in is the component, and the soil you mixed it")
-        print("into is named as the matrix, at the end.")
+        print("They are not missing - they are the MATRIX, and this")
+        print("screen is asking for a single material. Record it as a")
+        print("KNOWN PREPARED MIXTURE instead: there, soil is one of")
+        print("the choices.")
 
     else:
         print("Nothing in the library matches {!r}. Try part of the "

@@ -140,6 +140,14 @@ class Carousel:
         # travel to expose drift - on a backend that can measure.
         self.commanded_travel_deg = 0.0
 
+        # Why the tracked position is believed but unproven, or None
+        # when it was confirmed by measurement. A movement whose
+        # confirming read was lost sets this; it does NOT invalidate the
+        # position, because a lost status packet is not a mechanical
+        # failure. Cleared by the next successfully verified movement or
+        # by a re-sync.
+        self.position_unverified_reason = None
+
         self.last_move = None
 
     def _check_geometry(self):
@@ -438,18 +446,21 @@ class Carousel:
             self.commanded_travel_deg + self.alignment_offset_deg
         )
 
-    def drift_deg(self):
+    def drift_deg(self, measured=None):
         """
         Measured minus expected angle since the origin, or None.
 
         None on an open-loop actuator - which is the honest answer, not
         zero. This is the number that shows accumulated mechanical error
         over a long session on a servo that can actually measure it.
+
+        `measured` is the already-known travel, when the caller has one.
         """
         if self.servo is None or not self.position_valid:
             return None
 
-        measured = self.servo.travel_since_origin_deg()
+        if measured is None:
+            measured = self.servo.travel_since_origin_deg()
 
         if measured is None:
             return None
@@ -542,6 +553,12 @@ class Carousel:
         self.alignment_offset_deg = 0.0
         self.commanded_travel_deg = 0.0
 
+        # A re-sync is the operator asserting a physical fact and the
+        # servo measuring where that is, so the result is confirmed by
+        # construction: the logical angle is 0.0 because the origin was
+        # taken from the very reading it is subtracted from.
+        self.position_unverified_reason = None
+
         self.current_scan_slot = scan_slot
         self.position_valid = True
         self.selected_slot = self.load_slot_for(scan_slot)
@@ -567,13 +584,34 @@ class Carousel:
         return self.sync_position(self.scan_slot_for_load(load_slot))
 
     def invalidate_position(self, reason):
-        """Forget the tracked position; movement can no longer be trusted."""
+        """
+        Forget the tracked position; movement can no longer be trusted.
+
+        RESERVED FOR REAL UNCERTAINTY. This is the state that sends an
+        operator to look at the plate and re-synchronize by hand, so it
+        must not be the generic answer to any warning. A movement that
+        completed without a confirming read is UNVERIFIED and keeps its
+        position; only a movement whose measurement says the mechanism
+        is not where it was sent, a servo that cannot be read at all, or
+        a change of actuator gets here.
+        """
         self.position_valid = False
         self.current_scan_slot = None
         self.selected_slot = None
         self.origin = None
         self.origin_scan_slot = None
+        self.position_unverified_reason = None
         self.last_move = {"invalidated": reason}
+
+        return {
+            "position_valid": False,
+            "position_state": self.POSITION_UNKNOWN,
+            "angle_deg": None,
+            "reason": reason,
+            "message": "Re-synchronize before moving: align the "
+                       "reference slot with the loading hole and "
+                       "confirm it.",
+        }
 
     # ------------------------------------------------------------------
     # movement planning
@@ -712,11 +750,39 @@ class Carousel:
             },
         )
 
+    def _account_verification(self, movement, reason):
+        """
+        Carry the driver's verification verdict into the tracked state.
+
+        A movement the driver could not confirm leaves the position
+        BELIEVED BUT UNPROVEN. It is deliberately not invalidated: the
+        goal was written, the profile ran and the servo reported itself
+        stopped, so throwing the position away would be as much of an
+        invention as claiming it was verified. A later verified movement
+        or a re-sync clears it.
+        """
+        if not isinstance(movement, dict):
+            return movement
+
+        if movement.get("verification") == "UNVERIFIED":
+            self.position_unverified_reason = (
+                movement.get("unverified_reason")
+                or "{} completed but its position was not "
+                   "confirmed".format(reason)
+            )
+
+        elif movement.get("verification") == "VERIFIED":
+            self.position_unverified_reason = None
+
+        return movement
+
     def _run_slots(self, direction, slots, reason):
         servo = self._require_servo()
 
         try:
-            return servo.move_slots(direction, slots)
+            return self._account_verification(
+                servo.move_slots(direction, slots), reason
+            )
 
         except ServoError as error:
             raise self._movement_failed(
@@ -727,7 +793,9 @@ class Carousel:
         servo = self._require_servo()
 
         try:
-            return servo.half_turn(direction)
+            return self._account_verification(
+                servo.half_turn(direction), reason
+            )
 
         except ServoError as error:
             raise self._movement_failed(
@@ -738,7 +806,9 @@ class Carousel:
         servo = self._require_servo()
 
         try:
-            return servo.move_degrees(degrees)
+            return self._account_verification(
+                servo.move_degrees(degrees), reason
+            )
 
         except ServoError as error:
             raise self._movement_failed(
@@ -1086,11 +1156,101 @@ class Carousel:
     # reporting
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # position confidence
+    # ------------------------------------------------------------------
+    #
+    # UNVERIFIED IS NOT FAILED, AND NEITHER OF THEM IS UNKNOWN.
+    #
+    # Before H-002 was understood there was one bit - position_valid -
+    # and every doubt collapsed into it, so a servo that had performed a
+    # movement perfectly and a servo nobody had ever synchronized were
+    # reported with the same three words. Three states are needed
+    # because three different things go wrong and each has a different
+    # next action:
+    #
+    #   SYNCHRONIZED  an origin exists and the last movement was
+    #                 confirmed by measurement. Normal operation.
+    #
+    #   UNVERIFIED    an origin exists and a movement completed, but the
+    #                 confirming read did not arrive. The carousel is
+    #                 almost certainly where it was sent; nothing has
+    #                 proved it. Safe next action: read the status
+    #                 again - the position is measurable, it just was
+    #                 not measured at the one moment it mattered.
+    #
+    #   UNKNOWN       there is no origin, or the mechanism is somewhere
+    #                 no logical position corresponds to. Only a
+    #                 physical re-sync fixes this.
+    POSITION_SYNCHRONIZED = "SYNCHRONIZED"
+    POSITION_UNVERIFIED = "UNVERIFIED"
+    POSITION_UNKNOWN = "UNKNOWN"
+
+    def position_state(self):
+        if not self.position_valid or self.current_scan_slot is None:
+            return self.POSITION_UNKNOWN
+
+        if self.position_unverified_reason:
+            return self.POSITION_UNVERIFIED
+
+        return self.POSITION_SYNCHRONIZED
+
+    def _raw_encoder_counts(self):
+        """The servo-frame measured count, or None. Telemetry only."""
+        if self.servo is None:
+            return None
+
+        try:
+            return self.servo.read_position_or_none()
+
+        except Exception:
+            return None
+
+    def angle_deg(self, position=None):
+        """
+        The LOGICAL carousel angle, signed degrees from the origin.
+
+        Zero at the position the operator re-synchronized, whatever the
+        raw encoder count there happened to be. None when there is no
+        origin to measure from - which is not the same as zero.
+
+        `position` lets a caller that has ALREADY read the encoder pass
+        it in. status() does: it used to reach the servo three separate
+        times for one report - once here, once for the raw count and
+        once through drift_deg - and get three readings of a moving
+        mechanism taken at three different moments.
+        """
+        if self.servo is None or self.origin is None:
+            return None
+
+        try:
+            return self.servo.angle_deg(position)
+
+        except Exception:
+            return None
+
     def status(self):
-        drift = self.drift_deg()
+        # ONE ENCODER READING FOR THE WHOLE REPORT. The angle, the raw
+        # count and the drift are three views of the same instant, and
+        # taking them from three transactions during a movement would
+        # let a report contradict itself.
+        encoder = self._raw_encoder_counts()
+
+        angle = self.angle_deg(encoder)
+        drift = self.drift_deg(angle)
 
         return {
             "position_valid": self.position_valid,
+
+            # The logical carousel coordinate. THE number an operator
+            # reads, and deliberately not the raw encoder count: the
+            # raw count is a servo-frame value with an arbitrary offset,
+            # and printing it in degrees is what made a carousel that
+            # had just been re-synchronized report 0.18 deg.
+            "angle_deg": angle,
+            "position_state": self.position_state(),
+            "position_unverified_reason": self.position_unverified_reason,
+
             "current_scan_slot": self.current_scan_slot,
             "current_load_slot": self.get_load_slot(),
             "selected_slot": self.selected_slot,
@@ -1119,6 +1279,18 @@ class Carousel:
                 "expected_travel_deg": round(self.expected_travel_deg(), 3),
                 "drift_deg": drift,
                 "drift_measurable": self.has_feedback(),
+
+                # RAW SERVO TELEMETRY, KEPT AND KEPT SEPARATE.
+                #
+                # None of this is the carousel's coordinate. It is the
+                # servo-frame evidence the coordinate was derived from,
+                # reported so a screen can show the derivation instead
+                # of asking the operator to trust it, and so a bad
+                # origin can be recognised for what it is.
+                "encoder_counts": encoder,
+                "origin_counts": (
+                    (self.origin or {}).get("origin_counts")
+                ),
             },
 
             # Historical field name for the physical spacing.

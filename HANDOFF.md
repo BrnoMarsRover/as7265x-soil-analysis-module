@@ -1,14 +1,211 @@
 # HANDOFF — Freya AS7265x science module
 
-State as of **2026-08-27**, after the code-only master audit. Read
+State as of **2026-08-28**, after the first real-hardware session. Read
 this first, then `Documentation/ARCHITECTURE.md`, then
-`Documentation/OPERATIONS.md`. Sections 1-4 below are the 2026-08-19
-rewrite record and still describe the architecture; sections 0.1 to
-0.4 are what changed most recently.
+`Documentation/OPERATIONS.md`. Section 0.0 is the hardware session
+and is the most important thing here; sections 1-4 are the
+2026-08-19 rewrite record and still describe the architecture.
 
 This is the "where we are right now" note, written for whoever picks
 the project up next — human or model — with no memory of how it got
 here.
+
+---
+
+## 0.0 H-002 RESOLVED ON HARDWARE, 2026-08-28
+
+The bench session H-002 was waiting for. The module was on COM4
+throughout, running a clean deployment of this tree verified by SHA256
+before any probe ran.
+
+### What the encoder value actually was
+
+**In step servo mode, register 56 is the FOLLOWING ERROR, not a
+position.** It is the signed distance from where the shaft is to the
+target of the current step command, sign-magnitude in bit 15 like every
+other signed field on this servo.
+
+```
+goal +200  ->  200 186 163 130 87 54 27 10 2, resting at 2
+goal -400  ->  -397 ... -20 -6 -2, resting at 0x8002
+five consecutive +40 steps -> the resting value stays 1..2; it does
+    not accumulate, which an absolute position must
+```
+
+So a completed 180 degree transfer read "2 before, 2 after" because the
+servo was inside its dead band at both ends. The driver was comparing an
+error against a position. Its arithmetic was correct throughout and the
+refusal was the only conclusion those readings allow, which is why no
+amount of software review had found it.
+
+**The absolute position is available, from register 67**, the commanded
+multi-turn trajectory: little-endian, sign-magnitude, accumulating past
+4096 with no seam. It is OPEN LOOP. With the torque limit written to 0
+it advanced the full commanded 512 counts while the shaft could not have
+moved and register 56 sat at 514. So:
+
+```
+measured absolute position = register 67 - register 56
+```
+
+Confirmed against ground truth taken by switching to position servo mode
+with the torque off, where register 56 IS the absolute angle: step mode
+gave 3527 - 2 = 3525, and mode 0 read 3525, 3525, 3525.
+
+`Tests/hardware/artifacts/H-002-evidence-20260828.md` has the full
+record. **H-005 fell out of the same measurements**: eight consecutive
++512 steps moved exactly one revolution, so 4096 counts/rev is right and
+nothing is geared.
+
+### The register clamps, and a clamped servo lies
+
+Found while proving the above, and worse than H-002 was. Register 67
+stops at **32766**, about eight revolutions of NET one-directional
+travel, and past it the servo will not move in EITHER direction while
+still reporting a following error of about 2. A movement there would
+report VERIFIED and would not happen.
+
+A carousel that takes the shortest path to each slot advances one slot
+every time, so a run through slots 1-2-3-4-1 turns a full revolution
+every four samples and reaches the clamp after about thirty slot
+advances. **This is ordinary service, not an edge case.**
+
+The driver folds the register back before it can happen, by passing
+through position servo mode with the torque off, which reseeds it from
+the absolute encoder and moves nothing. The origin is folded by the same
+amount, so the logical carousel angle is identical either side. It is
+counted (`trajectory_reseeds`) and the remaining margin is always
+visible (`trajectory_headroom`), because it writes EPROM.
+
+### Logical degrees, separated from raw telemetry
+
+`angle_deg` is the carousel's coordinate: signed degrees from the
+operator's own origin, folded to (-180, +180]. It reads exactly 0.0 the
+instant a re-sync completes, at ANY raw count. Proven on hardware at two
+different counts, 2960 and 3979.
+
+The raw telemetry is all still there and is now labelled as what it is:
+`position_counts` (measured shaft position, multi-turn),
+`trajectory_counts` (register 67), `following_error_counts`
+(register 56), `position_raw` and `trajectory_raw` (the undecoded
+words), `origin_counts`, and `shaft_deg` (the raw count folded into one
+turn).
+
+`position_deg` is gone. It was the raw count run through
+`counts_to_degrees`, and on a servo that had been running a while it
+read "2329.37 deg" and meant nothing.
+
+### Three position states, because three things go wrong
+
+`SYNCHRONIZED` / `UNVERIFIED` / `UNKNOWN`. **UNVERIFIED is the point.**
+A movement whose confirming read is lost is not a mechanical failure: the
+goal was written, the profile ran, and the position is still measurable.
+It keeps its position, says it is unproven, and the offered action is
+"Refresh Status", not "Re-sync Carousel" - which used to send operators
+to inspect working hardware over a dropped status packet.
+
+`POSITION UNKNOWN` now means only: no origin, or the servo cannot be
+read, or a change of actuator.
+
+### Verification, which is stronger than it was
+
+Every movement record carries three independent things:
+
+| field | what it says |
+| --- | --- |
+| `measured_travel` | how far the shaft went. The verdict. |
+| `trajectory_travelled` | how far it was TOLD to go. Open loop, so it reaches the target under a stall too |
+| `following_error` | how far it is from the target now |
+
+`trajectory_travelled` matching the request while `measured_travel` does
+not means the command RAN and the MECHANISM did not follow. Neither
+advancing means the command never reached the servo. Two faults that
+used to arrive as one position mismatch.
+
+`verified` used to be the constant `True` in three records. It is now
+what the word says.
+
+### Hardware results, this session
+
+```
+HW-B2-002  PASS   identity, baud, mode, torque, limits
+HW-B2-004  PASS   position stable at rest
+HW-B2-013  PASS   THE POSITION CHANGES WHEN THE CAROUSEL MOVES
+HW-B2-014  PASS   diagnostics does not claim more than it proves
+HW-B3-003  PASS   the reading is fresh, not left over
+HW-B3-006  PASS   a re-sync reads 0.0 deg at any raw count
+HW-B3-008  PASS   the trajectory register folds before it clamps
+HW-B5-002  PASS   non-adjacent slot transitions
+HW-B5-004  PASS   backlash
+HW-B5-005  PASS   no accumulated drift: -4 counts after 1, 2 and 3
+                  full rotations - constant, not growing
+HW-B5-010  PASS   fine adjust bounded
+HW-B8-001  PASS   the complete measurement transaction
+HW-B8-002  PASS   RF-001 REGRESSION - the exact bench failure
+HW-B8-003  PASS   all four slots
+HW-B8-004  PASS   the data survives the transport
+HW-B9-006  PASS   ESP32 soft reset
+```
+
+The 180 out / WHITE / UV / IR / 180 back transaction, measured:
+commanded 2048, **measured travel 2045**, position error 3, tolerance
+15, `verification: VERIFIED`, following error 1, and the carousel back
+at `angle_deg 0.0` with `home_restored: true`.
+
+### The `feedback PASS` that was not evidence
+
+The diagnostic step called `feedback` passed on the bench that produced
+RF-001, because reading a register successfully was all it ever checked.
+It is `telemetry_read` now and its own report states what it does not
+establish. `HW-B2-013` is the test that establishes it, and it moves the
+carousel, because nothing that does not can.
+
+### Four dead-key readers in the hardware tests
+
+Same family as `servo["selected"]`, and all four found by running
+against a board rather than a fixture:
+
+* `_transfer_record` looked for `movement` / `motion` / `transfer`; the
+  firmware sends `move`. So the RF-001 regression reported "the transfer
+  did not report how far it travelled" over a transaction that had just
+  completed correctly.
+* the travel is nested under `move["servo"]`, one level below where the
+  reader looked.
+* `HW-B8-003` compared a slot NUMBER against `answer["slot"]`, which is
+  the whole slot RECORD.
+* `HW-B8-003` also never called `select_slot`, so three of its four
+  slots were refused by a firmware behaving exactly as designed.
+
+`HW-B5-005` compared multi-turn counts directly and read 4096 counts of
+"drift" for a carousel that had returned to its start; it uses
+`centred_error` now, like production does everywhere.
+
+### Soil is a choice now
+
+The prepared-mixture screen offers `[s] soil / sand - the MATRIX, no
+reference spectrum`, and typing "soil" reaches the same question instead
+of an explanation that returns you to the same prompt. It takes a
+percentage like any other ingredient and is part of the 100 %.
+
+It is NOT a library material and cannot become one: `MatrixChoice` is a
+distinct type with a label and no key, so the record still stores
+`role: MATRIX`, `material_key: null` and
+`matrix_label: "<what they typed>"`. The record shape is unchanged, so
+existing mixtures still load. The single-material screen deliberately
+does NOT offer it: there, soil is not an answer to the question being
+asked.
+
+### Still open
+
+* `HW-B3-001`, `HW-B3-002`, `HW-B3-005`, `HW-B3-007`, `HW-B5-001`,
+  `HW-B5-003`, `HW-B5-006`..`009`, `HW-B8-005` and the B9 disconnect
+  tests need a human at the bench. `HW-B3-007` in particular, a held
+  carousel, is the only way to produce a real stall through the
+  production command surface, and it is written and ready.
+* `HW-B1-009` recurred: one damaged frame in transit during
+  `HW-B3-008`. Still roughly 1 in 800 requests, still uncharacterized.
+* The trajectory clamp itself was reached deliberately once, to
+  characterize it. Nothing in service should ever get there again.
 
 ---
 

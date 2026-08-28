@@ -173,9 +173,16 @@ def preflight(link, save_to=None):
             print("Servo id:   {}  mode {} ({})".format(
                 diagnostics.get("id"), diagnostics.get("mode"),
                 diagnostics.get("mode_name")))
-            print("Encoder:    {} cnt / {} deg".format(
-                feedback.get("position_counts"),
-                feedback.get("position_deg")))
+            print("Carousel:   {}".format(
+                "no origin - re-sync to set 0 deg"
+                if feedback.get("angle_deg") is None
+                else "{:+.1f} deg from origin".format(
+                    feedback["angle_deg"])))
+            print("Encoder:    {} cnt raw ({} deg within one turn), "
+                  "origin {} cnt".format(
+                      feedback.get("position_counts"),
+                      feedback.get("shaft_deg"),
+                      feedback.get("origin_counts")))
             print("Supply:     {} V, {} C".format(
                 feedback.get("voltage_v"), feedback.get("temperature_c")))
             print("Servo bus:  {} tx / {} rx, {} retries, {} timeouts, "

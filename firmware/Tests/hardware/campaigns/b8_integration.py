@@ -242,14 +242,84 @@ def _prepare(ctx):
 
 
 def _transfer_record(answer):
-    """The movement the transfer performed, wherever the answer put it."""
-    for key in ("movement", "motion", "transfer", "to_scanner"):
+    """
+    The outbound movement the transfer performed.
+
+    `move` FIRST, BECAUSE `move` IS WHAT THE FIRMWARE SENDS.
+
+    This looked for `movement`, `motion`, `transfer` and `to_scanner`,
+    and the measure answer has never carried any of them: it sends
+    `move` for the outbound half turn and `return_move` for the way
+    back. So on a real board the reader found nothing, `travelled_counts`
+    was None, and the RF-001 regression - the test that exists to say
+    whether the bench failure has recurred - reported "the transfer
+    did not report how far it travelled" over a transaction that had
+    just completed correctly.
+
+    That is the same defect family as `servo["selected"]`: a reader and
+    a fixture agreeing with each other and neither compared to a board.
+    The alternatives are kept behind `move` rather than removed, since
+    they cost nothing and this ran against firmware that predates the
+    current answer shape.
+    """
+    for key in ("move", "movement", "motion", "transfer", "to_scanner"):
         value = (answer or {}).get(key)
 
-        if isinstance(value, dict):
+        if isinstance(value, dict) and value:
             return value
 
     return {}
+
+
+# The firmware's own name for measured travel, first.
+TRAVEL_KEYS = ("measured_travel", "travelled_counts", "counts")
+
+
+def _travelled_counts(transfer):
+    """
+    How far the ENCODER says the transfer actually went, or None.
+
+    The carousel's `move` block is the carousel's own record and the
+    driver's record hangs off it under `servo` - so the number that
+    matters is one level down, and a multi-leg move keeps its legs
+    below that again. Descending is not defensive coding here: this
+    value is the whole subject of the RF-001 regression, and reading
+    None for it is how that test managed to report a contradiction
+    over a transaction that had completed correctly.
+
+    MEASURED, NOT COMMANDED. `trajectory_travelled` sits in the same
+    record and is always the commanded amount, because the trajectory
+    register is open loop. Taking it would make this test pass over a
+    carousel that never turned.
+    """
+    transfer = transfer or {}
+
+    for source in (transfer, transfer.get("servo") or {}):
+        for key in TRAVEL_KEYS:
+            value = source.get(key)
+
+            if isinstance(value, int):
+                return value
+
+        legs = source.get("legs")
+
+        if isinstance(legs, list) and legs:
+            total = 0
+
+            for leg in legs:
+                measured = (leg or {}).get("measured_travel")
+
+                if not isinstance(measured, int):
+                    total = None
+
+                    break
+
+                total += measured
+
+            if total is not None:
+                return total
+
+    return None
 
 
 def _spectra_from(answer):
@@ -325,7 +395,7 @@ def _full_transaction(ctx):
         position_before=before.get("current_load_slot"),
         position_after=after.get("current_load_slot"),
         position_valid_after=after.get("position_valid"),
-        travelled_counts=transfer.get("travelled_counts"),
+        travelled_counts=_travelled_counts(transfer),
         position_error=transfer.get("position_error"),
     )
 
@@ -363,7 +433,7 @@ def _rf001(ctx):
 
     ctx.record("rf001_transfer", failure=failure, **transfer)
 
-    travelled = transfer.get("travelled_counts")
+    travelled = _travelled_counts(transfer)
 
     ctx.check(failure is None,
               "the measurement completed without an error",
@@ -456,6 +526,19 @@ def _every_slot(ctx):
         row = {"stage": "per_slot", "slot": slot}
 
         try:
+            # SELECT, THEN MEASURE - THE PRODUCTION ORDER.
+            #
+            # `measure_raw` refuses a slot that is not the selected one:
+            # "Slot 2 is not the selected slot (Slot 1 is)". That refusal
+            # is correct and it is what the operator flow is built on -
+            # the mechanism and the request have to agree before a
+            # sample is swung to the scanner. This test measured four
+            # slots without ever selecting one, so it reported three
+            # failures against a firmware that was behaving exactly as
+            # designed.
+            ctx.carousel.select_slot(
+                slot, sample_id="HW-B8-003-slot{}".format(slot))
+
             transaction = ctx.carousel.measure(
                 slot, sample_id="HW-B8-003-slot{}".format(slot))
 
@@ -470,8 +553,19 @@ def _every_slot(ctx):
 
             row["ok"] = not problems
             row["elapsed_ms"] = transaction["elapsed_ms"]
-            row["reported_slot"] = answer.get("slot") or (
-                answer.get("carousel") or {}).get("selected_slot")
+            # `slot_id`, NOT `slot`. The answer's `slot` is the whole
+            # slot RECORD - occupancy, sample id and the measurement
+            # itself - so comparing it with a slot NUMBER could never
+            # match, and the check that exists to prove no state leaked
+            # between measurements failed on every run against a board.
+            row["reported_slot"] = answer.get("slot_id")
+
+            if row["reported_slot"] is None:
+                row["reported_slot"] = (
+                    (answer.get("slot") or {}).get("slot_id")
+                    if isinstance(answer.get("slot"), dict)
+                    else answer.get("slot")
+                )
 
             carousel = answer.get("carousel") or {}
 

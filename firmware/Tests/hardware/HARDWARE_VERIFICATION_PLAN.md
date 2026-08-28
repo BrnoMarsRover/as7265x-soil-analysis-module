@@ -25,7 +25,7 @@ What to do when the rover is connected.
 | Assumption | Tests |
 | --- | --- |
 | H-001 | `HW-B4-001`, `HW-B4-002`, `HW-B4-003` |
-| H-002 | `HW-B2-002`, `HW-B2-004`, `HW-B2-006`, `HW-B3-001`, `HW-B3-003`, `HW-B3-004`, `HW-B8-002` |
+| H-002 **RESOLVED** | `HW-B2-013`, `HW-B2-014`, `HW-B3-006`, `HW-B3-007`, `HW-B3-008`, `HW-B8-002` |
 | H-003 | `HW-B6-004`, `HW-B7-002`, `HW-B7-005` |
 | H-004 | `HW-B0-004`, `HW-B1-005` |
 | H-005 | `HW-B3-002`, `HW-B3-005`, `HW-B5-003` |
@@ -111,40 +111,58 @@ spread, not from the number that happens to be there.
 either the tolerance is too tight or the mechanism has a problem the
 tolerance was hiding.
 
-### H-002 — the encoder tracks the mechanism in STEP mode
+### H-002 — RESOLVED ON HARDWARE, 2026-08-28
 
-**This is the open question from RF-001 and it is the most important
-item in this document.**
+**Hypothesis 3 was right: the present-position register does not mean
+what the driver assumed in STEP mode.**
 
-On the Linux bench a 180 degree transfer was commanded, the carousel
-visibly rotated, and the encoder reported **2 counts** of travel. The
-firmware refused the measurement, which was correct. What is not known
-is why the encoder and the operator disagreed.
+In step servo mode register 56 is the **following error** - the signed
+distance from where the shaft is to the target of the current step
+command - not an absolute position. A completed 180 degree transfer
+therefore reads about 2 counts before it and about 2 counts after it,
+because the servo was within its dead band at both ends. The driver was
+comparing an error against a position, and its arithmetic, which was
+correct throughout, produced the only conclusion those readings allow.
 
-**Software has verified:** the arithmetic. `centred_error` is correct at
-every one of the 4096 positions; `expected = wrap_counts(start +
-requested)` is right; the tolerance comparison is right. Given the
-readings the driver received, the refusal was the only correct outcome.
+The absolute position IS available in step mode, from register 67, the
+commanded multi-turn trajectory. That register is OPEN LOOP: with the
+torque limit written to 0 it advanced the full commanded 512 counts
+while the shaft could not have moved and register 56 sat at 514. So the
+measurement is the pair:
 
-**Hardware must establish** which of these is true:
+    measured absolute position = register 67 - register 56
 
-1. the servo was in position mode, not STEP mode, so a relative goal was
-   interpreted as an absolute one;
-2. `counts_per_rev` does not match the servo's actual resolution;
-3. the present-position register does not update in STEP mode as the
-   driver assumes;
-4. the servo moved mechanically without the encoder following - a
-   coupling or gearbox fault;
-5. the position read is racing the movement and settling is insufficient.
+Confirmed against ground truth taken by switching to position servo
+mode with the torque off, where register 56 IS the absolute angle: step
+mode gave 3527 - 2 = 3525, and mode 0 read 3525, 3525, 3525.
 
-**How:** connect the servo, run `servo_diagnostics`, read the mode
-register, then command a known relative movement and read the position
-before and after with the mechanism free. Compare with a protractor.
+**The other four hypotheses are eliminated by the same measurements.**
+The mode register read 3 throughout; eight consecutive +512 steps moved
+exactly one revolution, so `counts_per_rev` is right and there is no
+reduction (**H-005 resolved with it**); the absolute position tracked
+every command, so nothing is mechanically decoupled; and the reading is
+stable indefinitely, so nothing is racing the movement.
 
-**Falsified if:** the encoder tracks correctly. Then the bench failure
-was a one-off electrical event and the diagnostic added in Phase A.2 -
-which now prints travelled counts alongside the error - will say so next
-time.
+**Full evidence:** `artifacts/H-002-evidence-20260828.md`.
+
+**Found while proving it, and more dangerous than H-002 was:** register
+67 clamps at 32766, roughly eight revolutions of NET one-directional
+travel. Past the clamp the servo stops moving in BOTH directions and
+still reports a following error of about 2 - a movement that would
+report VERIFIED and would not happen. A carousel that always takes the
+shortest path to the next slot accumulates a full revolution every four
+samples, so this is reached in ordinary service, not at the edge of it.
+The driver folds the register back before it can happen, by passing
+through position servo mode, which reseeds it from the absolute encoder
+and moves nothing; the logical carousel angle is carried across
+unchanged. `HW-B3-008` drives the register there and watches it fold.
+
+**Now covered by:** `HW-B2-013` (the position changes when the carousel
+moves), `HW-B2-014` (diagnostics does not claim more than it proves),
+`HW-B3-006` (a re-sync reads exactly 0.0 deg at any raw count),
+`HW-B3-007` (a held carousel is reported as a failure),
+`HW-B3-008` (the trajectory register is folded before it clamps),
+`HW-B8-002` (the RF-001 regression itself).
 
 ### H-003 — the AS7265x is ready within the configured integration time
 
@@ -171,13 +189,18 @@ wedge the bridge, and that the board never resets during them. This is
 also where **RF-002** belongs: `/dev/ttyUSB0` disappeared mid-request on
 the bench and the electrical cause is unknown.
 
-### H-005 — a half turn is exactly 2048 counts on this mechanism
+### H-005 — RESOLVED ON HARDWARE, 2026-08-28
 
-`CAROUSEL_HALF_TURN_DEG` and the 4096-count assumption give 2048.
+`CAROUSEL_HALF_TURN_DEG` and the 4096-count assumption give 2048, and
+that is right. Eight consecutive +512 steps moved the absolute position
+from 3015 to 7111 - exactly +4096, one revolution - and four -1024
+steps brought it back to 3015 exactly. There is no reduction between
+the encoder and the counted position, so no angle in the firmware is
+scaled by an unknown ratio.
 
-**Hardware must establish:** whether the mechanism has a reduction
-between servo and carousel. If it does, every angle in the firmware is
-wrong by that ratio and H-002 explains itself.
+What a plate-to-shaft reduction would still hide is not electrically
+observable; `HW-B3-005` remains the protractor measurement that would
+settle that, and it needs an operator.
 
 ### H-006 — backlash does not accumulate
 

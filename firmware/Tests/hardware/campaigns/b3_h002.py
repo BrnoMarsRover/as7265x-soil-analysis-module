@@ -215,6 +215,134 @@ def register(registry):
     )
 
     registry.test(
+        test_id="HW-B3-006", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-SERVO-017",),
+        title="A re-sync makes the carousel read exactly zero degrees",
+        objective="Prove the logical carousel coordinate is the "
+                  "operator's own reference and not the servo's, at "
+                  "whatever raw count the mechanism happens to sit.",
+        hardware_setup="Servo connected, carousel free. NOTHING MOVES "
+                       "- a re-sync records where the mechanism "
+                       "already is.",
+        preconditions="HW-B2-002 passed.",
+        procedure=(
+            "read the raw encoder count and record it",
+            "send sync_position for the slot at the loading hole",
+            "check the reported carousel angle is exactly 0.0 degrees",
+            "check the raw encoder count is UNCHANGED - nothing moved",
+            "check the raw count is still separately reported",
+            "move one slot and re-sync again at a different raw count, "
+            "and check the angle is 0.0 there too",
+        ),
+        expected="0.0 degrees after every re-sync, at two different raw "
+                 "counts, with the raw counts still visible.",
+        failure_criteria="A non-zero angle at the origin - which is "
+                         "the raw count being reported as the "
+                         "carousel's position, the confusion that made "
+                         "a freshly aligned carousel read 0.18 deg. Or "
+                         "a raw count that CHANGED, which would mean a "
+                         "re-sync moves the mechanism.",
+        captures=("the raw count before and after each sync",
+                  "the reported angle after each sync",
+                  "the recorded origin"),
+        safety=Safety.MOTION, automation=Automation.AUTOMATIC,
+        requires=("servo.read_position", "servo.connect",
+                  "carousel.sync"),
+        run=_origin_is_zero, cleanup=_stop_and_release,
+        assumption="H-002", defect_prefix="HW-CAR",
+    )
+
+    registry.test(
+        test_id="HW-B3-007", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-SERVO-018",),
+        title="A movement the mechanism does not make is reported failed",
+        objective="Prove the driver's verification survives contact "
+                  "with a real mechanical failure, and that its report "
+                  "separates 'the profile never ran' from 'the profile "
+                  "ran and the shaft did not follow'.",
+        hardware_setup="Servo connected. THE OPERATOR HOLDS THE "
+                       "CAROUSEL. Hold the plate lightly by its rim so "
+                       "it cannot turn; do not brace it against "
+                       "anything and let go the moment the test says "
+                       "so. One slot is commanded, at the production "
+                       "speed, and the driver's own timeout bounds how "
+                       "long the servo pushes.",
+        preconditions="HW-B2-013 passed - a movement that CAN be "
+                      "verified must be demonstrated before a movement "
+                      "that cannot.",
+        procedure=(
+            "confirm the operator is holding the carousel",
+            "command one slot",
+            "check the driver reports a failure, not a success",
+            "check the report says the trajectory register DID advance "
+            "by the commanded amount",
+            "check it says the measured travel did NOT",
+            "ask the operator to release, then re-sync and confirm "
+            "normal movement is restored",
+        ),
+        expected="A refused movement whose evidence names the "
+                 "mechanism, not the bus: trajectory ran, measurement "
+                 "did not follow.",
+        failure_criteria="A movement reported as verified while the "
+                         "plate was held. The trajectory register is "
+                         "open loop and reaches its target under a "
+                         "stall, so a driver reading only that would "
+                         "pass this - and would pass a carousel that "
+                         "never turned.",
+        captures=("the error code and its motion evidence",
+                  "trajectory_travelled and measured_travel",
+                  "the following error at the end",
+                  "the operator's confirmation at each step"),
+        safety=Safety.MOTION, automation=Automation.OPERATOR_ASSISTED,
+        requires=("servo.test_move", "servo.read_position",
+                  "servo.connect"),
+        run=_held_carousel_is_a_failure, cleanup=_stop_and_release,
+        assumption="H-002", defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
+        test_id="HW-B3-008", campaign=CAMPAIGN, layer="B3",
+        requirements=("HW-REQ-SERVO-019",),
+        iteration_kind=IterationKind.MOVEMENT,
+        title="The trajectory register is folded back before it clamps",
+        objective="Prove a long one-directional session never reaches "
+                  "the register clamp, and that the fold moves nothing "
+                  "and changes no logical angle.",
+        hardware_setup="Servo connected, carousel free. LONG: this "
+                       "drives the carousel through roughly eight "
+                       "revolutions at the production speed, about two "
+                       "minutes. Nothing is loaded in the slots.",
+        preconditions="HW-B2-013 passed.",
+        procedure=(
+            "re-sync, then record the trajectory register and the angle",
+            "command half turns in one direction, repeatedly",
+            "watch the trajectory register accumulate",
+            "check a fold happens BEFORE the register reaches 32766",
+            "check the carousel angle across the fold is what the "
+            "commanded travel says it should be",
+            "check movement still works afterwards",
+        ),
+        expected="The register is folded back inside one revolution "
+                 "before the clamp, the fold is reported, and the "
+                 "logical angle is continuous across it.",
+        failure_criteria="The register reaching 32766. Measured there: "
+                         "the servo stops moving in BOTH directions and "
+                         "still reports a following error of about 2, "
+                         "so every later movement would report VERIFIED "
+                         "and would not happen.",
+        captures=("the trajectory register at every leg",
+                  "the headroom at every leg",
+                  "where the fold happened and what it reported",
+                  "the angle either side of it"),
+        safety=Safety.MOTION, automation=Automation.AUTOMATIC,
+        requires=("servo.test_move", "servo.read_position",
+                  "servo.connect", "carousel.sync"),
+        run=_trajectory_is_folded, cleanup=_stop_and_release,
+        default_iterations=20, max_iterations=40,
+        defect_prefix="HW-SERVO",
+    )
+
+    registry.test(
         test_id="HW-B3-004", campaign=CAMPAIGN, layer="B3",
         requirements=("HW-REQ-SERVO-007",),
         title="Byte-order interpretation of the raw position register",
@@ -287,6 +415,272 @@ def register(registry):
 # ======================================================================
 # shared
 # ======================================================================
+
+def _origin_is_zero(ctx):
+    """
+    Re-sync twice, at two different raw counts, and check both read 0.0.
+
+    The MOVEMENT in this test is only there to reach a second raw
+    count. The property under test is that a re-sync moves nothing and
+    that the logical zero is the operator's reference rather than the
+    servo's.
+    """
+    ctx.require("servo.read_position", "servo.connect", "carousel.sync")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+
+    observations = []
+
+    for index, move_first in enumerate((False, True), start=1):
+        if move_first:
+            ctx.carousel.move_slots("cw", 1)
+
+        raw_before = ctx.servo.position()
+
+        ctx.carousel.sync(load_slot=1)
+
+        feedback = ctx.servo.feedback()
+        raw_after = feedback.get("position_counts")
+        angle = feedback.get("angle_deg")
+
+        entry = {
+            "sync": index,
+            "raw_before": raw_before,
+            "raw_after": raw_after,
+            "angle_deg": angle,
+            "origin_counts": feedback.get("origin_counts"),
+        }
+
+        observations.append(entry)
+
+        ctx.measure(stage="origin", **entry)
+
+        ctx.check(angle == 0.0,
+                  "sync {}: the carousel reads exactly 0.0 deg at raw "
+                  "count {}".format(index, raw_after),
+                  evidence=entry)
+
+        ctx.check(raw_before == raw_after,
+                  "sync {}: the raw encoder count did not change - a "
+                  "re-sync records, it does not move".format(index),
+                  evidence=entry)
+
+        ctx.check(feedback.get("origin_counts") == raw_after,
+                  "sync {}: and the origin recorded is that same raw "
+                  "count, still separately reported".format(index),
+                  evidence=entry)
+
+    raws = [entry["raw_after"] for entry in observations]
+
+    ctx.check(len(set(raws)) == len(raws),
+              "the two syncs happened at DIFFERENT raw counts ({}), so "
+              "0.0 deg is not an accident of where the servo "
+              "was".format(raws),
+              evidence={"observations": observations})
+
+    ctx.record("origin_is_zero", observations=observations)
+
+    non_zero = [entry for entry in observations
+                if entry["angle_deg"] not in (0.0, 0, -0.0)]
+
+    if non_zero:
+        ctx.defect(
+            title="a freshly synchronized carousel does not read zero",
+            observed="{}".format(non_zero),
+            expected="0.0 deg immediately after every sync_position",
+            reproduction=("run HW-B3-006",),
+            suspected_layer="the carousel coordinate - most likely the "
+                            "raw encoder count being reported in "
+                            "degrees instead of the angle from the "
+                            "origin",
+            evidence={"observations": observations},
+        )
+
+
+def _held_carousel_is_a_failure(ctx):
+    """
+    Ask the operator to hold the plate, then command a movement.
+
+    THE ONLY WAY TO PRODUCE A REAL STALL THROUGH THE PRODUCTION COMMAND
+    SURFACE. The competition firmware has no command that writes an
+    arbitrary servo register, and it must not grow one, so the torque
+    limit cannot be dropped from here. A hand on the rim is the honest
+    substitute and it tests the same thing: a profile that runs while
+    the shaft does not follow.
+    """
+    ctx.require("servo.test_move", "servo.read_position", "servo.connect")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+
+    held = ctx.confirm_observation(
+        "Hold the carousel plate lightly by its rim so it cannot turn. "
+        "Do not brace it against anything, and let go if it starts to "
+        "move. Are you holding it now?")
+
+    if not held:
+        ctx.inconclusive(
+            "the operator did not confirm they were holding the plate, "
+            "so nothing was commanded",
+            missing=("an operator holding the carousel",))
+
+        return
+
+    before = ctx.servo.feedback()
+
+    outcome = {"raised": False}
+
+    try:
+        transaction = ctx.servo.move_degrees(
+            ctx.profile.production["carousel"]["slot_spacing_deg"])
+
+        outcome["record"] = transaction["data"]
+
+    except Exception as error:                             # noqa: BLE001
+        outcome["raised"] = True
+        outcome["code"] = getattr(error, "code", None)
+        outcome["message"] = str(error)
+        outcome["motion"] = (getattr(error, "data", None) or {}).get(
+            "motion_detail") or (getattr(error, "data", None) or {})
+
+    ctx.instruct("Let go of the carousel now.")
+
+    after = ctx.servo.feedback()
+
+    ctx.record("held_carousel", before=before, after=after, **outcome)
+
+    ctx.check(outcome["raised"],
+              "the driver refused the movement instead of reporting it "
+              "verified",
+              evidence=outcome)
+
+    motion = outcome.get("motion") or {}
+
+    ctx.check(motion.get("trajectory_ran") is True,
+              "and its evidence says the trajectory register DID "
+              "advance by the commanded amount - the servo accepted and "
+              "ran the command",
+              evidence={"motion": motion})
+
+    ctx.check(motion.get("encoder_moved") is False
+              or abs(motion.get("travelled_counts") or 0)
+              < abs(motion.get("expected_position") or 1),
+              "while the measured travel did not follow it - so the "
+              "report names the MECHANISM, not the bus",
+              evidence={"motion": motion})
+
+    # And the mechanism is fine afterwards.
+    ctx.carousel.sync(load_slot=1)
+
+    recovered = ctx.servo.move_degrees(
+        ctx.profile.production["carousel"]["slot_spacing_deg"])
+
+    ctx.check((recovered["data"] or {}).get("verified") is True,
+              "and once released, a normal movement verifies again",
+              evidence={"record": recovered["data"]})
+
+
+def _trajectory_is_folded(ctx):
+    """
+    Drive the trajectory register toward its clamp and watch it fold.
+
+    LONG AND DELIBERATELY SO. The register only accumulates NET
+    one-directional travel, so nothing short of about eight revolutions
+    reaches the interesting part. The alternative - trusting that the
+    fold works because the code says so - is exactly the reasoning that
+    produced H-002.
+    """
+    ctx.require("servo.test_move", "servo.read_position",
+                "servo.connect", "carousel.sync")
+
+    ctx.link.request("connect_servo", timeout=ctx.servo._move_timeout())
+    ctx.carousel.sync(load_slot=1)
+
+    half_turn = ctx.profile.data["motion"]["max_degrees_per_leg"]
+    limit = None
+    legs = []
+    folds = []
+
+    for index in range(1, ctx.iterations() + 1):
+        transaction = ctx.servo.move_degrees(half_turn)
+        record = transaction["data"] or {}
+
+        feedback = ctx.servo.feedback()
+
+        limit = feedback.get("trajectory_limit") or limit
+
+        leg = {
+            "leg": index,
+            "trajectory": feedback.get("trajectory_counts"),
+            "headroom": feedback.get("trajectory_headroom"),
+            "angle_deg": feedback.get("angle_deg"),
+            "verified": record.get("verified"),
+            "reseeds": feedback.get("trajectory_reseeds"),
+        }
+
+        legs.append(leg)
+        ctx.measure(stage="accumulate", **leg)
+
+        ctx.check(record.get("verified") is True,
+                  "leg {}: the half turn verified".format(index),
+                  evidence=leg)
+
+        if leg["reseeds"] and (not folds or leg["reseeds"] > folds[-1]):
+            folds.append(leg["reseeds"])
+
+    ctx.record("trajectory_accumulation", legs=legs, limit=limit,
+               folds=folds)
+
+    reached = [leg for leg in legs
+               if leg["trajectory"] is not None and limit
+               and abs(leg["trajectory"]) >= limit]
+
+    ctx.check(not reached,
+              "the trajectory register never reached its {} clamp - "
+              "past it the servo stops moving in both directions and "
+              "still reports a following error of about 2".format(limit),
+              evidence={"reached": reached})
+
+    if not folds:
+        ctx.characterize(
+            "the register did not accumulate far enough to fold in {} "
+            "legs; the headroom left is {}. Raise the iteration count "
+            "to reach it.".format(
+                len(legs), legs[-1]["headroom"] if legs else None),
+            measurements=legs)
+
+        return
+
+    ctx.check(bool(folds),
+              "the register was folded back {} time(s) before the "
+              "clamp".format(len(folds)),
+              evidence={"folds": folds, "legs": legs})
+
+    # The angle must be continuous across the fold: the fold is a
+    # change of raw frame and nothing else, so a jump here would mean
+    # the carousel's own coordinate moved when nothing did.
+    jumps = []
+
+    for previous, current in zip(legs, legs[1:]):
+        if previous["angle_deg"] is None or current["angle_deg"] is None:
+            continue
+
+        step = centred_degrees(
+            current["angle_deg"] - previous["angle_deg"])
+
+        if abs(abs(step) - half_turn) > 2.0:
+            jumps.append({"from": previous, "to": current, "step": step})
+
+    ctx.check(not jumps,
+              "and the logical carousel angle advanced by one half turn "
+              "at every leg, including across the fold - the fold "
+              "changes the raw frame and nothing else",
+              evidence={"jumps": jumps})
+
+
+def centred_degrees(degrees):
+    """Fold an angle into (-180, 180]. Local, so B3 needs no import."""
+    return ((float(degrees) + 180.0) % 360.0) - 180.0
+
 
 def _stop_and_release(ctx):
     """

@@ -227,32 +227,66 @@ class ServoAdapter(Adapter):
         "current_position",
     )
 
+    # The diagnostics step that carries the telemetry block. It was
+    # called `feedback` until the name was found to be a promise the
+    # step could not keep - reading a register is not evidence that the
+    # register tracks the mechanism - and both names are accepted here
+    # so this adapter can still read a board that has not been
+    # re-flashed.
+    TELEMETRY_STEPS = ("telemetry_read", "feedback")
+
+    def feedback(self):
+        """
+        The whole telemetry block, or an empty dict.
+
+        Everything else on this adapter reads through here, so a test
+        that wants the position, the following error and the trajectory
+        together gets them from ONE transaction and one instant. Taking
+        them from three calls would compare numbers from three
+        different moments, which is the mistake the driver itself was
+        changed to stop making.
+        """
+        report = self.diagnostics()["data"] or {}
+
+        block = report.get("feedback")
+
+        if isinstance(block, dict) and block:
+            return block
+
+        for step in report.get("steps", []):
+            if step.get("step") in self.TELEMETRY_STEPS and isinstance(
+                    step.get("value"), dict):
+                return step["value"]
+
+        return {}
+
     def position(self):
         """
-        The servo's present position in encoder counts, or None.
+        The servo's MEASURED position in encoder counts, or None.
 
         Returns None rather than raising when the report has no
         position: "the servo did not tell us where it is" is a result,
         and a KeyError here would lose it.
         """
-        report = self.diagnostics()["data"]
-
-        feedback = (report or {}).get("feedback") or {}
+        feedback = self.feedback()
 
         for key in self.POSITION_KEYS:
             if key in feedback:
                 return feedback[key]
 
-        for step in (report or {}).get("steps", []):
-            if step.get("step") == "feedback" and isinstance(
-                    step.get("value"), dict):
-                value = step["value"]
-
-                for key in self.POSITION_KEYS:
-                    if key in value:
-                        return value[key]
-
         return None
+
+    def following_error(self):
+        """Register 56 as step servo mode means it, or None."""
+        return self.feedback().get("following_error_counts")
+
+    def trajectory(self):
+        """Register 67, the commanded position, or None."""
+        return self.feedback().get("trajectory_counts")
+
+    def angle_deg(self):
+        """The LOGICAL carousel angle from the origin, or None."""
+        return self.feedback().get("angle_deg")
 
     # ------------------------------------------------------------------
 

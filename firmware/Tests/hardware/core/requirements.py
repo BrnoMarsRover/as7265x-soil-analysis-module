@@ -358,6 +358,59 @@ _requirement(
     assumption="H-002")
 
 _requirement(
+    "HW-REQ-SERVO-016",
+    "The reported position CHANGES when the mechanism moves",
+    "Between the start and the end of a real commanded movement the "
+    "position the driver reports changes by the commanded amount, "
+    "within tolerance. Reading the register successfully does not "
+    "satisfy this; only a movement can.",
+    Source.NONE,
+    "THIS IS THE PROPERTY PRODUCTION DEPENDS ON, AND IT WAS THE ONE "
+    "NOTHING TESTED. The old `feedback` diagnostic step passed on a "
+    "bench where a completed 180 degree transfer reported two counts "
+    "of travel, because all it ever proved was that a register could "
+    "be read. A verification that a movement happened must be built on "
+    "a measurement that moves.",
+    assumption="H-002")
+
+_requirement(
+    "HW-REQ-SERVO-017",
+    "The logical carousel origin reads exactly zero degrees",
+    "After a re-sync the reported carousel angle is 0.0 degrees, "
+    "whatever raw encoder count the servo happens to read there, and "
+    "the raw count remains separately reportable.",
+    Source.PRODUCTION_CONFIG,
+    "The operator's reference is the position they aligned by hand. A "
+    "screen that shows the raw count converted to degrees reports 0.18 "
+    "deg for a carousel that is exactly at its origin.")
+
+_requirement(
+    "HW-REQ-SERVO-018",
+    "A movement the mechanism did not make is reported as failed",
+    "When the servo accepts and runs a command that the output shaft "
+    "does not follow, the driver reports a failure rather than a "
+    "success, and its report distinguishes a profile that never ran "
+    "from a mechanism that did not follow one that did.",
+    Source.NONE,
+    "The trajectory register is open loop and reaches its target under "
+    "a stall; the following error is the only witness that the shaft "
+    "did not. A verification built on the first would pass a carousel "
+    "that never turned.",
+    assumption="H-002")
+
+_requirement(
+    "HW-REQ-SERVO-019",
+    "The trajectory register never reaches its clamp in service",
+    "The commanded-trajectory register is folded back inside one "
+    "revolution before it reaches 32766, the fold moves nothing, and "
+    "the logical carousel angle is unchanged across it.",
+    Source.NONE,
+    "Measured: at the clamp the servo stops moving in BOTH directions "
+    "and still reports a following error of about 2. A movement there "
+    "would report VERIFIED and would not happen, which is the one "
+    "outcome this subsystem exists to prevent.")
+
+_requirement(
     "HW-REQ-SERVO-005", "The deployed firmware is the shipped firmware",
     "The servo calibration report matches every value in config.py.",
     Source.PRODUCTION_CONFIG,

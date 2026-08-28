@@ -371,14 +371,32 @@ def print_system_status(mission):
               geometry.get("half_turn_deg", 180.0),
           ))
     print("Synchronized:     {}".format(
-        "YES" if carousel.get("position_valid") else "NO"
+        carousel.get("position_state")
+        or ("YES" if carousel.get("position_valid") else "NO")
+    ))
+
+    # THE CAROUSEL COORDINATE, ON ITS OWN LINE, ABOVE THE RAW COUNTS.
+    #
+    # Zero at the operator's own reference whatever the servo reads
+    # there. The two `Encoder`/`Origin` lines below are servo-frame
+    # telemetry and say so: the origin used to be printed as
+    # "N counts (M deg)", and that M was the raw count in degrees,
+    # which is a number about the servo and not about the carousel.
+    print("Carousel angle:   {}".format(
+        "no origin - re-sync to set 0 deg"
+        if carousel.get("angle_deg") is None
+        else "{:+.1f} deg".format(carousel["angle_deg"])
     ))
     print("Selected slot:    {}".format(carousel.get("selected_slot")))
     print("Loader:           {}".format(carousel.get("current_load_slot")))
     print("Scanner:          {}".format(carousel.get("current_scan_slot")))
+
     if origin.get("feedback"):
-        print("Origin:           {} counts ({} deg)".format(
-            origin.get("origin_counts"), origin.get("origin_deg")
+        print("Encoder raw:      {} counts".format(
+            reference.get("encoder_counts")
+        ))
+        print("Origin raw:       {} counts".format(
+            origin.get("origin_counts")
         ))
 
     else:
@@ -1111,18 +1129,21 @@ def print_servo_block(servo):
         print("  ** WRONG MODE - run SERVICE: write servo "
               "configuration **")
 
-    # THE RAW WORD BESIDE THE DECODED ONE - H-002.
+    # THE LOGICAL ANGLE FIRST, THE RAW COUNT UNDERNEATH IT, LABELLED.
     #
-    # `decode_signed` maps 0x8002 to -2, which on screen is
-    # indistinguishable from a genuine -2. Diagnostics is where that
-    # distinction belongs: the main screen keeps the decoded value
-    # alone, this screen shows what the register actually held.
-    raw_position = backend.get("position_raw")
+    # This line used to read "Encoder: 2 cnt / 0.18 deg" and that was
+    # the carousel's position as far as any operator could tell. It was
+    # not: 0.18 deg is two encoder counts of a servo-frame value with an
+    # arbitrary offset, and a carousel that has just been re-synchronized
+    # is at 0.0 deg by definition however that value reads.
+    angle = backend.get("angle_deg")
 
-    print("  Position:      {} counts ({} deg){}".format(
-        backend.get("position_counts"), backend.get("position_deg"),
-        "" if raw_position is None
-        else "   raw 0x{:04X}".format(raw_position),
+    print("  Carousel:      {}".format(
+        "no origin - re-sync to set 0 deg" if angle is None
+        else "{:+.1f} deg from origin".format(angle)
+    ))
+    print("  Encoder raw:   {} cnt   origin {} cnt".format(
+        backend.get("position_counts"), backend.get("origin_counts"),
     ))
     print("  Moving:        {}".format(backend.get("moving")))
     print("  Torque:        {}".format(backend.get("torque_enabled")))
@@ -1184,21 +1205,38 @@ def print_servo_telemetry(backend):
         )),
         ("Torque", backend.get("torque_enabled")),
         ("Moving", backend.get("moving")),
-        # THE RAW WORD BESIDE THE DECODED ONE - H-002.
+
+        # THE CAROUSEL COORDINATE AND THE SERVO REGISTERS, IN THAT
+        # ORDER AND NEVER CONFLATED.
         #
-        # `decode_signed` maps 0x8002 to -2, and on a screen that is
-        # indistinguishable from a genuine -2. Until the raw word was
-        # kept, nothing downstream could separate "the encoder really is
-        # near zero" from "the sign rule is reading a large value as a
-        # small one" - two hypotheses needing opposite investigations.
-        # This is the diagnostics view, which is where that belongs.
-        ("Position", None if backend.get("position_counts") is None
-         else "{} cnt / {} deg{}".format(
-             backend.get("position_counts"), backend.get("position_deg"),
-             "" if backend.get("position_raw") is None
-             else "   raw 0x{:04X}".format(backend["position_raw"]))),
+        # `Carousel` is the logical angle from the operator's own
+        # origin, so it reads +0.0 deg the instant a re-sync completes
+        # whatever the raw count is. Everything below it is servo-frame
+        # engineering data, kept because H-002 was diagnosed from
+        # exactly these numbers and the next such problem will be too.
+        ("Carousel", "no origin captured"
+         if backend.get("angle_deg") is None
+         else "{:+.1f} deg from origin".format(backend["angle_deg"])),
+        ("Encoder", None if backend.get("position_counts") is None
+         else "{} cnt  (measured shaft position)".format(
+             backend.get("position_counts"))),
         ("Origin", None if backend.get("origin_counts") is None
          else "{} cnt".format(backend.get("origin_counts"))),
+
+        # The two registers the measurement is derived from. Reported
+        # so the derivation can be checked rather than trusted: 67
+        # minus 56 is the position, 56 alone is how far the mechanism
+        # is from where it was told to be.
+        ("Trajectory", None if backend.get("trajectory_counts") is None
+         else "{} cnt  (reg 67, commanded, open loop)".format(
+             backend.get("trajectory_counts"))),
+        ("Follow err", None
+         if backend.get("following_error_counts") is None
+         else "{} cnt / {} deg  (reg 56{})".format(
+             backend.get("following_error_counts"),
+             backend.get("following_error_deg"),
+             "" if backend.get("position_raw") is None
+             else ", raw 0x{:04X}".format(backend["position_raw"]))),
         ("Per rev", backend.get("counts_per_rev")),
         ("Speed", None if backend.get("speed_steps_per_s") is None
          else "{} steps/s".format(backend.get("speed_steps_per_s"))),
@@ -1242,6 +1280,22 @@ def print_servo_telemetry(backend):
                  last.get("start_position"), last.get("actual_position"))),
             ("Expected", last.get("expected_position")),
             ("Error", last.get("position_error")),
+
+            # WHICH HALF RAN. The trajectory is open loop, so a
+            # movement where it advanced the full commanded distance
+            # and the encoder did not is a MECHANICAL fault; one where
+            # neither advanced never reached the servo at all. Two
+            # completely different next actions, and until these were
+            # reported separately they arrived as the same line.
+            ("Trajectory", None if last.get("trajectory_travelled") is None
+             else "{:+d} cnt commanded profile".format(
+                 last.get("trajectory_travelled"))),
+            ("Measured", None if last.get("measured_travel") is None
+             else "{:+d} cnt / {} deg actually travelled".format(
+                 last.get("measured_travel"),
+                 last.get("measured_travel_deg"))),
+            ("Verified", last.get("verification")),
+            ("Unverified", last.get("unverified_reason")),
             ("Elapsed", None if last.get("elapsed_ms") is None
              else "{} ms".format(last.get("elapsed_ms"))),
         ))

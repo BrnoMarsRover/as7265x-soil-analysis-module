@@ -189,6 +189,19 @@ try:
     expected = 1
     drift = []
 
+    # THOUSANDS OF BIASED MOVES IS EXACTLY WHERE THE TRAJECTORY
+    # REGISTER RUNS OUT, AND THAT IS A REAL EVENT, NOT A TEST ARTIFACT.
+    #
+    # Register 67 accumulates net one-directional travel and clamps at
+    # 32766 - about eight revolutions - after which the servo stops
+    # moving in either direction while still reporting a following
+    # error of about 2. The driver folds the register back before that
+    # can happen, which writes EPROM, moves nothing, and carries the
+    # logical angle across unchanged.
+    #
+    # This loop is biased clockwise, so it WILL get there, several
+    # times. Nothing here catches an error or performs a recovery: the
+    # point of the section is that a long biased session needs neither.
     for cycle in range(CAROUSEL_MOVES):
         direction = "cw" if cycle % 2 == 0 or cycle % 7 else "ccw"
         steps = (cycle % 4) + 1
@@ -209,6 +222,19 @@ try:
                  "{} movements, and the loading slot is still exactly "
                  "where the arithmetic says it should be".format(
                      CAROUSEL_MOVES))
+
+    servo = link.get_status()["servo"]["backend"] or {}
+    reseeds = servo.get("trajectory_reseeds")
+
+    checks.ok((reseeds or 0) > 0,
+              "the trajectory register was folded back {} time(s) on "
+              "the way - the real event a long biased session produces, "
+              "handled rather than avoided".format(reseeds))
+
+    checks.ok((servo.get("trajectory_headroom") or 0) > 0,
+              "and it is still short of its clamp, so the fold happened "
+              "BEFORE the servo could start refusing movements while "
+              "reporting them complete")
 
     status = link.get_status()
 

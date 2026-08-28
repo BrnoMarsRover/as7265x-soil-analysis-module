@@ -40,7 +40,18 @@ NOT_ANSWERING = "NOT ANSWERING"
 NOT_SELECTED = "NOT SELECTED"
 UNREACHABLE = "UNREACHABLE"
 
+# POSITION UNKNOWN MEANS NOBODY KNOWS WHERE THE CAROUSEL IS, and it is
+# reserved for that. It used to be the answer to every doubt, including
+# a movement that had completed and simply had not been confirmed - so
+# an operator was sent to look at a plate and re-synchronize hardware
+# that was working, over a lost status packet.
+#
+# The firmware reports three states now. UNVERIFIED is the middle one
+# and it is the whole point of having three: the position is BELIEVED,
+# it is measurable, and the way out is to read it again rather than to
+# go and look.
 POSITION_UNKNOWN = "POSITION UNKNOWN"
+POSITION_UNVERIFIED = "POSITION UNVERIFIED"
 
 # The sensor states the firmware actually reports. AS7265x.state()
 # returns exactly these three; nothing here invents a fourth.
@@ -128,19 +139,61 @@ def position_valid(status):
     return bool(carousel.get("position_valid"))
 
 
+def position_state(status):
+    """
+    SYNCHRONIZED, UNVERIFIED or UNKNOWN, as the firmware reports it.
+
+    Falls back to deriving it from `position_valid` for a firmware that
+    predates the three-state model, so an old board does not read as a
+    missing field.
+    """
+    carousel = (status or {}).get("carousel") or {}
+    state = carousel.get("position_state")
+
+    if state:
+        return state
+
+    return "SYNCHRONIZED" if carousel.get("position_valid") else "UNKNOWN"
+
+
+def carousel_angle(status):
+    """
+    The logical carousel angle in degrees, or None.
+
+    Zero at the operator's own re-sync point, whatever raw count the
+    servo reads there.
+    """
+    carousel = (status or {}).get("carousel") or {}
+
+    return carousel.get("angle_deg")
+
+
 def carousel_label(status):
     """
-    Where the carousel is, or that nobody knows.
+    Where the carousel is, or how far from certain.
 
     POSITION UNKNOWN outranks the phase: a phase read off an invalidated
-    position is a number the firmware itself does not believe.
+    position is a number the firmware itself does not believe. An
+    UNVERIFIED position is still a position, so the phase is shown with
+    the doubt beside it rather than in place of it.
     """
-    if not position_valid(status):
+    state = position_state(status)
+
+    if state == "UNKNOWN":
         return POSITION_UNKNOWN
 
     carousel = (status or {}).get("carousel") or {}
+    phase = carousel.get("carousel_phase") or "?"
 
-    return carousel.get("carousel_phase") or "?"
+    # THE ANGLE IS NOT APPENDED HERE. This label is a phase token that
+    # several screens print and compare; `carousel_angle` is the reader
+    # for the number, and the screens that want both print them on
+    # separate lines. Folding a measurement into an enum makes the enum
+    # stop being one.
+    if state == "UNVERIFIED":
+        return "{} - {}".format(phase, POSITION_UNVERIFIED)
+
+    return phase
 
 
 def recovery_action(status):
@@ -160,8 +213,17 @@ def recovery_action(status):
     if link == NOT_ANSWERING:
         return "Reconnect Servo", True
 
-    if not position_valid(status):
+    state = position_state(status)
+
+    if state == "UNKNOWN":
         return "Re-sync Carousel", True
+
+    if state == "UNVERIFIED":
+        # NOT a re-sync. The carousel is where it was sent as far as
+        # anything knows; what is missing is a reading, and a reading is
+        # one command away. Sending the operator to the plate here would
+        # be asking them to solve a transport problem by hand.
+        return "Refresh Status", True
 
     return None, False
 

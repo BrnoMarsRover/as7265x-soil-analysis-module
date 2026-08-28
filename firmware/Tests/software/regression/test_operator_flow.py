@@ -919,21 +919,48 @@ with OperatorBench() as bench:
     checks.ok("position_raw" in feedback,
               "the feedback block carries the undecoded word")
 
-    checks.equal(feedback["position_raw"], 2048,
-                 "which for a healthy in-range position is the same "
-                 "number - the point is that it is REPORTED, not that "
-                 "it differs")
+    checks.ok(feedback.get("trajectory_raw") is not None,
+              "and the trajectory word beside it - the measured "
+              "position is derived from BOTH, so one raw value alone "
+              "could not be checked against the wire")
 
     checks.ok(feedback.get("position_counts") is not None,
               "beside the decoded value the system actually uses")
+
+    # THE DERIVATION IS REPORTED, SO IT CAN BE CHECKED RATHER THAN
+    # TRUSTED. Register 56 is the following error in step mode and 67
+    # is the commanded trajectory; the position is one minus the other.
+    # Reading 56 as a position on its own is precisely what H-002 was.
+    checks.equal(
+        feedback["position_counts"],
+        feedback["trajectory_counts"] - feedback["following_error_counts"],
+        "the measured position IS the trajectory minus the following "
+        "error, and all three are on the screen")
 
     printed = captured(
         lambda: __import__("workflow.display", fromlist=["x"])
         .print_servo_telemetry(feedback))
 
-    checks.ok("raw 0x0800" in printed,
-              "and the diagnostics screen shows it in hex, where a set "
-              "bit 15 would be visible at a glance")
+    checks.ok("Carousel" in printed,
+              "the telemetry screen leads with the LOGICAL carousel "
+              "angle, not with an encoder count")
+
+    checks.ok("reg 67" in printed and "reg 56" in printed,
+              "and names the two registers the position came from")
+
+    # The ambiguity itself, on the screen that has to resolve it.
+    negative = dict(feedback)
+    negative["position_raw"] = 0x8002
+    negative["following_error_counts"] = -2
+    negative["following_error_deg"] = -0.176
+
+    printed = captured(
+        lambda: __import__("workflow.display", fromlist=["x"])
+        .print_servo_telemetry(negative))
+
+    checks.ok("raw 0x8002" in printed,
+              "and a following error of -2 shows the undecoded word in "
+              "hex, where the set bit 15 is visible at a glance")
 
     # It must be diagnostic ONLY - nothing may steer on it.
     control = (support.FIRMWARE / "ESP32" / "servo.py").read_text(

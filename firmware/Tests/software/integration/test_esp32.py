@@ -231,7 +231,7 @@ checks.equal(packet[-1], servo_module.checksum(list(packet[2:-1])),
              "and a valid trailing checksum")
 
 read = servo_module.build_packet(
-    1, servo_module.INST_READ, [servo_module.REG_PRESENT_POSITION, 2])
+    1, servo_module.INST_READ, [servo_module.REG_POSITION_FEEDBACK, 2])
 checks.equal(read[3], 4, "a two-parameter read has length 4")
 
 checks.equal(servo_module.encode_signed(-100), 0x8064,

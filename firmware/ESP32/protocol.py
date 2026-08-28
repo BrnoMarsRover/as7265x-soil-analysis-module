@@ -1110,8 +1110,27 @@ class Protocol:
         except ServoError as error:
             raise CommandError(error.code, error.message)
 
+        # THE CAROUSEL'S ORIGIN BELONGED TO THE OLD REGISTER FRAME.
+        #
+        # configure_mode passes the servo through position servo mode,
+        # which reseeds the trajectory register from the absolute
+        # encoder. Nothing MOVES - the plate is exactly where it was -
+        # but every count the carousel remembers was measured in a frame
+        # that no longer exists, so an origin carried across would give
+        # a confident angle that means nothing.
+        #
+        # `configure_mode` drops the driver's own origin; this is the
+        # carousel being told the same thing, in the one place that
+        # knows the slot mapping depends on it.
+        result["carousel"] = self.carousel.invalidate_position(
+            "the servo mode was rewritten and the trajectory register "
+            "reseeded; nothing moved, but the position reference is "
+            "gone"
+        )
+
         result["moved"] = False
         result["servo"] = self.servo.status()
+        result["carousel_status"] = self.carousel.status()
 
         return result
 

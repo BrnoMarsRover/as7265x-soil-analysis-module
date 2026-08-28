@@ -33,8 +33,8 @@ will actually work.
 | F | `--run-campaign B0` | environment and identity recorded | B0 FAIL — the bench is not what you think |
 | G | `--run-campaign B1` | link qualified | transport FAIL → stop; everything above rides on it |
 | H | `--run-campaign B2` | ID 1, STEP mode, pins as configured | mode ≠ 3, or no answer → servo/power, not software |
-| I | **H-002**: `+10`, `+45`, `+90`, then `+1024`, `+2048` | encoder tracks the mechanism | encoder ≈ 0 while the plate turns → H-002 confirmed; **stop, capture, do not change tolerance** |
-| J | B3 → B4 → B5 | only once H-002 is understood | B3 blocked while H-002 open |
+| I | `--run HW-B2-013` | the reported position changes by the commanded counts | it does not — H-002 has recurred; **stop, capture, do not change tolerance** |
+| J | B3 → B4 → B5 | `HW-B3-006`, `HW-B3-008` pass first | either fails |
 | K | B6, B7 | sensor qualified | AS7265X_NOT_FOUND recurs → sensor campaign, not carousel |
 | L | B8: 180 out → WHITE → UV → IR → 180 back | one full transaction, sample home | any stage FAIL → recovery flow, capture evidence |
 | M | repeat L ×10, then ×25 | closing error stays bounded | drift grows → stop, characterize |
@@ -78,16 +78,55 @@ file mismatch at once, read the `RECEIPT` line: if it PASSES, the
 firmware is the firmware you deployed and the rebuild is the thing
 that is wrong.
 
-### I. H-002 evidence
+### I. H-002 — resolved, and what to check if it comes back
 
-Every movement test records `start_position`, `actual_position`,
-`requested_counts`, `position_error`, per-leg detail and the closing
-error. Compare the small moves against the large ones: if `+10` tracks
-and `+1024` does not, the fault scales; if nothing tracks, it is the
-register or the mode.
+**Resolved on hardware 2026-08-28.** In step servo mode register 56 is
+the FOLLOWING ERROR, not a position, and the absolute position is
+register 67 minus it. See `artifacts/H-002-evidence-20260828.md`.
+
+Every movement record now carries both halves, and reading them in
+order is the whole diagnosis:
+
+| field | what it says |
+| --- | --- |
+| `trajectory_travelled` | how far the servo was TOLD to go. Open loop — it reaches the target under a stall too |
+| `measured_travel` | how far the shaft actually went |
+| `following_error` | how far the shaft is from the target now |
+| `verification` | `VERIFIED`, `UNVERIFIED` or `FAILED` |
+
+`trajectory_travelled` equal to the request while `measured_travel` is
+near zero means the command ran and the MECHANISM did not follow —
+a stall, a slipping coupling, an exhausted torque budget. Neither of
+them advancing means the command never reached the servo — bus, power
+or protocol.
 
 **Do not** raise `ST3215_POSITION_TOLERANCE`, disable encoder
-verification, or substitute commanded counts for measured position.
+verification, or substitute `trajectory_travelled` for
+`measured_travel`. The last of those would pass a carousel that never
+turned, which is exactly what the trajectory register does under a
+stall.
+
+### I.1 The trajectory register runs out, and it does so in service
+
+Register 67 accumulates NET one-directional travel and clamps at
+**32766**. Past the clamp the servo will not move in either direction
+and still reports a following error of about 2 — a movement that looks
+verified and did not happen.
+
+A carousel that takes the shortest path to each slot advances one slot
+every time, so a run working through slots 1-2-3-4-1 turns a full
+revolution every four samples and reaches the clamp after about thirty
+slot advances. **This is routine.**
+
+The driver folds the register back before it gets there: it passes
+through position servo mode, which reseeds register 67 from the
+absolute encoder, and it carries the logical carousel angle across
+unchanged. Nothing moves. It writes EPROM, so it is counted —
+`trajectory_reseeds` in the servo telemetry, beside
+`trajectory_headroom`, which is how far there is left to go.
+
+If you ever see `SERVO_TRAJECTORY_LIMIT`, the fold could not be made:
+run the servo configuration command, then re-synchronize.
 
 ---
 
@@ -99,7 +138,7 @@ verification, or substitute commanded counts for measured position.
 | **Servo OFFLINE** | sensor, link, records | sensor diagnostics, B6/B7 can still run | any carousel campaign |
 | **Servo ONLINE, position UNKNOWN** | servo link, sensor, all records | look at the plate, then **re-sync** | re-send the failed movement |
 | **Sensor UNAVAILABLE** | servo, carousel position | sensor diagnostics; the measure path re-probes and may recover it | moving a sample to chase a sensor fault |
-| **H-002 unresolved** | link, servo comms, sensor, B0/B1/B2/B6/B7 | characterize with the small-move sequence | B3/B4/B5/B8+ qualification claims |
+| **Position UNVERIFIED** | the servo link, the records, and the position itself — it is believed, not proven | read the status again; the position is measurable, it just was not measured at the one moment it mattered | treating it as a mechanical failure, or re-syncing working hardware |
 | **Return move failed** | the spectra — they are acquired and saved | re-sync, then continue | treating the record as a normal success |
 | **PC client restarted** | everything in `BD/` — samples, measurements, learning | reconnect; the client re-reads all state from the firmware | trusting any remembered position |
 | **ESP32 reset** | records on the PC | re-connect servo, re-sync | assuming position survived the reboot |

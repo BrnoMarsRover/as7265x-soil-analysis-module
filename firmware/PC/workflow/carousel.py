@@ -213,8 +213,27 @@ def menu_initial_calibration(mission):
             )),
             ("Link", ui_status.servo_link(status)),
             ("Mode", backend.get("mode_name")),
-            ("Encoder", "{} cnt / {} deg".format(
-                backend.get("position_counts"), backend.get("position_deg")
+
+            # THE CAROUSEL ANGLE, NOT THE ENCODER COUNT IN DEGREES.
+            #
+            # This line read "Encoder: 2 cnt / 0.18 deg" and an
+            # operator had every reason to read 0.18 deg as where the
+            # carousel was. It never was: the raw count is a
+            # servo-frame number with an arbitrary offset, and a
+            # carousel that has just been aligned under the loading
+            # hole is at 0.0 deg by definition whatever it reads.
+            #
+            # The raw counts are still here, one line down, labelled
+            # as what they are - this is the screen where the
+            # mechanism is checked, and hiding the telemetry would
+            # trade one confusion for a blind spot.
+            ("Angle", "no origin - use [7] to set 0 deg"
+             if ui_status.carousel_angle(status) is None
+             else "{:+.1f} deg from origin".format(
+                 ui_status.carousel_angle(status))),
+            ("Encoder", "{} cnt raw, origin {} cnt".format(
+                backend.get("position_counts"),
+                backend.get("origin_counts"),
             )),
             ("Power", "{} V".format(backend.get("voltage_v"))),
             ("Temp", "{} C".format(backend.get("temperature_c"))),
