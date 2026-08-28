@@ -2199,6 +2199,36 @@ class Protocol:
 
             return
 
+        # A bare `id` line, answered before the JSON parser sees it.
+        #
+        # Every Freya ESP32 -- science, drilling and astro-bio -- is an
+        # ESP32-DevKitC behind a CP2102, and they are descriptor-identical:
+        # same 10c4:ea60, same Silicon Labs factory serial "0001", same
+        # product string, and they collide in /dev/serial/by-id where all
+        # three claim the same filename. A host that has just opened a
+        # serial port therefore cannot tell which board it is holding.
+        #
+        # `ping` already carries this identity, but a host cannot ask for it
+        # without already knowing that this board speaks newline-delimited
+        # JSON with a request_id -- which is the very thing it is trying to
+        # find out. One bare word that every board answers breaks the
+        # circle; the astro-bio module answers the same `id`.
+        #
+        # Deliberately NOT routed through dispatch(). The reply carries no
+        # request_id, because the asker had none to give, and dispatch()
+        # nests its result under "data" -- a shape a probe cannot expect
+        # before it knows what it is talking to. serial_link ignores the
+        # frame for the same reason it ignores any unsolicited one: no
+        # matching request_id.
+        if line.strip() == "id":
+            send_json({
+                "firmware": config.FIRMWARE_NAME,
+                "version": config.FIRMWARE_VERSION,
+                "protocol": config.PROTOCOL_VERSION,
+            })
+
+            return
+
         try:
             request = json.loads(line)
 
