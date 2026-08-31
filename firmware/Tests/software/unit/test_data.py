@@ -21,6 +21,7 @@ should be able to touch.
 Run:  py test_data.py
 """
 
+import copy
 import json
 import sys
 import tempfile
@@ -50,7 +51,7 @@ from BD.samples import (                    # noqa: E402
     ACQUISITION_SUCCESS,
     STATE_LOADED,
     STATE_MEASURED,
-    SampleStore,
+    archive_store,
     StorageError,
     analysis_runs_of,
     latest_measurement,
@@ -68,12 +69,20 @@ def fresh_store():
     """A store on a throwaway file, so the real archive is never touched."""
     handle = tempfile.NamedTemporaryFile(
         suffix=".json", delete=False, mode="w", encoding="utf-8")
-    handle.write(json.dumps({"schema_version":
-                             bd_config.SAMPLE_SCHEMA_VERSION,
-                             "samples": []}))
+    handle.write(json.dumps({
+        "schema_version": bd_config.SAMPLE_SCHEMA_VERSION,
+        "storage_layout": "archive-only-v1",
+        bd_config.ARCHIVE_COLLECTION: [],
+    }))
     handle.close()
 
-    return SampleStore(Path(handle.name)).load()
+    # THE ARCHIVE. The record model - Sample, Measurement, AnalysisRun,
+    # RAW written once - is identical in both collections, and this
+    # file tests the record model. It uses the archive because it also
+    # tests that RAW survives a RELOAD, which is a question only a
+    # collection with a file can answer: the session lives in memory
+    # and reloading is precisely what ends it.
+    return archive_store(Path(handle.name)).load()
 
 
 # ======================================================================
@@ -94,10 +103,10 @@ for name, path in (
     ("DB1", bd_config.DB1_FILE),
     ("DB2", bd_config.DB2_FILE),
     ("DB3", bd_config.DB3_FILE),
-    ("the legacy calibration", bd_config.REFERENCES_FILE),
-    ("the calibration library", bd_config.CALIBRATION_LIBRARY_FILE),
+    ("the legacy calibration", bd_config.CALIBRATION_FILE),
+    ("the calibration library", bd_config.CALIBRATION_FILE),
     ("the learning history", bd_config.DECISION_LEARNING_DB),
-    ("the learning seed", bd_config.DECISION_LEARNING_SEED),
+    ("the learning seed", bd_config.DECISION_LEARNING_DB),
     ("the model registry", bd_config.MODEL_REGISTRY_FILE),
 ):
     checks.ok(path.exists(), "{} is where config says it is".format(name))
@@ -202,7 +211,7 @@ checks.equal(after, before,
              "RAW is untouched by a new AnalysisRun, a new conclusion and "
              "a metadata edit")
 
-reloaded = SampleStore(store.path).load()
+reloaded = archive_store(store.path).load()
 checks.equal(
     json.dumps(reloaded.get_sample("S001")["measurements"][0]["raw"],
                sort_keys=True),
@@ -297,59 +306,142 @@ checks.ok("measurement_count" not in stored,
 
 # ======================================================================
 checks.section("the migration was lossless")
+#
+# RUN AGAINST A COPY OF THE REAL FILE, not against the live one.
+#
+# This block used to assert that a `*.backup.json` existed beside the
+# archive and then compare the two. That backup was itself the defect:
+# a production data folder holding both the migrated file and its
+# predecessor has two sources of truth in it, and nothing says which a
+# reader should trust. The migration now rewrites the one canonical
+# document in place and git carries the history.
+#
+# So losslessness is proven the honest way - the real archive is copied
+# to a temporary file, the migration is run on the COPY, and the copy is
+# compared against what it was before. Nothing here can touch BD/.
 
-archive = json.loads(bd_config.SAMPLES_FILE.read_text(encoding="utf-8"))
+live = json.loads(bd_config.SAMPLES_FILE.read_text(encoding="utf-8"))
 
-checks.equal(archive["schema_version"], bd_config.SAMPLE_SCHEMA_VERSION,
-             "the live archive is at the current schema version")
+checks.equal(live["schema_version"], bd_config.SAMPLE_SCHEMA_VERSION,
+             "the live database is at the current schema version")
+checks.ok(bd_config.ARCHIVE_COLLECTION in live,
+          "and carries the archive - the permanent PC record")
 
-backups = sorted(bd_config.SAMPLES_DIR.glob("*.backup.json"))
-checks.ok(backups,
-          "and the pre-migration archive was copied aside first - it is "
-          "the only copy of the original and is not in version control")
+# THE POINT OF THE WHOLE LAYOUT, ASSERTED ON THE REAL FILE.
+#
+# The run in progress is not in here and must never be. A session on
+# the disk is a measurement that became stored PC science without
+# anyone importing it, which is the thing the ownership model exists to
+# prevent - and it would be invisible, because the screen would still
+# call it "the session".
+checks.ok(bd_config.SESSION_COLLECTION not in live,
+          "and NOT the session - a working set on the disk is a sample "
+          "saved on the PC by another name")
 
-if backups:
-    old = json.loads(backups[-1].read_text(encoding="utf-8"))
+checks.ok(not sorted(bd_config.SAMPLES_DIR.glob("*.backup.json")),
+          "no backup file is left in the production data folder - a "
+          "second copy beside the canonical one is a second source of "
+          "truth")
 
-    for old_record in old.get("samples", []):
-        sample_id = old_record["sample_id"]
-        new_record = next(
-            (r for r in archive["samples"] if r["sample_id"] == sample_id),
-            None,
-        )
+# The version 4 shape, with the real archive's records in it, migrated
+# on a throwaway file.
+legacy_payload = {
+    "schema_version": 4,
+    "samples": [
+        copy.deepcopy(record)
+        for record in live.get(bd_config.ARCHIVE_COLLECTION, [])
+    ],
+}
 
-        checks.ok(new_record is not None,
-                  "{} survived the migration".format(sample_id))
+migration_handle = tempfile.NamedTemporaryFile(
+    suffix=".json", delete=False, mode="w", encoding="utf-8")
+migration_handle.write(json.dumps(legacy_payload))
+migration_handle.close()
 
-        if new_record is None:
-            continue
+migrated_db = samples_module.SampleDatabase(
+    Path(migration_handle.name)
+).load()
 
-        legacy = old_record.get("measurement") or {}
+checks.equal(migrated_db.migrated, 4,
+             "a version 4 file is recognised and migrated")
+checks.equal(migrated_db.session().count(), 0,
+             "nothing is invented into the session - a file written "
+             "before the split had no run in progress in it")
+checks.equal(migrated_db.archive().count(), len(legacy_payload["samples"]),
+             "and every record lands in the ARCHIVE, which is what the "
+             "release that wrote them called them")
 
-        if legacy.get("raw"):
-            migrated = new_record["measurements"][0]["raw"]["white"]
+for old_record in legacy_payload["samples"]:
+    sample_id = old_record["sample_id"]
+    new_record = migrated_db.archive().get_sample(sample_id)
 
-            checks.equal(migrated, legacy["raw"],
-                         "{}: RAW is byte-identical after migration"
-                         .format(sample_id))
-            checks.equal(
-                new_record["measurements"][0]["acquisition"]
-                ["illuminations"],
-                ["white"],
-                "{}: an 18-channel legacy record is one illumination, and "
-                "stays valid legacy data".format(sample_id))
+    checks.ok(new_record is not None,
+              "{} survived the migration".format(sample_id))
 
-            run = new_record["measurements"][0]["analysis_runs"][0]
+    if new_record is None:
+        continue
 
-            checks.equal(
-                run["representations"]["normalized"],
-                legacy.get("normalized"),
-                "{}: the CALCULATED representations moved into the "
-                "AnalysisRun, where they belong - they were never RAW"
-                .format(sample_id))
+    for field in ("slot_id", "state", "timestamps", "metadata",
+                  "measurements", "conclusion"):
+        checks.equal(new_record.get(field), old_record.get(field),
+                     "{}: {} is unchanged by the migration".format(
+                         sample_id, field))
 
-        checks.equal(new_record["metadata"], old_record["metadata"],
-                     "{}: metadata is unchanged".format(sample_id))
+    checks.equal(new_record.get("migrated_from_schema"), 4,
+                 "{}: the record says which schema it came from"
+                 .format(sample_id))
+    checks.ok(new_record.get("migration_note"),
+              "{}: and says that no import decision is claimed for it"
+              .format(sample_id))
+
+# The pre-three-layer shape too, so the older path stays covered.
+flat = {
+    "schema_version": 2,
+    "samples": [{
+        "sample_id": "LEGACY1",
+        "slot_id": 2,
+        "state": "MEASURED",
+        "timestamps": {"created_at": "2026-01-01T00:00:00+00:00",
+                       "measured_at": "2026-01-01T00:10:00+00:00"},
+        "metadata": {"note": "from the flat schema"},
+        "measurement": {
+            "raw": {channel: 100.0 + index
+                    for index, channel in enumerate(CHANNELS)},
+            "normalized": {channel: 0.5 for channel in CHANNELS},
+            "sensor_settings": {"gain_x": "16x"},
+        },
+        "best_match": "Kaolin (White Clay)",
+        "analysis": {"status": "OK"},
+    }],
+}
+
+flat_handle = tempfile.NamedTemporaryFile(
+    suffix=".json", delete=False, mode="w", encoding="utf-8")
+flat_handle.write(json.dumps(flat))
+flat_handle.close()
+
+flat_db = samples_module.SampleDatabase(Path(flat_handle.name)).load()
+flat_record = flat_db.archive().get_sample("LEGACY1")
+
+checks.ok(flat_record is not None,
+          "a schema 2 record migrates all the way to the archive")
+
+if flat_record is not None:
+    measurement = flat_record["measurements"][0]
+
+    checks.equal(measurement["raw"]["white"],
+                 flat["samples"][0]["measurement"]["raw"],
+                 "RAW is byte-identical after migration")
+    checks.equal(measurement["acquisition"]["illuminations"], ["white"],
+                 "an 18-channel legacy record is one illumination, and "
+                 "stays valid legacy data")
+    checks.equal(
+        measurement["analysis_runs"][0]["representations"]["normalized"],
+        flat["samples"][0]["measurement"]["normalized"],
+        "the CALCULATED representations moved into the AnalysisRun, "
+        "where they belong - they were never RAW")
+    checks.equal(flat_record["metadata"]["note"], "from the flat schema",
+                 "metadata is unchanged")
 
 
 # ======================================================================

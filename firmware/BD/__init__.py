@@ -1,16 +1,32 @@
 """
 BD — the authoritative store for everything the system must remember.
 
-    calibration/   dark and white references, and the conditions
-    DB1/           MEASURED here, 18 channels, 23 materials, legacy
-    DB2/           MEASURED here, 54 features (WHITE/UV/IR)
-    DB3/           DERIVED_REFERENCE, external spectra projected
-    training/      labelled records and the decision history, OFFLINE only
-    models/        validated model artifacts and the registry
-    samples/       completed Sample records - the run's only output
+    calibration/   calibration.json           every calibration, the
+                                              protected LEGACY White/Dark,
+                                              which one is ACTIVE, and the
+                                              conditions each was taken under
+    DB1/           DB1.json                   MEASURED here, 18 channels
+    DB2/           DB2.json                   MEASURED here, 54 features
+    DB3/           DB3.json                   DERIVED_REFERENCE, projected
+    models/        registry.json              model artifacts, and which
+                                              one is ACTIVE
+    samples/       samples.json               the PC session and the PC
+                                              archive - the run's own output
+    training/      decision_learning.sqlite3  observations, ground truth
+                                              and predictions. OFFLINE only
 
-Two of these are read-only scientific evidence and one is the only
-thing this system writes.
+ONE CANONICAL PERSISTENT STORE PER SUBSYSTEM. The layout used to hold
+several truths twice - an active-calibration pointer beside the library
+that already recorded it, a JSON seed beside the database it had been
+imported into, a schema backup beside the archive. A subsystem with two
+persistent files can have two answers, so the duplicates were
+consolidated and the redundant files DELETED. There is no fallback read
+path for any of them; a fallback that survives migration is a second
+source of truth wearing a different name.
+
+DB1 and DB2 are read-only scientific evidence, as is the LEGACY record
+inside the calibration database. `samples/` is the only thing normal
+operation writes.
 
 LAYER RULE: BD MUST NEVER IMPORT Science.
 

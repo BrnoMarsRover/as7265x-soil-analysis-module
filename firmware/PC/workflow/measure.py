@@ -40,6 +40,7 @@ from workflow.records import ask_metadata
 from workflow import status as ui_status
 
 from workflow.display import (
+    print_science_result,
     offer_decision_detail,
     print_agreement,
     print_decision,
@@ -91,7 +92,7 @@ def menu_choose_slot(mission, status, view):
         print("  {}  {:<10} {}{}".format(
             entry["slot_id"],
             entry["sample_id"] or "----",
-            entry["state"],
+            ui_status.slot_state_label(entry),
             marker,
         ))
 
@@ -127,7 +128,7 @@ def menu_choose_slot(mission, status, view):
 
 
 def menu_prepare(mission, status, view):
-    """Create the persistent Sample record and bring its slot to the loader."""
+    """Open the Sample record for this run and bring its slot to the loader."""
     carousel = status.get("carousel") or {}
     slot_id = carousel.get("selected_slot")
 
@@ -138,11 +139,28 @@ def menu_prepare(mission, status, view):
 
     entry = mission.entry_for(view, slot_id)
 
-    if entry["state"] != STATE_EMPTY:
-        print("Slot {} already holds sample {} ({}). Clear the physical "
-              "slot before preparing a new one.".format(
-                  slot_id, entry["sample_id"], entry["state"]
-              ))
+    # NOT `state != EMPTY`. The lifecycle state lives in this process's
+    # memory, so after a client restart every slot reads EMPTY while
+    # the board still knows which cups have soil in them - and this
+    # screen's next instruction is "the rover arm can now deposit
+    # soil". Preparing over a slot the firmware reports as occupied is
+    # how a second sample gets poured into the first one.
+    if not ui_status.slot_is_free(entry):
+        if entry["sample_id"]:
+            print("Slot {} already holds sample {} ({}). Clear the "
+                  "physical slot before preparing a new one.".format(
+                      slot_id, entry["sample_id"], entry["state"]
+                  ))
+
+        else:
+            print("The module reports soil in slot {}, from a "
+                  "measurement this client has no record of - a "
+                  "previous run, or another laptop.".format(slot_id))
+            print()
+            print("Empty the cup and use Tools -> Clear Physical Slot,")
+            print("or choose a slot the module reports as free. Its")
+            print("acquisition is safe either way: see Tools -> Sample")
+            print("Database.")
 
         return
 
@@ -166,11 +184,10 @@ def menu_prepare(mission, status, view):
 
         return
 
-    if mission.store.get_state(sample_id) == STATE_MEASURED:
-        print("Sample ID {} already exists as a MEASURED record. Choose "
-              "another ID so the earlier result is not overwritten.".format(
-                  sample_id
-              ))
+    if mission.session.get_state(sample_id) == STATE_MEASURED:
+        print("Sample ID {} already exists as a MEASURED record in this "
+              "session. Choose another ID so the earlier result is not "
+              "overwritten.".format(sample_id))
 
         return
 
@@ -184,7 +201,10 @@ def menu_prepare(mission, status, view):
     # back for correlation.
     mission.link.select_slot(slot_id, sample_id)
 
-    record = mission.store.create(
+    # INTO THE SESSION. A prepared Sample is the run in progress, not
+    # a permanent record - it reaches the PC archive only when the
+    # operator imports it, and only after it has been measured.
+    record = mission.session.create(
         sample_id, slot_id, utc_timestamp(), metadata
     )
 
@@ -226,7 +246,7 @@ def menu_confirm(mission, status, view):
 
         return
 
-    record = mission.store.set_state(
+    record = mission.session.set_state(
         entry["sample_id"], STATE_LOADED, "loaded_at", utc_timestamp()
     )
 
@@ -315,7 +335,7 @@ def measurement_recovery(mission, sample_id, slot_id, stage,
             return
 
         carousel = status.get("carousel") or {}
-        entry = mission.store.get_sample(sample_id) or {}
+        entry = mission.session.get_sample(sample_id) or {}
 
         ui_status.print_fields((
             ("Sample", "{} / Slot {} / {}".format(
@@ -430,18 +450,38 @@ def menu_measure(mission, status, view):
 
         refuse what can be refused before anything moves
           -> ESP32: 180 deg out, acquire WHITE/UV/IR, 180 deg back
-          -> BD: PERSIST THE MEASUREMENT, RAW AND ALL
+          -> ESP32 RETAINS the acquisition in its slot buffer
+          -> PC SESSION: persist the measurement, RAW and all
           -> Science: analyse it
-          -> BD: persist the AnalysisRun
+          -> PC SESSION: record the AnalysisRun
           -> update the Sample's current conclusion
 
-    THE THIRD STEP COMES BEFORE THE FOURTH ON PURPOSE. Persisting RAW
-    the instant it arrives means that everything after it - a database
-    that will not load, an exception in the pipeline, a decision model
-    that raises, a laptop that loses power - costs an ANALYSIS and not
-    an EXPERIMENT. The soil has already been through the instrument;
-    the counts the detector reported cannot be obtained again from a
-    slot that has been emptied, and every derived number can.
+    WHERE THE SAMPLE IS AFTERWARDS
+
+        ESP32        holds it, ON ITS OWN FILESYSTEM, until the
+                     operator deletes the device's copy. It survives a
+                     board reset, a power cut and a restart of this
+                     program, and until an import it is the only
+                     durable copy there is.
+        PC session   holds it IN THIS PROCESS'S MEMORY, until the
+                     operator clears the session or closes the client.
+                     Nothing here reaches a file.
+        PC archive   DOES NOT HOLD IT. Import is an explicit operation
+                     and this is not it.
+
+    That last line is the whole point of the split. A measurement that
+    put itself into the permanent archive made "Import ALL Samples from
+    ESP32" a button with nothing left to do, and made every delete
+    ambiguous about which copy it meant.
+
+    PERSISTING RAW BEFORE SCIENCE RUNS. Everything after that step - a
+    database that will not load, an exception in the pipeline, a
+    decision model that raises, a laptop that loses power - costs an
+    ANALYSIS and not an EXPERIMENT. The soil has already been through
+    the instrument; the counts the detector reported cannot be obtained
+    again from a slot that has been emptied, and every derived number
+    can. The session file is what makes that true across a crash, which
+    is why it is on disk and not in memory.
 
     The Sample record opened by Prepare is COMPLETED here. No second
     Sample ID is ever created.
@@ -488,7 +528,7 @@ def menu_measure(mission, status, view):
         # is a repeatability measurement and one of the main reasons a
         # Sample holds several Measurements - it is announced, not
         # blocked, and it overwrites nothing.
-        existing = len(mission.store.get_sample(sample_id)
+        existing = len(mission.session.get_sample(sample_id)
                        .get("measurements") or [])
 
         print()
@@ -552,7 +592,7 @@ def menu_measure(mission, status, view):
         storage_failure = None
 
         try:
-            failed = mission.store.add_measurement(
+            failed = mission.session.add_measurement(
                 sample_id,
                 acquisition_status=ACQUISITION_FAILED,
                 acquisition={
@@ -624,17 +664,20 @@ def menu_measure(mission, status, view):
     fields = mission.measurement_from_acquisition(data, sample_id)
 
     try:
-        measurement = mission.store.add_measurement(sample_id, **fields)
+        measurement = mission.session.add_measurement(
+            sample_id, **fields
+        )
 
     except StorageError as error:
         # Nothing downstream is attempted. Running an analysis whose
-        # RAW could not be stored would produce a conclusion about a
-        # measurement that no longer exists anywhere.
+        # RAW could not be recorded would produce a conclusion about a
+        # measurement this client is not holding.
         print()
-        print("!! COULD NOT SAVE THE MEASUREMENT: {}".format(error.message))
-        print("   The analysis was NOT run. Fix the archive and use")
-        print("   Tools -> Sync ESP32 Acquisitions to BD - the ESP32 is")
-        print("   still holding this acquisition.")
+        print("!! COULD NOT RECORD THE MEASUREMENT: {}".format(
+            error.message))
+        print("   The analysis was NOT run. The ESP32 is still holding")
+        print("   this acquisition - import it from")
+        print("   Tools -> Sample Database once the cause is fixed.")
         print()
         pause()
 
@@ -642,9 +685,40 @@ def menu_measure(mission, status, view):
 
     measurement_id = measurement["measurement_id"]
 
+    # IT SAID "Saving RAW to BD.... PASS", AND THAT WAS NOT TRUE.
+    #
+    # The working set is this program's memory. Nothing has been
+    # written to BD/, and telling the operator it has is the exact
+    # confusion the ownership model exists to remove: they would close
+    # the client believing the spectrum was filed, and the only durable
+    # copy is on the ESP32 until they import it.
     print()
-    print("Saving RAW to BD............... PASS  ({} / {})".format(
-        sample_id, measurement_id))
+    # WHETHER THE DEVICE ACTUALLY PROTECTED IT, from the device.
+    #
+    # The board mirrors each acquisition to its own filesystem and says
+    # in the response whether that worked. Printing "(durable)"
+    # unconditionally would be this screen asserting a property it
+    # never checked - and the one time it is false is the one time the
+    # operator needs to know, because the working set is memory and the
+    # PC archive is empty until they import.
+    durable = data.get("retention_durable")
+    retention_error = data.get("retention_error")
+
+    print("RAW retained................... {}  ({} / {})".format(
+        "PASS" if durable else "WARN", sample_id, measurement_id))
+
+    if durable:
+        print("  ESP32 (durable, survives a reset) + this run's working "
+              "set.")
+
+    else:
+        print("  This run's working set only - IN MEMORY.")
+        print("  !! The module could NOT store it: {}".format(
+            retention_error or "reason not reported"))
+        print("  !! A board reset or a restart of this program would")
+        print("     lose it. Import it now if you want to keep it.")
+
+    print("  NOT in the PC archive until you import it.")
 
     # ---- Science: analyse what is now safely stored -------------------
     run = mission.analyse_measurement(measurement)
@@ -652,7 +726,7 @@ def menu_measure(mission, status, view):
     analysis_status = run.get("analysis_status")
 
     try:
-        stored_run = mission.store.add_analysis_run(
+        stored_run = mission.session.add_analysis_run(
             sample_id, measurement_id, run
         )
         run_id = stored_run["analysis_run_id"]
@@ -683,7 +757,7 @@ def menu_measure(mission, status, view):
 
     if decision:
         try:
-            mission.store.set_conclusion(sample_id, {
+            mission.session.set_conclusion(sample_id, {
                 "interpretation": decision.get("material")
                 or decision.get("family"),
                 "level": decision.get("level"),
@@ -706,55 +780,37 @@ def menu_measure(mission, status, view):
     print("Sample ID:      {}".format(sample_id))
     print("Physical slot:  {}".format(slot_id))
     print("Measurement:    {}".format(measurement_id))
-    print("AnalysisRun:    {}".format(run_id or "NOT SAVED"))
-    print("RAW saved:      YES")
+    print("AnalysisRun:    {}".format(run_id or "NOT RECORDED"))
+    print("RAW:            {} - NOT yet in the PC archive".format(
+        "RETAINED (ESP32, durable + this run)" if durable
+        else "IN THIS RUN ONLY - the module could not store it"))
     print("Analysis:       {}".format(analysis_status))
     print("Home position:  {}".format(
         "RESTORED" if data.get("home_restored") else "NOT RESTORED"
     ))
 
-    print()
-    print("SETTINGS")
-    print()
-    print_settings_block(
-        (measurement.get("acquisition") or {}).get("sensor_settings")
+    # ---- THE SCIENCE, THROUGH THE ONE RENDERER -----------------------
+    #
+    # Identical to what the Sensor + Analysis Test shows, because it is
+    # the same function. This block used to print settings, the RAW
+    # table, quality, evidence and the decision by hand, and the one
+    # thing it did not print was DATABASE COMPARISON - so a real
+    # measurement showed strictly less about itself than a bench test
+    # of the same hardware, and neither screen said which calibration
+    # the numbers came from.
+    #
+    # What stays above this, and only above this, is the mission: the
+    # Sample, the slot, the measurement id, the movement and what was
+    # persisted where. That is the part a sensor test genuinely does
+    # not have.
+    print_science_result(
+        run,
+        settings=(measurement.get("acquisition") or {}).get(
+            "sensor_settings"
+        ),
     )
 
-    print()
-    print("RAW, BY ILLUMINATION")
-    print()
-    print_triad_table(
-        measurement.get("raw"),
-        (run.get("representations") or {}).get("normalized"),
-    )
-
-    quality_report = run.get("quality")
-
-    print()
-    print("MEASUREMENT QUALITY")
-    print()
-
-    if quality_report:
-        print_quality(quality_report)
-
-    else:
-        print("  not available: {}".format(
-            (run.get("error") or {}).get("message", "analysis incomplete")))
-
-    evidence = run.get("evidence")
-
-    if evidence:
-        print()
-        print("EVIDENCE")
-        print()
-        print_evidence_summary(evidence)
-
-    if run.get("decision"):
-        print()
-        print("DECISION")
-        print()
-        print_decision(run["decision"])
-        offer_decision_detail(run)
+    offer_decision_detail(run)
 
     if run_id and run.get("decision"):
         # A GLOBALLY UNIQUE OBSERVATION ID, NOT THE PER-SAMPLE ONE.
@@ -797,7 +853,8 @@ def menu_measure(mission, status, view):
     if not data.get("home_restored"):
         measurement_recovery(
             mission, sample_id, slot_id, "RETURN_TO_LOADER",
-            spectrum_state="ACQUIRED and saved - the science is safe",
+            spectrum_state="ACQUIRED and retained on the ESP32 - the science "
+                           "is safe",
             recorded="{} / {}".format(
                 measurement_id, run_id or "no analysis"),
         )
@@ -807,14 +864,18 @@ def menu_clear_slot(mission, status, view):
     """
     Free a physical slot.
 
-    This frees the mechanism only. The saved scientific record stays in
-    the PC archive; Delete Sample is what removes that.
+    This frees the mechanism only. The retained acquisition stays where
+    it is - on the ESP32, and in this run's working set - and the PC
+    archive is not touched at all. Deleting a measurement is a
+    different operation, in the Sample Database, and it names its
+    store.
     """
     banner("CLEAR PHYSICAL SLOT")
 
     for entry in view:
         print("  {}  {:<10} {}".format(
-            entry["slot_id"], entry["sample_id"] or "----", entry["state"]
+            entry["slot_id"], entry["sample_id"] or "----",
+            ui_status.slot_state_label(entry),
         ))
 
     print()
@@ -850,16 +911,31 @@ def menu_clear_slot(mission, status, view):
 
     entry = mission.entry_for(view, slot_id)
 
-    if entry["state"] == STATE_EMPTY:
-        print("Slot {} is already empty.".format(slot_id))
+    # PHYSICAL OCCUPANCY, not the PC's lifecycle state.
+    #
+    # This read `state == EMPTY`, which is a fact about this process's
+    # memory. After a client restart the memory is empty and the board
+    # is not, so the one screen whose whole job is to free a cup told
+    # the operator the cup was already free - over soil they could see.
+    if not ui_status.slot_needs_clearing(entry):
+        print("Slot {} is already empty - neither this run nor the "
+              "module reports anything in it.".format(slot_id))
 
         return
 
     print()
-    print("Slot {} holds sample {} ({}).".format(
-        slot_id, entry["sample_id"], entry["state"]
-    ))
-    print("The saved scientific record will be KEPT.")
+
+    if entry["sample_id"]:
+        print("Slot {} holds sample {} ({}).".format(
+            slot_id, entry["sample_id"], entry["state"]
+        ))
+
+    else:
+        print("The module reports soil in slot {}, from a measurement "
+              "this client has no record of.".format(slot_id))
+
+    print("The measurement taken from it is KEPT - on the ESP32 and in")
+    print("this run. Only a delete in the Sample Database removes one.")
     print()
 
     if not confirm("Has the soil been physically removed?"):
@@ -869,20 +945,30 @@ def menu_clear_slot(mission, status, view):
 
     mission.link.clear_slot(slot_id)
 
-    try:
-        mission.store.set_state(entry["sample_id"], STATE_EMPTY)
+    # ONLY IF THERE IS A RECORD TO UPDATE. A slot cleared on the
+    # firmware's word alone has no Sample in this run's working set,
+    # and `set_state(None, ...)` is a StorageError reported to the
+    # operator as though the clear had half-failed.
+    if entry["sample_id"]:
+        try:
+            mission.session.set_state(entry["sample_id"], STATE_EMPTY)
 
-    except StorageError as error:
-        print("Slot freed, but the record could not be updated: {}".format(
-            error.message
-        ))
+        except StorageError as error:
+            print("Slot freed, but the record could not be updated: "
+                  "{}".format(error.message))
 
-        return
+            return
 
     print()
-    print("Slot {} is free. Sample {} remains in the archive.".format(
-        slot_id, entry["sample_id"]
-    ))
+
+    if entry["sample_id"]:
+        print("Slot {} is free. The measurement taken from {} is "
+              "untouched.".format(slot_id, entry["sample_id"]))
+
+    else:
+        print("Slot {} is free. Any acquisition the module took from "
+              "it is untouched - see Tools -> Sample Database.".format(
+                  slot_id))
 
 
 def clear_all_slots(mission, view):
@@ -893,7 +979,10 @@ def clear_all_slots(mission, view):
     ESP32 - are left completely alone; deleting those is a separate,
     separately confirmed operation.
     """
-    occupied = [entry for entry in view if entry["state"] != STATE_EMPTY]
+    # Physical occupancy OR a live record - the same correction as
+    # menu_clear_slot. "Clear ALL physical slots" that cannot see the
+    # slots the firmware calls occupied is not clearing all of them.
+    occupied = [entry for entry in view if ui_status.slot_needs_clearing(entry)]
 
     if not occupied:
         print()
@@ -911,7 +1000,8 @@ def clear_all_slots(mission, view):
 
     for entry in occupied:
         print("  Slot {}  {}  {}".format(
-            entry["slot_id"], entry["sample_id"] or "----", entry["state"]
+            entry["slot_id"], entry["sample_id"] or "----",
+            ui_status.slot_state_label(entry),
         ))
 
     print()
@@ -932,7 +1022,7 @@ def clear_all_slots(mission, view):
             continue
 
         try:
-            mission.store.set_state(entry["sample_id"], STATE_EMPTY)
+            mission.session.set_state(entry["sample_id"], STATE_EMPTY)
 
         except StorageError as error:
             failures.append((entry["sample_id"], error.message))

@@ -30,7 +30,7 @@ from BD.channels import (
     ILLUMINATIONS,
     combine_illuminations,
 )
-from BD.databases import DatabaseError, MaterialDatabase, References
+from BD.databases import DatabaseError, MaterialDatabase
 from BD.decision_learning import DecisionLearningStore, LearningError
 from BD.registry import DatabaseRegistry
 from BD.samples import (
@@ -40,7 +40,7 @@ from BD.samples import (
     STATE_LOADED,
     STATE_MEASURED,
     STATE_READY_TO_LOAD,
-    SampleStore,
+    SampleDatabase,
     StorageError,
 )
 
@@ -80,15 +80,48 @@ class Mission:
     """
     Everything the operator screens need, in one place.
 
-    Holds the link to the ESP32, the persistent Sample archive and the
-    loaded BD science layer. Sample state is read from the archive, so
-    it survives a restart of this program; carousel position is read
-    from the ESP32, which forgets it on reset.
+    Holds the link to the ESP32, the PC Sample database and the loaded
+    BD science layer.
+
+    THREE STORES, THREE OWNERS. The ESP32 holds the acquisition it just
+    took, on its own filesystem, until someone deletes it - so it
+    survives its own reset and this program's. The PC session holds the
+    run in progress, in memory. The PC archive holds what the operator
+    has explicitly chosen to keep. Nothing crosses between them except
+    by an operation that names both ends.
+
+    NEITHER SIDE'S MEMORY OUTLIVES ITS PROCESS, and the screens say so.
+    Sample state is read from the session and ends when this program
+    does; carousel position is read from the ESP32, which forgets it on
+    reset. What survives both is the device's retained acquisition and
+    the PC archive - the two stores an operator can point at and say
+    "that is kept".
     """
 
     def __init__(self, link):
         self.link = link
-        self.store = SampleStore()
+
+        # ONE PC-SIDE SAMPLE DATABASE, TWO COLLECTIONS.
+        #
+        #   session   the run in progress. Prepare and Measure write
+        #             here, and only here.
+        #   archive   the permanent PC record. Reached only by an
+        #             explicit operator import.
+        #
+        # There is deliberately no `self.store`. The name is what let
+        # the previous release write every measurement straight into
+        # what the screens called the archive: a workflow that says
+        # `mission.store.add_measurement(...)` has not said WHICH store,
+        # and the one it got was the permanent one.
+        # NOT loaded here. Constructing a Mission must not touch the
+        # disk: the test harness replaces these three attributes with
+        # sandboxed ones immediately afterwards, and an eager load
+        # would migrate the REAL file on the way past. The collections
+        # load on first use.
+        self.samples = SampleDatabase()
+        self.session = self.samples.session()
+        self.archive = self.samples.archive()
+
         self.calibrations = CalibrationStore()
 
         self.references = None
@@ -123,11 +156,13 @@ class Mission:
         """
         Load the protected reference data and the active calibration.
 
-        Two calibrations, always kept apart:
+        Two calibrations, always kept apart. Both are records in the
+        one calibration database; what separates them is what they are
+        for, not which file they sit in.
 
-          LEGACY  calibration_legacy.json - what DB1 was normalized
-                  against, and the only thing it may be compared with.
-                  Immutable.
+          LEGACY  what DB1 was normalized against, and the only thing
+                  it may be compared with. Immutable, never activated,
+                  white illumination only.
 
           ACTIVE  the full Dark + WHITE/UV/IR calibration the operator
                   made. Used for the scientific record and for quality
@@ -142,11 +177,29 @@ class Mission:
         self.calibration_error = None
 
         try:
-            self.references = References()
             self.database = MaterialDatabase()
 
         except DatabaseError as error:
             self.science_error = "{}: {}".format(error.code, error.message)
+
+        # The LEGACY White/Dark, from the calibration database. Its
+        # absence is a calibration fault and is reported as one - it
+        # used to be a missing FILE, and a missing file in the middle
+        # of the DB1 comparison read like a corrupt install.
+        try:
+            self.references = self.calibrations.legacy()
+
+            if self.references is None:
+                self.science_error = self.science_error or (
+                    "The calibration database holds no LEGACY White/Dark. "
+                    "DB1 cannot be compared against without it."
+                )
+
+        except CalibrationError as error:
+            self.references = None
+            self.science_error = self.science_error or "{}: {}".format(
+                error.code, error.message
+            )
 
         # DB1, DB2 and DB3 as three independent sources. A database that
         # is empty or unreadable is reported by the registry rather than
@@ -558,8 +611,12 @@ class Mission:
         # active_samples() answers "which Sample ID is in which slot".
         # The record itself is looked up for the rest, because a slot
         # row needs the state and the measurement count too - and the
-        # store is the one place that knows them.
-        by_slot = self.store.active_samples()
+        # session is the one place that knows them.
+        #
+        # THE SESSION, NOT THE ARCHIVE. A slot holds the sample of the
+        # run in progress; an archived record from last week is not in
+        # a slot and must never claim one.
+        by_slot = self.session.active_samples()
         physical = {
             slot.get("slot_id"): slot
             for slot in (status.get("slots") or [])
@@ -570,7 +627,7 @@ class Mission:
         for slot_id in range(1, SLOT_COUNT + 1):
             sample_id = by_slot.get(slot_id)
             record = (
-                self.store.get_sample(sample_id) if sample_id else None
+                self.session.get_sample(sample_id) if sample_id else None
             )
 
             view.append({

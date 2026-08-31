@@ -20,6 +20,7 @@ from Science.calibration import build_calibration, validate_calibration
 from serial_link import DeviceError, LinkError
 
 from workflow.display import (
+    print_science_result,
     ESP32_STAGE_LABELS,
     offer_decision_detail,
     print_check,
@@ -166,6 +167,44 @@ def menu_sensor_test(mission):
 # ----------------------------------------------------------------------
 
 
+def print_failed_acquisition(data, settings):
+    """
+    An acquisition that produced no spectra, and what the sensor was set to.
+
+    ITS OWN FUNCTION so `menu_full_sensor_test` renders no science block
+    itself. There is no AnalysisRun here - there is no measurement - so
+    `print_science_result` has nothing to render and this is not a
+    duplicate of it. Keeping the settings visible matters most in
+    exactly this case: a failed acquisition is usually explained by
+    what the sensor was set to.
+    """
+    print()
+    print("FAILED STAGE  {}".format(data.get("failed_stage")))
+
+    for entry in data.get("checks") or []:
+        if entry.get("ok"):
+            continue
+
+        error = entry.get("error") or {}
+        print("error code    {}".format(error.get("code")))
+        print("message       {}".format(error.get("message")))
+
+        if error.get("details"):
+            print("details       {}".format(
+                json.dumps(error["details"])[:300]
+            ))
+
+    if settings:
+        print()
+        print("SETTINGS")
+        print()
+        print_settings_block(settings)
+
+    print()
+    print("TEST ONLY - NOTHING SAVED")
+    print()
+
+
 def menu_full_sensor_test(mission):
     """
     The complete production pipeline, saving nothing.
@@ -218,31 +257,7 @@ def menu_full_sensor_test(mission):
     blocks = data.get("illuminations")
 
     if not blocks:
-        print()
-        print("FAILED STAGE  {}".format(data.get("failed_stage")))
-
-        for entry in data.get("checks") or []:
-            if entry.get("ok"):
-                continue
-
-            error = entry.get("error") or {}
-            print("error code    {}".format(error.get("code")))
-            print("message       {}".format(error.get("message")))
-
-            if error.get("details"):
-                print("details       {}".format(
-                    json.dumps(error["details"])[:300]
-                ))
-
-        if settings:
-            print()
-            print("SETTINGS")
-            print()
-            print_settings_block(settings)
-
-        print()
-        print("TEST ONLY - NOTHING SAVED")
-        print()
+        print_failed_acquisition(data, settings)
         pause()
 
         return
@@ -289,98 +304,24 @@ def menu_full_sensor_test(mission):
 
         return
 
-    print()
-    print("MEASUREMENT QUALITY")
-    print()
-
-    if result.get("quality"):
-        print_quality(result["quality"])
-
-    else:
-        print("  not available: {}".format(
-            (result.get("error") or {}).get(
-                "message", "the analysis did not reach the quality stage")
-        ))
-
-    print()
-    print("SETTINGS")
-    print()
-
-    # THE SETTINGS COME FROM THE ACQUISITION, NOT FROM THE ANALYSIS.
+    # ---- THE SCIENCE, THROUGH THE ONE RENDERER -----------------------
     #
-    # This read `result["measurement"]["sensor_settings"]` and an
-    # AnalysisRun has no "measurement" key at all - the block of that
-    # name lives inside the EVIDENCE package, and even there it holds
-    # the wavelengths and the illumination list rather than the sensor
-    # settings. The line raised KeyError on the first sensor test that
-    # got as far as a successful analysis on real hardware, which is
-    # exactly the run nobody had been able to reach.
+    # Identical to what a production measurement shows, because it is
+    # the same function. Both screens used to render the same
+    # AnalysisRun with their own code, and the two had drifted: this
+    # one printed the database comparison and the production screen did
+    # not.
     #
     # `settings` is what the ESP32 reported for THIS acquisition, read
-    # back from the silicon, and it is already in hand above.
-    print_settings_block(
-        settings
-        or ((result.get("evidence") or {}).get("acquisition") or {}).get(
-            "sensor_settings"
-        )
-    )
-
-    print()
-    print("FULL SPECTRAL DATA")
-    print()
-    print_triad_table(
-        (result.get("evidence") or {}).get("raw"),
-        (result.get("representations") or {}).get("normalized"),
-    )
+    # back from the silicon, and it is already in hand above. The
+    # renderer falls back to the evidence package's copy when a caller
+    # does not have it first-hand.
+    print_science_result(result, settings=settings)
 
     if health["active"] != "PASS":
         print()
         print("Active (UV/IR) reflectance columns are absent because no")
         print("full spectral calibration is active.")
-
-    print()
-    print("=" * 60)
-    print()
-    print("DATABASE COMPARISON")
-    print("  legacy calibration {}".format(
-        (result.get("calibration") or {}).get("legacy_calibration_id")
-    ))
-    print()
-
-    # WHAT THE ANALYSIS ACTUALLY PRODUCES.
-    #
-    # This block used to ask for result["reference_matches"],
-    # result["metric_agreement"], result["cross_database"] and
-    # result["analysis"]. An AnalysisRun has none of them - they were
-    # the previous pipeline's shape, and the four display helpers that
-    # consumed them expected it too. The screen therefore died with
-    # KeyError on the first sensor test that reached a successful
-    # analysis on real hardware, one line after printing the settings.
-    #
-    # The current run reports each database separately, and per metric
-    # rather than as one ranked list, deliberately: DB1 says "this
-    # resembles something measured on this instrument" and DB3 says
-    # "this resembles a laboratory spectrum after modelling our
-    # sensor". Those are different claims and are not averaged.
-    print_database_results(result.get("database_results"))
-
-    print()
-    print("=" * 60)
-    print()
-
-    if result.get("evidence"):
-        print_evidence_summary(result["evidence"])
-        print()
-        print_decision(result.get("decision"))
-
-    else:
-        print("DECISION MODEL")
-        print()
-        print("  Not run: {}".format(
-            (result.get("error") or {}).get("message")
-            or "no active calibration, so no evidence package could be "
-               "built"
-        ))
 
     offer_decision_detail(result)
 
@@ -580,9 +521,9 @@ def menu_full_calibration(mission):
     """
     Guided Dark + WHITE/UV/IR calibration.
 
-    Creates a NEW calibration file. It never touches calibration_legacy.json or
-    DB1.json, and it does not become active until the operator
-    confirms after seeing the validation.
+    Appends a NEW calibration to the database. It never touches the
+    protected LEGACY White/Dark or DB1.json, and it does not become
+    active until the operator confirms after seeing the validation.
     """
     banner("FULL SPECTRAL CALIBRATION")
 
@@ -601,7 +542,7 @@ def menu_full_calibration(mission):
     print("  Protected: YES")
     print()
     print("A new calibration will NOT modify the legacy database")
-    print("calibration, calibration_legacy.json or DB1.json. The existing")
+    print("calibration, the LEGACY White/Dark or DB1.json. The existing")
     print("material library stays valid and does not need remeasuring.")
 
     stored = health["stored"]
@@ -1053,7 +994,7 @@ def show_calibration_history(mission):
 
     entries = mission.calibrations.history()
 
-    print("Library: {}".format(mission.calibrations.library_path))
+    print("Library: {}".format(mission.calibrations.path))
     print("Stored:  {} calibration(s)".format(len(entries)))
     print()
 
@@ -1104,7 +1045,7 @@ def menu_select_calibration(mission):
 
             return
 
-        print("Library: {}".format(mission.calibrations.library_path))
+        print("Library: {}".format(mission.calibrations.path))
         print()
         print_calibration_list(entries)
         print()

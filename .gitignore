@@ -87,14 +87,15 @@ Desktop.ini
 # Runtime science data
 # ============================================================
 
-# Measured competition samples belong to a run, not to the source tree.
-# Backed up with the procedure in Documentation/OPERATIONS.md.
+# The PC Sample database - this run's session working set and the
+# operator's permanent archive. Belongs to a run, not to the source
+# tree. Backed up with the procedure in Documentation/OPERATIONS.md.
 #
-# The schema backup beside it is written once, by the archive migration,
-# and is the only copy of the pre-migration record - keep it out of the
-# tree too, and back it up with the archive itself.
+# There is no backup file beside it any more: the schema migration
+# rewrites the one canonical document in place, and a *_backup.json in
+# a production data folder is a second source of truth waiting to be
+# read by mistake.
 firmware/BD/samples/samples.json
-firmware/BD/samples/*.backup.json
 firmware/BD/samples/.samples-*.tmp
 
 # Downloaded source archives for DB3. 21 MB of third-party data does not
@@ -102,9 +103,16 @@ firmware/BD/samples/.samples-*.tmp
 # py firmware/research/import_usgs.py --download
 firmware/research/data/
 
-# Calibrations are produced per instrument, per run.
+# The consolidated calibration database IS tracked: it carries the
+# protected LEGACY White/Dark that DB1 depends on. What is ignored is
+# the pre-consolidation layout, so an old working tree does not
+# re-commit files the migration has retired.
 firmware/BD/calibration/calibration_active.json
+firmware/BD/calibration/calibrations.json
+firmware/BD/calibration/calibration_legacy.json
+firmware/BD/calibration/acquisition_profiles.json
 firmware/BD/calibration/FREYA_FULL_SPECTRAL_CAL_*.json
+firmware/BD/calibration/*.tmp
 
 # ============================================================
 # Local secrets and machine-specific settings

@@ -87,7 +87,9 @@ def bench(servo=None, sensor=None, synced=True, prepared=None):
     bd = SandboxBD()
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -98,8 +100,8 @@ def bench(servo=None, sensor=None, synced=True, prepared=None):
 
     if prepared:
         link.select_slot(1, sample_id=prepared)
-        mission.store.create(prepared, 1)
-        mission.store.set_state(prepared, STATE_LOADED)
+        mission.session.create(prepared, 1)
+        mission.session.set_state(prepared, STATE_LOADED)
 
     class Bench:
         pass
@@ -385,7 +387,7 @@ try:
     checks.equal(status["carousel"]["position_valid"], False,
                  "RF-001F: and the position is invalidated")
 
-    record = handle.bd.sample_store().get_sample("S-RF001D")
+    record = handle.mission.session.get_sample("S-RF001D")
     measurements = (record or {}).get("measurements") or []
 
     checks.ok(all(m.get("acquisition_status") != ACQUISITION_SUCCESS
@@ -570,6 +572,8 @@ try:
         ("led_test", lambda: link.led_test()),
         ("list_saved_samples", lambda: link.list_saved_samples()),
         ("get_saved_sample", lambda: link.get_saved_sample("X")),
+        ("delete_saved_sample",
+         lambda: link.delete_saved_sample("S001")),
         ("delete_saved_samples", lambda: link.delete_saved_samples()),
         ("hard_reset", lambda: link.hard_reset()),
     )
@@ -797,8 +801,8 @@ SCREENS_AFTER_LOSS = (
      lambda m, s, v: records_screens.menu_sample_database(m), ["0"]),
     ("records.menu_learning_history",
      lambda m, s, v: records_screens.menu_learning_history(m), ["0"]),
-    ("records.sync_esp32_samples",
-     lambda m, s, v: records_screens.sync_esp32_samples(m), ["", ""]),
+    ("records.import_esp32_samples",
+     lambda m, s, v: records_screens.import_esp32_samples(m), ["", ""]),
     ("measure.menu_choose_slot", measure_screens.menu_choose_slot, ["2"]),
     ("measure.menu_prepare", measure_screens.menu_prepare,
      ["S-X", "", "", "", "", "", ""]),
@@ -885,7 +889,7 @@ handle = bench(prepared="S-RF004")
 try:
     data = handle.link.measure_raw(1, sample_id="S-RF004")
 
-    handle.mission.store.add_measurement(
+    handle.mission.session.add_measurement(
         "S-RF004",
         raw={name: block["acquisitions"][0]
              for name, block in (data.get("illuminations") or {}).items()},
@@ -896,7 +900,7 @@ try:
     handle.port.fail_read_after = 0
     failure_of(handle.link.get_status)
 
-    reread = handle.bd.sample_store().get_sample("S-RF004")
+    reread = handle.mission.session.get_sample("S-RF004")
     measurements = (reread or {}).get("measurements") or []
 
     checks.equal(len(measurements), 1,
@@ -912,7 +916,7 @@ try:
                  "and a new measurement is refused rather than "
                  "fabricated")
 
-    after = handle.bd.sample_store().get_sample("S-RF004")
+    after = handle.mission.session.get_sample("S-RF004")
     checks.equal(len(after.get("measurements") or []), 1,
                  "so no phantom Measurement was added by the failure")
 
@@ -1101,11 +1105,20 @@ handle = bench(prepared="S-RF005D")
 try:
     printed = measure_screen(handle, "S-RF005D")
 
-    checks.ok("Saving RAW to BD" in printed,
-              "a successful measurement says the RAW was saved")
+    # IT USED TO SAY "Saving RAW to BD", AND THAT WAS NOT TRUE.
+    # Measure writes no file; the durable copy is on the ESP32 and the
+    # PC archive gets one only on an import. The screen now says where
+    # the spectrum actually is, and this asserts that it still says
+    # something definite rather than going quiet.
+    checks.ok("RAW retained" in printed,
+              "a successful measurement says the RAW was retained")
+    checks.ok("ESP32" in printed,
+              "and names the ESP32 as the durable holder")
+    checks.ok("archive" in printed.lower(),
+              "and says it is not in the PC archive yet")
     checks.ok("PASS" in printed, "and marks the stage as passed")
 
-    record = handle.bd.sample_store().get_sample("S-RF005D")
+    record = handle.mission.session.get_sample("S-RF005D")
     measurements = (record or {}).get("measurements") or []
 
     checks.equal(len(measurements), 1,
@@ -1128,7 +1141,7 @@ try:
               "RF-005D: a failed measurement says plainly that nothing "
               "was saved")
 
-    record = handle.bd.sample_store().get_sample("S-RF005E")
+    record = handle.mission.session.get_sample("S-RF005E")
     measurements = (record or {}).get("measurements") or []
 
     checks.equal(len(measurements), 1,
@@ -1137,7 +1150,7 @@ try:
                  ACQUISITION_FAILED, "marked FAILED")
     checks.ok("raw" not in measurements[0],
               "with no raw block at all")
-    checks.equal(handle.mission.store.get_state("S-RF005E"), STATE_LOADED,
+    checks.equal(handle.mission.session.get_state("S-RF005E"), STATE_LOADED,
                  "and the Sample stays LOADED so it can be retried")
 
 finally:
@@ -1170,7 +1183,7 @@ try:
               "REG-LINUX-005: the screen does NOT say 'no spectrum "
               "obtained' - three of them were")
 
-    record = handle.bd.sample_store().get_sample("S-REG005")
+    record = handle.mission.session.get_sample("S-REG005")
     measurements = (record or {}).get("measurements") or []
 
     checks.equal(len(measurements), 1, "the Measurement was saved")

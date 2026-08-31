@@ -421,14 +421,19 @@ tree. The author commits deliberately: **do not commit or push unless
 asked.**
 
 **`firmware/BD/samples/samples.json` is untracked AND gitignored.** It
-holds the only real measurement ever taken (`s456`). Git cannot restore
-it. Beside it, `samples.schema2.backup.json` is the pre-migration copy
-of that same record — also untracked, also irreplaceable. Copy both
-outside the repository before any bulk file operation.
+is the one PC-side Sample database and holds both collections - the
+`session` working set of the run in progress and the permanent
+`archive`. Git cannot restore it. Copy it outside the repository before
+any bulk file operation.
 
-`firmware/BD/calibration/calibration_active.json` and
-`firmware/research/data/` are gitignored too. Everything else under
-`BD/` is tracked.
+There is no backup file beside it any more. The schema migration
+rewrites the one canonical document in place, and a `*.backup.json` in
+a production data folder is a second source of truth waiting to be read
+by mistake.
+
+`firmware/research/data/` is gitignored too. Everything else under
+`BD/` is tracked, including `BD/calibration/calibration.json` - which
+now carries the protected LEGACY White/Dark that DB1 depends on.
 
 **`firmware/Tests/hardware/artifacts/` is gitignored as well**, and it
 is the ONLY record of what the hardware has ever done: every run's

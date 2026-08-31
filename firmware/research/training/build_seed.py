@@ -52,7 +52,16 @@ from BD.channels import CHANNELS, ILLUMINATIONS                # noqa: E402
 from research.build_db2 import SOURCE, parse_source            # noqa: E402
 from research.material_identity import identity, resolve_label  # noqa: E402
 
-OUTPUT = config.DECISION_LEARNING_SEED
+# THE SEED IS AN IMPORT INPUT, NOT A STORE.
+#
+# It used to be written into BD/training/, beside the learning database
+# it is imported into - so BD held the same twenty-two observations
+# twice, in two formats, with nothing keeping them in step. It lives
+# with the tooling that produces and consumes it; the database records
+# the seed's id and hash in its own meta table, so the provenance
+# travels inside the one canonical store.
+SEED_DIR = Path(__file__).resolve().parent / "data"
+OUTPUT = SEED_DIR / "seed_observations.json"
 
 SEED_ID = "FREYA_SESSION_20260817"
 SESSION_ID = "SESSION_20260817"

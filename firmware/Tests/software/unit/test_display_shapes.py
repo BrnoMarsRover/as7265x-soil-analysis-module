@@ -95,14 +95,13 @@ def survives(label, call, expect=None):
 
 checks.section("shapes taken from the real Science pipeline")
 
-from BD.calibrations import CalibrationStore                 # noqa: E402
-from BD.databases import References                          # noqa: E402
+from BD.calibrations import read_legacy_calibration          # noqa: E402
 from BD.registry import DatabaseRegistry                     # noqa: E402
 from Science import pipeline, quality                        # noqa: E402
 from Science.taxonomy import Taxonomy                        # noqa: E402
 from Science.decision import DecisionEngine                  # noqa: E402
 
-references = References()
+references = read_legacy_calibration()
 registry = DatabaseRegistry()
 taxonomy = Taxonomy(registry)
 engine = DecisionEngine(taxonomy=taxonomy, registry=registry)

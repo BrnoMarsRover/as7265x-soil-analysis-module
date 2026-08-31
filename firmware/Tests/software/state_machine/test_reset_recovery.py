@@ -116,7 +116,9 @@ class Bench:
 
     def _mission(self):
         mission = Mission(self.link)
-        mission.store = self.bd.sample_store()
+        mission.samples = self.bd.sample_database()
+        mission.session = mission.samples.session()
+        mission.archive = mission.samples.archive()
         mission.calibrations = self.bd.calibration_store()
         mission.profiles = self.bd.profile_store()
         mission.load_science()
@@ -256,8 +258,8 @@ try:
     bench.link.sync_position(load_slot=1)
     bench.link.select_slot(1, sample_id="S-STALE")
 
-    bench.mission.store.create("S-STALE", 1)
-    bench.mission.store.set_state("S-STALE", STATE_LOADED)
+    bench.mission.session.create("S-STALE", 1)
+    bench.mission.session.set_state("S-STALE", STATE_LOADED)
 
     # The PC's own view, captured BEFORE the reset - exactly what the
     # menu loop is holding when the board browns out.
@@ -301,7 +303,7 @@ try:
                  "truth - nothing carries the old belief forward")
 
     # No measurement was fabricated for the sample.
-    record = bench.bd.sample_store().get_sample("S-STALE")
+    record = bench.mission.session.get_sample("S-STALE")
     checks.equal(record.get("measurements") or [], [],
                  "and not one Measurement was written for a command "
                  "that was refused")
@@ -356,10 +358,25 @@ try:
     bench.link.sync_position(load_slot=3)
     bench.link.select_slot(3, sample_id="S-PCRESTART")
 
-    bench.mission.store.create("S-PCRESTART", 3)
-    bench.mission.store.set_state("S-PCRESTART", STATE_LOADED)
-    bench.mission.store.add_measurement("S-PCRESTART",
-                                        raw={"white": {"A": 1.0}})
+    bench.mission.session.create("S-PCRESTART", 3)
+    bench.mission.session.set_state("S-PCRESTART", STATE_LOADED)
+
+    # A REAL ACQUISITION, through the firmware, because the point of
+    # this case is now which computer still has it afterwards. A
+    # hand-built raw block in the PC's working set proves nothing about
+    # the device.
+    acquired = bench.link.measure_raw(3, sample_id="S-PCRESTART")
+
+    checks.ok(bool(acquired.get("illuminations")),
+              "the sample really was measured")
+    checks.ok(acquired.get("retention_durable"),
+              "and the device says it stored the acquisition durably")
+
+    bench.mission.session.add_measurement(
+        "S-PCRESTART",
+        raw={name: block["acquisitions"][0]
+             for name, block in acquired["illuminations"].items()},
+    )
 
     bench.restart_pc()
 
@@ -377,12 +394,41 @@ try:
     checks.equal(fresh["carousel"]["current_load_slot"], 3,
                  "and the new client reads that state off the board")
 
-    # And the archive survived, because it is on disk.
-    record = bench.bd.sample_store().get_sample("S-PCRESTART")
+    # WHAT SURVIVES A PC RESTART, AND WHAT MUST NOT.
+    #
+    # This used to assert that the Sample came back, because the
+    # working set was written into samples.json. It is memory now, and
+    # its disappearance is the ownership model working: measuring did
+    # not save anything on the PC, so restarting the client has nothing
+    # to bring back.
+    #
+    # The measurement is not lost - the ESP32 has it, durably, and the
+    # next two checks prove the operator can still get it. That is the
+    # trade this design makes, and it is only acceptable BECAUSE the
+    # device keeps its copy.
+    checks.ok(bench.mission.session.get_sample("S-PCRESTART") is None,
+              "the working set did NOT survive the PC restart - it was "
+              "never saved on the PC, which is the whole point")
 
-    checks.ok(record is not None, "the Sample survived the PC restart")
-    checks.equal(len(record.get("measurements") or []), 1,
-                 "with its Measurement, because that reached the disk")
+    checks.ok(bench.mission.archive.get_sample("S-PCRESTART") is None,
+              "and nothing of it is in the PC archive either, because "
+              "nobody imported it")
+
+    checks.ok("S-PCRESTART" not in bench.bd.samples_file.read_text(
+        encoding="utf-8"),
+        "and samples.json does not mention it")
+
+    # AND THE SCIENCE IS STILL THERE, on the computer that owns it.
+    held = bench.link.list_saved_samples()
+    device_ids = [entry.get("sample_id")
+                  for entry in (held.get("samples") or [])]
+
+    checks.ok("S-PCRESTART" in device_ids,
+              "the ESP32 still holds the acquisition after the client "
+              "restarted, so the operator can import it")
+
+    checks.equal(held.get("storage"), "device_filesystem",
+                 "and says it keeps it on its filesystem, not in RAM")
 
     # A measurement works immediately: nothing needs re-declaring.
     code, _ = attempt(lambda: bench.link.measure_raw(3, "S-PCRESTART"))
@@ -402,7 +448,9 @@ bench = Bench()
 try:
     bench.link.connect_servo()
     bench.link.sync_position(load_slot=1)
-    bench.mission.store.create("S-BOTH", 1)
+    bench.link.select_slot(1, sample_id="S-BOTH")
+    bench.mission.session.create("S-BOTH", 1)
+    bench.link.measure_raw(1, sample_id="S-BOTH")
 
     bench.reset_esp32()
     bench.restart_pc()
@@ -415,10 +463,27 @@ try:
     checks.equal(servo_state(bench)["connected"], False,
                  "and no servo connection is assumed")
 
-    checks.ok(bench.bd.sample_store().has_sample("S-BOTH"),
-              "the archive is still there - it is the only thing that "
-              "survives both restarts, which is why RAW is written to "
-              "it the instant it arrives")
+    # WHAT SURVIVES WHEN BOTH SIDES RESTART.
+    #
+    # Not the PC's working set: it is memory, and nobody imported it.
+    # The acquisition itself does, because the device writes it to its
+    # own filesystem - so the pair can lose power together and the
+    # science is still recoverable by an import.
+    checks.ok(bench.mission.session.get_sample("S-BOTH") is None,
+              "the PC kept nothing - the working set is memory and was "
+              "never imported")
+
+    checks.ok(bench.mission.archive.get_sample("S-BOTH") is None,
+              "and the PC archive holds nothing for it")
+
+    held = bench.link.list_saved_samples()
+    device_ids = [entry.get("sample_id")
+                  for entry in (held.get("samples") or [])]
+
+    checks.ok("S-BOTH" in device_ids,
+              "but the ESP32 still holds the acquisition through BOTH "
+              "restarts, which is what makes it the owner of an "
+              "un-imported measurement")
 
     code, _ = attempt(bench.link.connect_servo)
     checks.equal(code, "OK", "and the documented recovery still works")
@@ -540,12 +605,20 @@ finally:
 
 
 # ======================================================================
-checks.section("the retained acquisition buffer is volatile too")
+checks.section("the retained acquisition survives a reset of the board")
 
-# The ESP32 holds the last acquisition per slot so the PC can pull back
-# a measurement it lost. That buffer is RAM, and a reset empties it -
-# which is precisely why the PC persists RAW the instant it arrives
-# rather than relying on being able to ask again.
+# THE PROPERTY THAT PAYS FOR THE PC KEEPING ITS WORKING SET IN MEMORY.
+#
+# This buffer used to be RAM, and a reset emptied it - which is what
+# the PC's persisted session was there to compensate for. Compensating
+# on the PC was the wrong end: it made every measurement a stored PC
+# file the moment it was taken, so "Import" decided nothing.
+#
+# The acquisitions are written to the device's own filesystem now, so
+# the computer that OWNS the un-imported measurement is also the one
+# that can still produce it after a reboot. If this ever goes back to
+# being volatile, the ownership model has a hole in it and this case is
+# where that shows up.
 
 bench = Bench()
 
@@ -562,15 +635,42 @@ try:
               "the device is holding the acquisition ({})".format(
                   len(before)))
 
+    checks.equal(held.get("storage"), "device_filesystem",
+                 "and says it is holding it on its filesystem")
+
     bench.reset_esp32()
 
     held = bench.link.list_saved_samples()
     after = held.get("samples") or held.get("saved") or []
 
-    checks.equal(len(after), 0,
-                 "and a reset empties it - the acquisition exists ONLY "
-                 "in BD after this, which is why RAW is persisted "
-                 "before Science is asked anything")
+    checks.equal(len(after), len(before),
+                 "and a reset does NOT empty it - the acquisition is on "
+                 "the device's filesystem, not in its RAM")
+
+    checks.equal([entry.get("sample_id") for entry in after],
+                 [entry.get("sample_id") for entry in before],
+                 "the same Sample IDs come back, so the PC can still "
+                 "match the device's copy to its own record")
+
+    # AND IT IS THE WHOLE RECORD, not just an index entry.
+    restored = bench.link.get_saved_sample("S-BUFFER")
+    measurement = (restored or {}).get("measurement") or {}
+
+    checks.ok(bool(measurement.get("illuminations")),
+              "and the spectrum itself survived, not merely its name")
+
+    # PHYSICAL CLAIMS DO NOT SURVIVE, and must not.
+    status = bench.link.get_status()
+    slots = {slot["slot_id"]: slot for slot in (status.get("slots") or [])}
+
+    checks.equal(slots[1]["occupied"], False,
+                 "while the slot is NOT reported occupied - the firmware "
+                 "cannot know whether the soil is still in the cup, and "
+                 "a restored record must not invent that")
+
+    checks.equal((status.get("carousel") or {})["position_valid"], False,
+                 "and the position is still unknown, because a stored "
+                 "spectrum says nothing about where the mechanism is")
 
 finally:
     bench.close()

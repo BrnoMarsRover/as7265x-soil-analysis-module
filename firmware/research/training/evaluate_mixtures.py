@@ -58,9 +58,8 @@ FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 if str(FIRMWARE_ROOT) not in sys.path:
     sys.path.insert(0, str(FIRMWARE_ROOT))
 
-from BD.calibrations import CalibrationStore                  # noqa: E402
+from BD.calibrations import read_legacy_calibration                  # noqa: E402
 from BD.channels import CHANNELS                              # noqa: E402
-from BD.databases import References                           # noqa: E402
 from BD.decision_learning import (                            # noqa: E402
     DecisionLearningStore,
     ROLE_COMPONENT,
@@ -122,7 +121,7 @@ def evaluate(store, registry=None, material=None, levels=None):
                       "against.",
         }
 
-    references = References()
+    references = read_legacy_calibration()
     dark, white = references.dark, references.white
 
     mixtures = store.mixture_training_set(

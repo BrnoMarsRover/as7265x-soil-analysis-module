@@ -44,23 +44,32 @@ class SandboxBD:
     Use as a context manager; the directory is removed on exit.
 
         with SandboxBD() as bd:
-            store = bd.sample_store()
+            store = bd.sample_database().archive()
     """
 
     # Copied because tests want real reference data to compute against.
     # Everything else is created empty.
     SEEDED = (
-        ("calibration", ("calibration_active.json",
-                         "calibration_legacy.json",
-                         "calibrations.json",
-                         "acquisition_profiles.json")),
+        # ONE calibration file now: calibrations, the protected LEGACY
+        # White/Dark and the acquisition profiles are one document.
+        ("calibration", ("calibration.json",)),
         ("DB1", ("DB1.json", "operator_aliases.json")),
         ("DB2", ("DB2.json",)),
         ("DB3", ("DB3.json",)),
         ("models", ("registry.json",)),
     )
 
-    def __init__(self, seed=True):
+    # The pre-consolidation files, copied only by `SandboxBD(legacy=True)`
+    # so the migration itself can be tested against real data without
+    # any test being able to reach the real BD/.
+    LEGACY_SEEDED = (
+        ("calibration", ("calibration_active.json",
+                         "calibration_legacy.json",
+                         "calibrations.json",
+                         "acquisition_profiles.json")),
+    )
+
+    def __init__(self, seed=True, legacy=False, samples=True):
         self.root = Path(tempfile.mkdtemp(prefix="freya-bd-"))
         self.seeded = seed
 
@@ -69,13 +78,26 @@ class SandboxBD:
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
         if seed:
-            self._seed()
+            self._seed(self.SEEDED)
 
-        (self.root / "samples" / "samples.json").write_text(
-            '{"schema_version": 4, "samples": []}', encoding="utf-8")
+        if legacy:
+            self._seed(self.LEGACY_SEEDED)
 
-    def _seed(self):
-        for directory, names in self.SEEDED:
+        if samples:
+            # THE CURRENT SHAPE, so opening a sandbox does not exercise
+            # the migration by accident. The file holds the archive and
+            # nothing else: the session is a per-process working set
+            # that is never written out, so a Sample created in it is
+            # deliberately absent from here.
+            (self.root / "samples" / "samples.json").write_text(
+                '{"schema_version": %d, "storage_layout": '
+                '"archive-only-v1", "archive": []}'
+                % bd_config.SAMPLE_SCHEMA_VERSION,
+                encoding="utf-8",
+            )
+
+    def _seed(self, groups):
+        for directory, names in groups:
             source_dir = bd_config.BD_DIR / directory
 
             for name in names:
@@ -99,15 +121,15 @@ class SandboxBD:
         return self.root / "training" / "decision_learning.sqlite3"
 
     @property
-    def profiles_file(self):
-        return self.root / "calibration" / "acquisition_profiles.json"
+    def calibration_file(self):
+        return self.root / "calibration" / "calibration.json"
 
     # -- stores ---------------------------------------------------------
 
-    def sample_store(self):
-        from BD.samples import SampleStore
+    def sample_database(self):
+        from BD.samples import SampleDatabase
 
-        return SampleStore(self.samples_file).load()
+        return SampleDatabase(self.samples_file).load()
 
     def calibration_store(self):
         from BD.calibrations import CalibrationStore
@@ -117,7 +139,7 @@ class SandboxBD:
     def profile_store(self):
         from BD.acquisition_profiles import AcquisitionProfileStore
 
-        return AcquisitionProfileStore(self.profiles_file)
+        return AcquisitionProfileStore(directory=self.calibration_dir)
 
     def learning_store(self):
         from BD.decision_learning import DecisionLearningStore
@@ -152,7 +174,10 @@ def sandbox_mission(link, bd=None, science=True):
     bd = bd or SandboxBD()
     mission = Mission(link)
 
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
+
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
 

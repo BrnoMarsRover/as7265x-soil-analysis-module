@@ -103,7 +103,7 @@ def refusing_writes(sandbox):
 checks.section("the happy path, one state at a time")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
 
     record = store.create("S001", 1)
     checks.equal(record["state"], STATE_READY_TO_LOAD,
@@ -140,7 +140,7 @@ with SandboxBD() as bd:
 checks.section("an unknown state is refused")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
     store.create("S001", 1)
 
     for value in ("Measured", "MEASURING", "", None, 4, "DONE"):
@@ -159,7 +159,7 @@ with SandboxBD() as bd:
 checks.section("a failed acquisition is a record, not a gap")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
     store.create("S001", 1)
     store.set_state("S001", STATE_LOADED)
 
@@ -208,7 +208,7 @@ STEPS = (
 
 for failing_step in STEPS:
     with SandboxBD() as bd:
-        store = bd.sample_store()
+        store = bd.sample_database().archive()
         restore = None
         reached = []
         measurement_id = None
@@ -262,7 +262,7 @@ for failing_step in STEPS:
                   "and fails as a StorageError, which the screens catch")
 
         # What survived is what had already been written.
-        on_disk = bd.sample_store()
+        on_disk = bd.sample_database().archive()
         record = on_disk.get_sample("S001")
 
         if failing_step == "create":
@@ -302,7 +302,7 @@ for failing_step in STEPS:
 checks.section("recovery: the operator retries and it works")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
     store.create("S001", 1)
     store.set_state("S001", STATE_LOADED)
 
@@ -321,7 +321,7 @@ with SandboxBD() as bd:
 
     checks.equal(code, "OK", "and the retry succeeds")
 
-    record = bd.sample_store().get_sample("S001")
+    record = bd.sample_database().archive().get_sample("S001")
 
     checks.equal(len(record["measurements"]), 1,
                  "with EXACTLY ONE Measurement on disk - the failed "
@@ -333,7 +333,7 @@ with SandboxBD() as bd:
 checks.section("several Measurements, and none of them touch each other")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
     store.create("S001", 1)
     store.set_state("S001", STATE_LOADED)
 
@@ -347,7 +347,7 @@ with SandboxBD() as bd:
         measurement = store.add_measurement("S001", raw=raw)
         ids.append(measurement["measurement_id"])
 
-    record = bd.sample_store().get_sample("S001")
+    record = bd.sample_database().archive().get_sample("S001")
     measurements = record["measurements"]
 
     checks.equal(len(measurements), 5,
@@ -367,7 +367,7 @@ with SandboxBD() as bd:
         store.add_analysis_run("S001", ids[0],
                                {"verdict": "V{}".format(version)})
 
-    runs = bd.sample_store().get_sample("S001")["measurements"][0][
+    runs = bd.sample_database().archive().get_sample("S001")["measurements"][0][
         "analysis_runs"]
 
     checks.equal(len(runs), 3,
@@ -387,7 +387,7 @@ with SandboxBD() as bd:
                  "the whole point of storing it was to see what was "
                  "concluded at the time")
 
-    checks.equal(bd.sample_store().get_sample("S001")["measurements"][0]
+    checks.equal(bd.sample_database().archive().get_sample("S001")["measurements"][0]
                  ["raw"]["white"]["A"], first,
                  "and none of the analyses reached the RAW")
 
@@ -396,7 +396,7 @@ with SandboxBD() as bd:
 checks.section("renaming and deleting")
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    store = bd.sample_database().archive()
     store.create("S001", 1)
     store.create("S002", 2)
 
@@ -412,7 +412,7 @@ with SandboxBD() as bd:
 
     code, _ = attempt(lambda: store.rename("S001", "S010"))
     checks.equal(code, "OK", "a legitimate rename works")
-    checks.ok(bd.sample_store().has_sample("S010"),
+    checks.ok(bd.sample_database().archive().has_sample("S010"),
               "and survives a reload")
 
     code, _ = attempt(lambda: store.delete("NOT-THERE"))
@@ -420,7 +420,7 @@ with SandboxBD() as bd:
               "deleting a Sample that does not exist is refused "
               "({})".format(code))
 
-    checks.equal(bd.sample_store().count(), 2,
+    checks.equal(bd.sample_database().archive().count(), 2,
                  "and the archive still holds both real Samples")
 
 

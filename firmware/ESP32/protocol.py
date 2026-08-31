@@ -44,6 +44,7 @@ import time
 
 import config
 
+import retention
 import sensor as sensor_module
 import servo as servo_module
 
@@ -736,7 +737,43 @@ class Protocol:
             "servo": self.servo.status(),
             "carousel": self.carousel.status(),
             "slots": self.carousel.slot_summary(),
+
+            # WHERE THE UN-IMPORTED ACQUISITIONS ARE. The PC's Sample
+            # Database prints this, because "if I close the client now,
+            # where does s01 still exist" is a question the operator
+            # must be able to answer from the screen. A board whose
+            # filesystem is unavailable reports retention as
+            # unavailable rather than letting it be assumed.
+            "retention": self._retention_status(),
         }
+
+    def _retention_status(self):
+        """
+        The device's own acquisition store, described honestly.
+
+        Never raises. A status call that failed because the filesystem
+        is unhappy would take the whole screen down, and the one thing
+        the operator needs at that moment is the rest of the status.
+        """
+        try:
+            report = retention.status()
+
+        except Exception:                              # pragma: no cover
+            return {
+                "available": False,
+                "durable": False,
+                "error": "the retained-acquisition store could not be read",
+            }
+
+        report["durable"] = bool(report.get("available"))
+        report["in_ram"] = len(self.carousel.retained_samples())
+
+        error = getattr(self.carousel, "retention_error", None)
+
+        if error:
+            report["last_write_error"] = error
+
+        return report
 
     # ------------------------------------------------------------------
     # servo lifecycle, service and diagnostics
@@ -1334,8 +1371,13 @@ class Protocol:
         """
         Free a physical slot for reuse.
 
-        Physical state only. The PC's persistent scientific record for
-        whatever was in the slot is untouched and still exists.
+        PHYSICAL STATE ONLY, and that now includes leaving the retained
+        acquisition alone. Emptying a cup and deleting a measurement are
+        different operations: `delete_saved_samples` is the second one,
+        and it is deliberately not chained to this.
+
+        The PC's records - session and archive both - are on a different
+        computer and are untouched by anything here.
         """
         slot_id = self._require_slot(request)
         previous = self.carousel.slots[slot_id]
@@ -1349,7 +1391,10 @@ class Protocol:
             "slot": slot,
             "was_occupied": was_occupied,
             "cleared_sample_id": cleared_sample,
+            "acquisition_kept": slot["measurement"] is not None,
             "carousel": self.carousel.status(),
+            "note": "Physical slot only. The acquisition taken from this "
+                    "slot is still held; delete_saved_samples removes it.",
         }
 
     def handle_clear_all_slots(self, request):
@@ -1366,8 +1411,8 @@ class Protocol:
             "cleared": cleared,
             "slots": self.carousel.slot_summary(),
             "carousel": self.carousel.status(),
-            "note": "Physical slot state only. Saved Sample records were "
-                    "not touched.",
+            "note": "Physical slot state only. Retained acquisitions and "
+                    "the PC's records were not touched.",
         }
 
     # ------------------------------------------------------------------
@@ -1754,7 +1799,19 @@ class Protocol:
             "return_move": return_move,
             "home_restored": return_move["returned"],
             "carousel": self.carousel.status(),
+
+            # WHETHER THIS SPECTRUM WOULD SURVIVE A RESET. Reported per
+            # measurement rather than only in get_status, because the
+            # answer belongs beside the measurement it is about: a full
+            # filesystem makes exactly this acquisition unprotected
+            # while the three taken before it are fine.
+            "retained": slot.get("measurement") is not None,
+            "retention_durable": self.carousel.retention_error is None,
         }
+
+        if self.carousel.retention_error:
+            data["retention_error"] = self.carousel.retention_error
+
         data.update(acquisition)
 
         return data
@@ -2060,22 +2117,38 @@ class Protocol:
             "count": len(retained),
             "samples": [
                 {
+                    # THE ID THE MEASUREMENT WAS TAKEN UNDER, which is
+                    # not the same as whatever is in the cup now: the
+                    # slot can be cleared and reused while the
+                    # acquisition it produced is still held.
+                    #
                     # A measurement taken without a Sample ID still has
                     # to be listable, or it can never be exported or
                     # deleted. Fall back to the slot it came from.
                     "sample_id": (
-                        slot["sample_id"]
+                        self.carousel.retained_sample_id(slot)
                         or "SLOT{}".format(slot["slot_id"])
                     ),
-                    "has_sample_id": slot["sample_id"] is not None,
+                    "has_sample_id": (
+                        self.carousel.retained_sample_id(slot) is not None
+                    ),
                     "slot_id": slot["slot_id"],
                     "occupied": slot["occupied"],
                 }
                 for slot in retained
             ],
-            "storage": "ram_only",
-            "note": "Raw acquisitions held since the last reset. The PC "
-                    "is the persistent archive.",
+            # IT USED TO SAY "ram_only", AND THAT IS NOW FALSE. The
+            # acquisitions are mirrored to the device filesystem as
+            # they are taken, so they survive a reset of this board. It
+            # matters that this string is right: the PC prints it to
+            # the operator underneath the question of whether anything
+            # would be lost by restarting something.
+            "storage": ("device_filesystem"
+                        if retention.available() else "ram_only"),
+            "durable": retention.available(),
+            "note": "Raw acquisitions held by the device until they are "
+                    "deleted. The PC archive is a separate, permanent "
+                    "store that only an explicit import writes to.",
         }
 
     def handle_get_saved_sample(self, request):
@@ -2103,6 +2176,48 @@ class Protocol:
             "measurement": slot["measurement"],
         }
 
+    def handle_delete_saved_sample(self, request):
+        """
+        Delete ONE retained acquisition, named by its Sample ID.
+
+        Deliberately narrow, like its plural sibling: it removes one
+        stored measurement. Physical slot occupancy is left exactly as
+        it was, because soil can still be sitting in a slot whose
+        record has been exported, and the PC's session and archive are
+        on another computer entirely.
+
+        A SAMPLE ID THAT IS NOT HELD IS AN ERROR, not a quiet success.
+        The PC verifies a delete by reading the device back, and a
+        command that answers "deleted" for something it never had would
+        make that check meaningless.
+        """
+        sample_id = request.get("sample_id")
+
+        if not sample_id:
+            raise CommandError(
+                "MISSING_FIELD",
+                "delete_saved_sample requires a 'sample_id'.",
+            )
+
+        slot = self.carousel.drop_retained_sample(sample_id)
+
+        if slot is None:
+            raise CommandError(
+                "SAMPLE_NOT_FOUND",
+                "No retained acquisition for sample {}.".format(sample_id),
+            )
+
+        return {
+            "sample_id": sample_id,
+            "slot_id": slot["slot_id"],
+            "deleted_count": 1,
+            "deleted": [sample_id],
+            "remaining": len(self.carousel.retained_samples()),
+            "slots": self.carousel.slot_summary(),
+            "note": "One ESP32 acquisition. Physical slot state and the "
+                    "PC's stores were not touched.",
+        }
+
     def handle_delete_saved_samples(self, request):
         """
         Delete every retained acquisition held on this device.
@@ -2121,7 +2236,7 @@ class Protocol:
             "remaining": len(self.carousel.retained_samples()),
             "slots": self.carousel.slot_summary(),
             "note": "ESP32 acquisitions only. Physical slot state and the "
-                    "PC archive were not touched.",
+                    "PC's session and archive were not touched.",
         }
 
 
@@ -2365,5 +2480,6 @@ COMMANDS = {
     # the retained-acquisition buffer
     "list_saved_samples": "handle_list_saved_samples",
     "get_saved_sample": "handle_get_saved_sample",
+    "delete_saved_sample": "handle_delete_saved_sample",
     "delete_saved_samples": "handle_delete_saved_samples",
 }

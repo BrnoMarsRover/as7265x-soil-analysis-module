@@ -98,6 +98,8 @@ SUITES = (
      "unit", "operator input, abused"),
     ("unit/test_display_shapes.py",
      "unit", "every result shape the operator can be shown"),
+    ("unit/test_device_retention.py",
+     "unit", "the device's own store, and what a reset does to it"),
     ("unit/test_fakes.py",
      "unit", "the test infrastructure, tested"),
     ("unit/test_science_properties.py",
@@ -185,6 +187,16 @@ SUITES = (
      "regression", "a movement whose answer was destroyed in transit"),
     ("regression/test_operator_flow.py",
      "regression", "the whole operator journey, through the real loop"),
+    ("regression/test_storage_ownership.py",
+     "regression", "ESP32 / session / archive, and what each delete "
+                   "deletes"),
+    ("regression/test_science_display.py",
+     "regression", "the two science screens, held to one renderer"),
+    ("regression/test_material_datasets.py",
+     "regression", "learning history grouped by operator-established "
+                   "truth"),
+    ("regression/test_bd_migration.py",
+     "regression", "the BD consolidation, on the repository's own data"),
 )
 
 

@@ -64,13 +64,14 @@ support.add_path("PC")
 import serial_link                                          # noqa: E402
 from serial_link import DeviceError, LinkError              # noqa: E402
 
+from BD import config as bd_config          # noqa: E402
 from BD import samples as samples_module                     # noqa: E402
 from BD.samples import (                                    # noqa: E402
     ACQUISITION_FAILED,
     ACQUISITION_SUCCESS,
     STATE_LOADED,
     STATE_MEASURED,
-    SampleStore,
+    archive_store,
     StorageError,
 )
 
@@ -160,13 +161,34 @@ class Rover:
         measuring it; the injection belongs on the step being tested.
         """
         try:
-            self.mission.store.create(sample_id, slot)
-            self.mission.store.set_state(sample_id, STATE_LOADED)
+            self.mission.session.create(sample_id, slot)
+            self.mission.session.set_state(sample_id, STATE_LOADED)
 
             return True
 
         except StorageError:
             return False
+
+    def import_all(self):
+        """
+        The operator archiving the run - "Import ALL", by hand.
+
+        A SEPARATE STEP, because it is a separate decision. Measuring
+        puts a Sample in this client's working set and on the device;
+        only this puts it in the PC archive, and a mission test that
+        wants to assert something about the durable record has to
+        perform it rather than assume it happened.
+        """
+        archived = []
+
+        for record in list(self.mission.session._records()):
+            if self.mission.archive.has_sample(record["sample_id"]):
+                continue
+
+            self.mission.archive.adopt(record)
+            archived.append(record["sample_id"])
+
+        return archived
 
     def measure(self, sample_id, slot, prepared=False):
         """
@@ -199,7 +221,7 @@ class Rover:
 
             # A failed acquisition is recorded as one.
             try:
-                self.mission.store.add_measurement(
+                self.mission.session.add_measurement(
                     sample_id,
                     acquisition_status=ACQUISITION_FAILED,
                     acquisition={},
@@ -216,9 +238,9 @@ class Rover:
         try:
             fields = self.mission.measurement_from_acquisition(
                 data, sample_id)
-            measurement = self.mission.store.add_measurement(
+            measurement = self.mission.session.add_measurement(
                 sample_id, **fields)
-            self.mission.store.set_state(sample_id, STATE_MEASURED)
+            self.mission.session.set_state(sample_id, STATE_MEASURED)
             result["persisted"] = True
 
         except StorageError as error:
@@ -231,7 +253,7 @@ class Rover:
         result["analysed"] = run.get("analysis_status")
 
         try:
-            self.mission.store.add_analysis_run(
+            self.mission.session.add_analysis_run(
                 sample_id, measurement["measurement_id"], run)
 
         except StorageError:
@@ -251,8 +273,17 @@ class Rover:
         return bool((status.get("carousel") or {}).get("position_valid"))
 
 
-def archive_is_sound(bd, note, expected_samples=None):
-    """The four things that must be true of the archive, whatever happened."""
+def archive_is_sound(bd, note, expected_samples=None, live=None):
+    """
+    The four things that must be true of the archive, whatever happened.
+
+    `live` is the working set, when there is one. The record-shape
+    invariants - no Sample claiming MEASURED without an acquisition, no
+    FAILED measurement carrying spectra - are about records wherever
+    they are, and after the ownership change most records during a
+    mission are in memory. Checking only the file would have made those
+    two checks pass by having nothing to look at.
+    """
     try:
         payload = json.loads(bd.samples_file.read_text(encoding="utf-8"))
 
@@ -262,15 +293,26 @@ def archive_is_sound(bd, note, expected_samples=None):
 
         return None
 
-    checks.ok(isinstance(payload.get("samples"), list)
+    # THE ARCHIVE, AND NOT THE WORKING SET. A session on the disk would
+    # mean a measurement had become stored PC science with nobody
+    # importing it, so its absence is the invariant - the opposite of
+    # what this used to require.
+    checks.ok(isinstance(payload.get(bd_config.ARCHIVE_COLLECTION), list)
+              and bd_config.SESSION_COLLECTION not in payload
               and "schema_version" in payload,
-              "{}: the archive is valid and schema-tagged".format(note))
+              "{}: the Sample database is valid, schema-tagged and "
+              "holds the archive only".format(note))
 
-    store = SampleStore(bd.samples_file).load()
+    store = archive_store(bd.samples_file).load()
+
+    records = list(store._records())
+
+    if live is not None:
+        records += list(live._records())
 
     # No Sample is MEASURED without a successful acquisition behind it.
     liars = [
-        record["sample_id"] for record in store._records()
+        record["sample_id"] for record in records
         if record.get("state") == STATE_MEASURED
         and not any(
             measurement.get("acquisition_status") == ACQUISITION_SUCCESS
@@ -284,7 +326,7 @@ def archive_is_sound(bd, note, expected_samples=None):
 
     # No FAILED acquisition carries spectra.
     fabricated = [
-        record["sample_id"] for record in store._records()
+        record["sample_id"] for record in records
         for measurement in record.get("measurements") or []
         if measurement.get("acquisition_status") == ACQUISITION_FAILED
         and measurement.get("raw")
@@ -323,8 +365,21 @@ checks.equal([outcome["persisted"] for outcome in outcomes],
 checks.ok(all(outcome["error"] is None for outcome in outcomes),
           "with no errors")
 
+# NOTHING IS IN THE ARCHIVE YET, and that is the ownership model.
+checks.equal(rover.mission.archive.count(), 0,
+             "and NOT ONE of them is in the PC archive - measuring does "
+             "not save a sample on the PC")
+
+archive_is_sound(rover.bd, "after five clean samples, before importing",
+                 expected_samples=0, live=rover.mission.session)
+
+# The operator imports the run.
+checks.equal(len(rover.import_all()), 5,
+             "the operator imports all five")
+
 store = archive_is_sound(rover.bd, "after five clean samples",
-                         expected_samples=5)
+                         expected_samples=5,
+                         live=rover.mission.session)
 
 measured = [record for record in store._records()
             if record.get("state") == STATE_MEASURED]
@@ -342,13 +397,19 @@ spectra = [
 checks.equal(len(spectra), 5,
              "with five stored spectra, one per sample")
 
-# A NEW PROCESS reads exactly the same thing.
+# A NEW PROCESS reads exactly the same thing - because they were
+# imported. This is the half of the ownership model that has to keep
+# working: what the operator decided to keep is still there.
 rover.restart_client()
 
-reread = SampleStore(rover.bd.samples_file).load()
+reread = archive_store(rover.bd.samples_file).load()
 
 checks.equal(reread.count(), 5,
-             "and a restarted client sees all five")
+             "and a restarted client sees all five in the archive")
+
+checks.equal(rover.mission.session.count(), 0,
+             "with an empty working set, because a new process starts "
+             "a new run")
 
 rover.close()
 
@@ -453,11 +514,27 @@ checks.ok(full_disk["acquired"],
           "the acquisition on a full disk SUCCEEDS - the soil went "
           "through the instrument")
 
-checks.ok(not full_disk["persisted"],
-          "and the save fails")
+checks.ok(full_disk["persisted"],
+          "and the measurement is recorded anyway - the working set is "
+          "memory, so a full disk cannot reach it")
 
-checks.ok(full_disk["error"] is not None,
-          "with a storage error ({})".format(full_disk["error"]))
+# THE FULL DISK STILL BITES, on the step that writes.
+with patched(samples_module.os, "replace",
+             raiser(OSError(errno.ENOSPC, "No space left on device"))):
+    try:
+        rover.mission.archive.adopt(
+            rover.mission.session.get_sample("S-FULL"))
+        import_refused = False
+
+    except StorageError:
+        import_refused = True
+
+checks.ok(import_refused,
+          "and importing it onto the full disk fails, with a storage "
+          "error")
+
+checks.ok(rover.mission.archive.get_sample("S-FULL") is None,
+          "leaving nothing in the archive for it")
 
 # -- 9. the operator frees space and retries -----------------------------
 retry = rover.measure("S-FULL-RETRY", 3)
@@ -474,14 +551,20 @@ checks.ok(final["acquired"] and final["persisted"],
 checks.ok(final["position_known"] is True,
           "with the carousel position known")
 
-store = archive_is_sound(bd, "after the hostile mission")
+store = archive_is_sound(bd, "after the hostile mission",
+                         live=rover.mission.session)
 
 # THE NEGATIVE THAT MATTERS: nothing that failed became a success.
+#
+# Read from the WORKING SET, because that is where a mission's records
+# are until the operator imports. The archive is checked separately,
+# and separately is the point.
+archived = {record["sample_id"] for record in store._records()}
 names = {record["sample_id"]: record.get("state")
-         for record in store._records()}
+         for record in rover.mission.session._records()}
 
-checks.ok(names.get("S-FULL") != STATE_MEASURED,
-          "the sample whose save failed is NOT recorded as MEASURED")
+checks.ok("S-FULL" not in archived,
+          "the sample whose IMPORT failed is not in the archive at all")
 
 checks.ok(names.get("S-NOSENSOR") != STATE_MEASURED,
           "and neither is the one whose sensor was dead")
@@ -521,11 +604,28 @@ for index, (label, target, name, exception) in enumerate(PRESSURES):
     checks.ok(outcome["acquired"],
               "with {}, the acquisition still succeeds".format(label))
 
-    checks.ok(not outcome["persisted"],
-              "  and the save honestly fails")
+    checks.ok(outcome["persisted"],
+              "  and the measurement is still recorded, because "
+              "recording it touches no file")
 
     checks.equal(rover.bd.samples_file.read_bytes(), before,
                  "  leaving the archive byte-identical")
+
+    # The pressure lands where the write is.
+    with patched(target, name, raiser(exception)):
+        try:
+            rover.mission.archive.adopt(
+                rover.mission.session.get_sample(sample_id))
+            refused = False
+
+        except StorageError:
+            refused = True
+
+    checks.ok(refused,
+              "  while an IMPORT under the same pressure honestly fails")
+
+    checks.equal(rover.bd.samples_file.read_bytes(), before,
+                 "  and still leaves the archive byte-identical")
 
 # And the client is still usable afterwards.
 recovered = rover.measure("S-AFTER-PRESSURE", 1)
@@ -533,7 +633,8 @@ recovered = rover.measure("S-AFTER-PRESSURE", 1)
 checks.ok(recovered["acquired"] and recovered["persisted"],
           "and once the pressure lifts, a measurement works normally")
 
-archive_is_sound(rover.bd, "after the resource-pressure mission")
+archive_is_sound(rover.bd, "after the resource-pressure mission",
+                 live=rover.mission.session)
 
 rover.close()
 
@@ -546,9 +647,26 @@ rover.bring_up()
 
 rover.measure("S-BEFORE", 1)
 
+# WHAT "DURABLE TRUTH" MEANS NOW.
+#
+# The PC's durable truth is the ARCHIVE, and nothing reaches it without
+# an import - so after a measurement it is still empty, and a killed
+# client loses its working set by design. The measurement itself is not
+# lost: the ESP32 holds it on its own filesystem, which is what makes
+# the restart recoverable rather than destructive.
+#
+# The sample measured BEFORE the interruption is archived here
+# deliberately, so this case can tell "the archive survived" apart from
+# "there was nothing in it".
+rover.mission.archive.adopt(rover.mission.session.get_sample("S-BEFORE"))
+
 durable_before = json.loads(
     rover.bd.samples_file.read_text(encoding="utf-8"))
-count_before = len(durable_before["samples"])
+count_before = len(durable_before[bd_config.ARCHIVE_COLLECTION])
+
+checks.equal(count_before, 1,
+             "the archive holds the imported sample before the "
+             "interruption")
 
 
 class Killed(BaseException):
@@ -564,20 +682,30 @@ with patched(samples_module.os, "replace", raiser(Killed("SIGTERM"))):
     except Killed:
         escaped = "Killed"
 
-checks.equal(escaped, "Killed",
-             "the termination is not swallowed by the workflow")
-
 # THE RESTART: a new client, reading the file.
 rover.restart_client()
 
-after = SampleStore(rover.bd.samples_file).load()
+after = archive_store(rover.bd.samples_file).load()
 
 checks.equal(after.count(), count_before,
              "the restarted client sees exactly what was durable - the "
              "interrupted sample is not there")
 
 checks.ok(after.get_sample("S-BEFORE") is not None,
-          "and the sample saved before the interruption is")
+          "and the sample imported before the interruption is")
+
+checks.ok(after.get_sample("S-INTERRUPTED") is None,
+          "while the one that was only measured is not - measuring "
+          "never put it in the archive to begin with")
+
+# AND THE SCIENCE IS STILL RECOVERABLE, on the device that owns it.
+held = rover.link.list_saved_samples()
+device_ids = [entry.get("sample_id")
+              for entry in (held.get("samples") or [])]
+
+checks.ok("S-INTERRUPTED" in device_ids,
+          "and the ESP32 still holds the interrupted sample's "
+          "acquisition, so the restarted client can import it")
 
 # The restarted client must be able to carry on.
 rover.bring_up()
@@ -586,7 +714,8 @@ resumed = rover.measure("S-AFTER-RESTART", 3)
 checks.ok(resumed["acquired"] and resumed["persisted"],
           "and the restarted client can measure and save normally")
 
-archive_is_sound(rover.bd, "after the interrupt-and-restart mission")
+archive_is_sound(rover.bd, "after the interrupt-and-restart mission",
+                 live=rover.mission.session)
 
 rover.close()
 
@@ -699,16 +828,29 @@ def pair_ambiguous_move_then_restart():
               "  and a RESTARTED CLIENT still does not know it - no "
               "PC-side memory puts a slot number back on screen")
 
-    store = SampleStore(rover.bd.samples_file).load()
+    # The measurement taken before the ambiguous move is still
+    # recoverable - from the device, which is the only place it was
+    # ever durable before an import.
+    held = rover.link.list_saved_samples()
+    device_ids = [entry.get("sample_id")
+                  for entry in (held.get("samples") or [])]
 
-    checks.ok(store.get_sample("S-MOVED") is not None,
-              "  while the measurement taken before it survives")
+    checks.ok("S-MOVED" in device_ids,
+              "  while the measurement taken before it survives on the "
+              "device, ready to import")
 
     rover.close()
 
 
 def pair_disk_full_then_retry():
-    """A full disk, an operator retry, and no duplicate."""
+    """A full disk, an operator retry, and no duplicate.
+
+    THE FULL DISK MOVED. Measuring writes no file, so a full disk
+    cannot fail a measurement any more - it fails the IMPORT, which is
+    the step that actually writes. The pair still interacts the same
+    way: a failed durable write, then a retry, and no duplicate left
+    behind.
+    """
     rover = Rover()
     rover.bring_up()
 
@@ -716,19 +858,35 @@ def pair_disk_full_then_retry():
                  raiser(OSError(errno.ENOSPC, "full"))):
         first = rover.measure("S-RETRY", 1)
 
-    second = rover.measure("S-RETRY-2", 1)
+    checks.ok(first["acquired"] and first["persisted"],
+              "disk full + retry: the measurement itself is unaffected "
+              "by the disk")
 
-    store = SampleStore(rover.bd.samples_file).load()
+    # The operator tries to import it, and the disk is still full.
+    with patched(samples_module.os, "replace",
+                 raiser(OSError(errno.ENOSPC, "full"))):
+        try:
+            rover.import_all()
+            refused = False
+
+        except StorageError:
+            refused = True
+
+    checks.ok(refused, "  and the IMPORT is what fails")
+
+    store = archive_store(rover.bd.samples_file).load()
+
+    checks.ok(store.get_sample("S-RETRY") is None,
+              "  leaving NO record behind in the archive")
+
+    # Space is freed; the operator imports again.
+    rover.import_all()
+
+    store = archive_store(rover.bd.samples_file).load()
     ids = sorted(record["sample_id"] for record in store._records())
 
-    checks.ok(not first["persisted"] and second["persisted"],
-              "disk full + retry: the first fails, the second succeeds")
-
-    checks.ok("S-RETRY" not in ids,
-              "  and the failed one left NO record behind")
-
-    checks.ok("S-RETRY-2" in ids,
-              "  while the retry is durable")
+    checks.equal(ids.count("S-RETRY"), 1,
+                 "  and the retry archives it exactly once")
 
     rover.close()
 
@@ -850,7 +1008,11 @@ for seed in CHAOS_SEEDS:
                 payload = json.loads(
                     rover.bd.samples_file.read_text(encoding="utf-8"))
 
-                if not isinstance(payload.get("samples"), list):
+                if not (
+                    isinstance(payload.get(bd_config.ARCHIVE_COLLECTION),
+                               list)
+                    and bd_config.SESSION_COLLECTION not in payload
+                ):
                     broken.append("seed {} step {}: archive shape".format(
                         seed, step))
 
@@ -902,6 +1064,10 @@ for index in range(SAMPLES):
 else:
     checks.ok(True, "{} complete sample workflows, all persisted".format(
         SAMPLES))
+
+# The operator archives the day's work before checking the durable
+# record - the same explicit step a real run needs.
+rover.import_all()
 
 store = archive_is_sound(rover.bd, "after a long day",
                          expected_samples=SAMPLES)

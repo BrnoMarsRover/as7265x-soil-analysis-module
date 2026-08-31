@@ -86,9 +86,10 @@ TOOLS_MENU = (
      lambda mission, status, view: calibration.menu_sensor_test(mission)),
     ("6", "Clear Physical Slot", "Free a physical carousel slot.",
      measure.menu_clear_slot),
-    ("7", "Sync ESP32 Acquisitions to BD",
-     "Copy acquisitions held in the ESP32 buffer into the BD archive.",
-     lambda mission, status, view: records.sync_esp32_samples(mission)),
+    ("7", "Import ESP32 Acquisitions to the PC Archive",
+     "COPY every acquisition held in the ESP32 buffer into the "
+     "permanent PC archive. The device keeps its own copies.",
+     lambda mission, status, view: records.import_esp32_samples(mission)),
     ("8", "Decision Learning History",
      "What the system has measured, what it concluded, and what the "
      "samples actually were.",
@@ -153,10 +154,11 @@ HELP_TEXT = """NORMAL COMPETITION WORKFLOW
 
   0. Initial Carousel Calibration - once, Slot 1 under the loading hole
   1. Choose Sample / Slot
-  2. Prepare Sample          (creates the persistent record)
+  2. Prepare Sample          (opens the record for this run)
   3. Rover arm deposits soil
   4. Confirm Sample Loaded
-  5. Measure Sample          (180 deg out, RAW, 180 deg back, saved)
+  5. Measure Sample          (180 deg out, RAW, 180 deg back)
+  6. Import it, when you want to keep it - see WHERE THINGS LIVE
 
 CAROUSEL
 
@@ -184,10 +186,10 @@ CAROUSEL
 
 CALIBRATION
 
-  The module uses one fixed Dark and one fixed White reference stored
-  in firmware/BD/data/calibration_legacy.json. They were accepted before the
-  competition and are used for every sample. You are never asked to
-  measure White or Dark.
+  The module uses one fixed Dark and one fixed White reference, stored
+  as the protected LEGACY record inside the calibration database. They
+  were accepted before the competition and are used for every
+  comparison against DB1. You are never asked to measure them.
 
       C = Sample - Dark
       R = (Sample - Dark) / (White - Dark)
@@ -198,20 +200,44 @@ WHERE THINGS LIVE
   BD      White/Dark, material database, all analysis
   PC      workflow, Sample records, this interface
 
-  Saved samples: firmware/PC/data/
+IF YOU CLOSE THIS PROGRAM RIGHT NOW, WHERE IS s01?
+
+  Three stores, and only two of them survive that.
+
+  ESP32       the device's own store, one acquisition per slot, on the
+              ESP32's filesystem. SURVIVES a board reset, a power cut
+              and a restart of this program. Only a delete removes it.
+
+  PC session  this run's working set, in THIS PROGRAM'S MEMORY.
+              Prepare and Measure write here. It is NOT a file: closing
+              this program discards it. The measurement is not lost -
+              the device still has it.
+
+  PC archive  the permanent record, in firmware/BD/samples/samples.json.
+              The ONLY PC store that survives closing this program, and
+              nothing arrives in it except by an explicit import.
+
+  Measuring a sample does NOT save it on this computer. That is
+  deliberate: what gets kept is your decision, not a side effect.
+
+IMPORTING - HOW A MEASUREMENT BECOMES A KEPT RECORD
+
+  Tools -> [7] Import ESP32 Acquisitions to the PC Archive copies every
+  acquisition the device is holding into the permanent PC archive. It
+  never overwrites an existing Sample and never deletes the ESP32 copy.
+
+  Tools -> [1] Sample Database does the same one sample at a time, and
+  is also where every delete lives. Every delete there names exactly
+  one store, because "delete the sample" is not a sentence this system
+  can act on.
 
 MEASURED IS NOT EMPTY
 
   The soil physically stays in the slot after a measurement. Use
-  Tools -> Clear Physical Slot when it has been removed. That keeps the
-  scientific record; Delete Sample is what removes it.
-
-SYNC ESP32 SAMPLES TO PC
-
-  The ESP32 holds the last raw acquisition per slot in RAM. If this
-  program lost a result - a crash, a restart, a different laptop -
-  Tools -> Sync ESP32 Samples to PC copies it into the archive. It never
-  overwrites an existing Sample and never deletes the ESP32 copy."""
+  Tools -> Clear Physical Slot when it has been removed. That frees the
+  mechanism ONLY: the measurement taken from the slot is kept, on the
+  device and in this run. Removing a measurement is a delete in the
+  Sample Database, and it names its store."""
 
 
 def menu_help(mission, status, view):
@@ -249,7 +275,18 @@ def action_labels(entry, carousel):
     labels = {"2": "", "3": "", "4": ""}
 
     if state == STATE_EMPTY:
-        labels["2"] = "[AVAILABLE]"
+        # [AVAILABLE] ONLY IF THE CUP IS ACTUALLY FREE. With no live
+        # record this slot reads EMPTY, and the board may still be
+        # reporting soil in it from a run this client never saw -
+        # offering Prepare there invites a second sample into an
+        # occupied cup. `menu_prepare` refuses it; the label must not
+        # promise otherwise first.
+        if ui_status.slot_is_free(entry):
+            labels["2"] = "[AVAILABLE]"
+
+        else:
+            labels["2"] = "[LOCKED - the module reports soil in this slot]"
+
         labels["3"] = "[LOCKED - no sample prepared]"
         labels["4"] = "[LOCKED - no sample prepared]"
 
@@ -314,7 +351,8 @@ def print_main_screen(mission, status, view):
 
     for item in view:
         print("{}  {:<8} {}".format(
-            item["slot_id"], item["sample_id"] or "----", item["state"]
+            item["slot_id"], item["sample_id"] or "----",
+            ui_status.slot_state_label(item),
         ))
 
     if mission.science_error:

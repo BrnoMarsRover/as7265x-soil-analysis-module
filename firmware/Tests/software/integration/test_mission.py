@@ -109,12 +109,22 @@ try:
     # every line of `interactive` running for real.
     original_mission = screen_module.Mission
 
+    # KEPT, because the session is this process's memory and belongs to
+    # the Mission that `interactive` builds. It used to be read back
+    # from a fresh SampleDatabase, which worked only while the working
+    # set was persisted - and asserting on a store the run never used
+    # is exactly the mistake the persisted session made easy.
+    built = []
+
     def sandboxed_mission(link_):
         mission = original_mission(link_)
-        mission.store = bd.sample_store()
+        mission.samples = bd.sample_database()
+        mission.session = mission.samples.session()
+        mission.archive = mission.samples.archive()
         mission.calibrations = bd.calibration_store()
         mission.profiles = bd.profile_store()
         mission.load_science()
+        built.append(mission)
 
         return mission
 
@@ -147,11 +157,22 @@ try:
     checks.ok("FREYA SCIENCE MODULE" in output,
               "and the main screen was actually reached")
 
-    store = bd.sample_store()
+    checks.equal(len(built), 1,
+                 "the run built exactly one Mission, and the assertions "
+                 "below are about the one it actually used")
+
+    store = built[-1].session
     record = store.get_sample("S-MISSION-1")
 
     checks.ok(record is not None,
               "a Sample record exists afterwards")
+
+    # AND IT IS NOT IN THE FILE. The measurement was taken and never
+    # imported, so nothing about it may have become stored PC science.
+    checks.ok("S-MISSION-1" not in bd.samples_file.read_text(
+        encoding="utf-8"),
+        "and it is NOT in samples.json - measuring does not save a "
+        "sample on the PC, importing does")
 
     if record:
         checks.equal(record["state"], STATE_MEASURED,
@@ -208,7 +229,9 @@ try:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -217,8 +240,8 @@ try:
     link.sync_position(load_slot=1)
     link.select_slot(1, sample_id="S-ORDER")
 
-    mission.store.create("S-ORDER", 1)
-    mission.store.set_state("S-ORDER", STATE_LOADED)
+    mission.session.create("S-ORDER", 1)
+    mission.session.set_state("S-ORDER", STATE_LOADED)
 
     status = mission.hardware_status()
     view = mission.slot_view(status)
@@ -247,11 +270,11 @@ try:
     finally:
         mission.analyse_measurement = original_analyse
 
-    reread = bd.sample_store().get_sample("S-ORDER")
+    reread = mission.session.get_sample("S-ORDER")
     measurements = (reread or {}).get("measurements") or []
 
     checks.ok(len(measurements) >= 1,
-              "the Measurement is on disk even though the analysis blew "
+              "the Measurement is retained even though the analysis blew "
               "up afterwards")
 
     if measurements:
@@ -281,7 +304,9 @@ try:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -290,8 +315,8 @@ try:
     link.sync_position(load_slot=1)
     link.select_slot(1, sample_id="S-FAILED")
 
-    mission.store.create("S-FAILED", 1)
-    mission.store.set_state("S-FAILED", STATE_LOADED)
+    mission.session.create("S-FAILED", 1)
+    mission.session.set_state("S-FAILED", STATE_LOADED)
 
     status = mission.hardware_status()
     view = mission.slot_view(status)
@@ -306,7 +331,7 @@ try:
     checks.ok("failed" in output.lower(),
               "the operator is told the measurement failed")
 
-    record = bd.sample_store().get_sample("S-FAILED")
+    record = mission.session.get_sample("S-FAILED")
     measurements = (record or {}).get("measurements") or []
 
     checks.ok(len(measurements) == 1,
@@ -335,7 +360,7 @@ finally:
 
 
 # ======================================================================
-checks.section("a save that fails is not reported as a save")
+checks.section("a full disk during a measurement costs no science")
 
 link, loopback, bd, installed = session()
 
@@ -345,7 +370,9 @@ try:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -354,8 +381,8 @@ try:
     link.sync_position(load_slot=1)
     link.select_slot(1, sample_id="S-NOSAVE")
 
-    mission.store.create("S-NOSAVE", 1)
-    mission.store.set_state("S-NOSAVE", STATE_LOADED)
+    mission.session.create("S-NOSAVE", 1)
+    mission.session.set_state("S-NOSAVE", STATE_LOADED)
 
     status = mission.hardware_status()
     view = mission.slot_view(status)
@@ -382,15 +409,35 @@ try:
         samples_module.os.replace = original_replace
 
     checks.ok(not output.startswith("RAISED:"),
-              "a full disk during a save does not crash the operator "
-              "client ({})".format(output[:60]))
+              "a full disk during a measurement does not crash the "
+              "operator client ({})".format(output[:60]))
     checks.equal(bd.samples_file.read_bytes(), before,
                  "and the archive on disk is unchanged")
 
-    reread = bd.sample_store().get_sample("S-NOSAVE")
-    checks.equal((reread or {}).get("measurements") or [], [],
-                 "and no Measurement was recorded, because none was "
-                 "saved")
+    # WHAT CHANGED HERE, AND WHY IT IS BETTER.
+    #
+    # This used to assert that the Measurement was LOST - no space on
+    # the device meant the save failed, and a measurement that was not
+    # saved must not be claimed as one. That was the correct assertion
+    # while Measure wrote the working set to samples.json.
+    #
+    # Measure now writes nothing to any file. The working set is this
+    # process's memory, so a full disk cannot reach it, and the
+    # spectrum the instrument just produced survives a condition that
+    # used to destroy it. The archive is still untouched - proved
+    # above - because nothing was imported.
+    reread = mission.session.get_sample("S-NOSAVE")
+    measurements = (reread or {}).get("measurements") or []
+
+    checks.equal(len(measurements), 1,
+                 "and the Measurement IS in the working set - a full "
+                 "disk cannot cost a spectrum that was never going to "
+                 "be written to the disk")
+    checks.ok((measurements or [{}])[0].get("raw"),
+              "with its RAW intact")
+    checks.ok("S-NOSAVE" not in bd.samples_file.read_text(encoding="utf-8"),
+              "and nothing of it reached the PC archive, which is what "
+              "'not saved on the PC' has to mean")
 
 finally:
     installed.restore()
@@ -415,7 +462,9 @@ try:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -451,8 +500,8 @@ try:
     # 3. a measurement whose answer is destroyed in transit
     loopback.lie = {"measure_raw": MALFORMED}
     step("select the slot", lambda: link.select_slot(1, "S-HOSTILE"))
-    mission.store.create("S-HOSTILE", 1)
-    mission.store.set_state("S-HOSTILE", STATE_LOADED)
+    mission.session.create("S-HOSTILE", 1)
+    mission.session.set_state("S-HOSTILE", STATE_LOADED)
     step("measure with a destroyed answer",
          lambda: link.measure_raw(1, "S-HOSTILE"))
 
@@ -523,7 +572,9 @@ try:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -535,12 +586,12 @@ try:
         sample_id = "S-ARCHIVE-{}".format(slot)
 
         link.select_slot(slot, sample_id=sample_id)
-        mission.store.create(sample_id, slot)
-        mission.store.set_state(sample_id, STATE_LOADED)
+        mission.session.create(sample_id, slot)
+        mission.session.set_state(sample_id, STATE_LOADED)
 
         data = link.measure_raw(slot, sample_id)
 
-        mission.store.add_measurement(
+        mission.session.add_measurement(
             sample_id,
             raw=data.get("illuminations") and {
                 name: block["acquisitions"][0]
@@ -548,9 +599,9 @@ try:
             },
             acquisition={"firmware_version": mission.firmware_version},
         )
-        mission.store.set_state(sample_id, STATE_MEASURED)
+        mission.session.set_state(sample_id, STATE_MEASURED)
 
-    fresh = bd.sample_store()
+    fresh = mission.session
 
     checks.equal(fresh.count(), 4,
                  "four Samples, written by one process and read by "

@@ -28,6 +28,11 @@ maps evidence to words, and its three answers are the three the firmware
 actually distinguishes.
 """
 
+# The Sample lifecycle's empty state, from the one module that defines
+# it. Spelling it again here as a literal would be a second definition
+# of the same fact, and this file exists to stop exactly that.
+from BD.samples import STATE_EMPTY as SLOT_EMPTY             # noqa: E402
+
 # ----------------------------------------------------------------------
 # the labels
 # ----------------------------------------------------------------------
@@ -55,6 +60,75 @@ POSITION_UNVERIFIED = "POSITION UNVERIFIED"
 
 # The sensor states the firmware actually reports. AS7265x.state()
 # returns exactly these three; nothing here invents a fourth.
+# WHAT A SLOT LOOKS LIKE WHEN THE TWO COMPUTERS DISAGREE.
+#
+# A slot has two independent facts about it:
+#
+#     state      the PC's Sample lifecycle - EMPTY, READY_TO_LOAD,
+#                LOADED, MEASURED. It lives in the run's working set,
+#                which is this process's memory.
+#     occupied   whether the FIRMWARE believes there is soil in the cup.
+#                It lives on the ESP32 and survives this program.
+#
+# They can legitimately disagree, and the case that matters is the
+# ordinary one: the operator restarts the client. The working set is
+# gone, so every slot reads EMPTY - while the board still says slot 1
+# has soil in it, because it does. Showing EMPTY there is not a display
+# nicety, it is the screen telling the operator they may pour a second
+# sample into an occupied cup.
+#
+# `slot_view` has carried `occupied` from the beginning and nothing read
+# it. These two functions are what read it.
+OCCUPIED_UNKNOWN = "OCCUPIED (device)"
+
+
+def slot_state_label(entry):
+    """
+    What to print for one slot, using BOTH computers' answers.
+
+    The PC's lifecycle state wins when it has one, because it is the
+    more specific fact - LOADED says more than "there is something in
+    there". When the PC has no record and the device says the cup is
+    occupied, that is what gets shown, in those words, so the operator
+    can tell it apart from a slot this client simply prepared.
+    """
+    state = entry.get("state") or SLOT_EMPTY
+
+    if state != SLOT_EMPTY:
+        return state
+
+    if entry.get("occupied"):
+        return OCCUPIED_UNKNOWN
+
+    return SLOT_EMPTY
+
+
+def slot_is_free(entry):
+    """
+    Whether a new sample may be prepared into this slot.
+
+    Free means BOTH: this client has no live record for it, and the
+    firmware does not believe there is soil in the cup. Either one
+    alone is a slot that must not be filled again.
+    """
+    return (
+        (entry.get("state") or SLOT_EMPTY) == SLOT_EMPTY
+        and not entry.get("occupied")
+    )
+
+
+def slot_needs_clearing(entry):
+    """
+    Whether Clear Physical Slot has anything to do here.
+
+    The mirror of `slot_is_free`, and deliberately not written as
+    `state != EMPTY`: that is what made a slot the board reported as
+    occupied un-clearable after a client restart. The operator could
+    see the soil and the screen said the slot was already empty.
+    """
+    return not slot_is_free(entry)
+
+
 SENSOR_READY = "READY"
 SENSOR_UNAVAILABLE = "UNAVAILABLE"
 SENSOR_NOT_INITIALIZED = "NOT INITIALIZED"

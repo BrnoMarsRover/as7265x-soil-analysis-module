@@ -1,10 +1,63 @@
 {
-  "schema_version": 2,
-  "storage_layout": "library-v1",
-  "updated_at": "2026-08-17T18:14:46.634113+00:00",
-  "active": "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
+  "schema_version": 3,
+  "storage_layout": "calibration-v2",
+  "updated_at": "2026-08-28T16:10:47.306322+00:00",
+  "active_calibration_id": "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
   "activated_at": "2026-08-17T17:39:34.892152+00:00",
+  "legacy_calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
   "calibrations": [
+    {
+      "schema_version": 3,
+      "calibration_id": "FREYA_COMPETITION_2026_CAL_V1",
+      "kind": "LEGACY",
+      "protected": true,
+      "read_only": true,
+      "created_at": null,
+      "white": {
+        "J": 121.7631,
+        "U": 70.2892,
+        "T": 121.0452,
+        "W": 61.7612,
+        "V": 105.9207,
+        "S": 558.7975,
+        "R": 1873.6044,
+        "E": 380.3354,
+        "D": 256.1812,
+        "F": 494.2911,
+        "A": 29.9166,
+        "G": 428.3792,
+        "C": 458.6046,
+        "B": 135.6742,
+        "L": 21.1497,
+        "I": 514.937,
+        "H": 645.9812,
+        "K": 14.9317
+      },
+      "dark": {
+        "J": 0.0,
+        "U": 0.0,
+        "T": 0.0,
+        "W": 0.0,
+        "V": 0.0,
+        "S": 0.0,
+        "R": 0.0,
+        "E": 0.0,
+        "D": 3.4855,
+        "F": 0.0,
+        "A": 0.0,
+        "G": 0.0,
+        "C": 0.0,
+        "B": 0.0,
+        "L": 0.0,
+        "I": 0.0,
+        "H": 0.0,
+        "K": 0.0
+      },
+      "illuminations": [
+        "white"
+      ],
+      "notes": "The White and Dark accepted before the competition, and the only calibration a DB1 comparison may use. Immutable: no write path in this module can reach it."
+    },
     {
       "schema_version": 2,
       "calibration_id": "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
@@ -1303,12 +1356,239 @@
       "imported_from": "C:\\Users\\Public\\Documents\\Altium\\as7265x-soil-analysis-module\\firmware\\BD\\data\\FREYA_FULL_SPECTRAL_CAL_20260817_173914.json"
     }
   ],
-  "migrated_from": {
-    "layout": "one file per calibration + active pointer",
-    "at": "2026-08-17T18:14:46.635684+00:00",
-    "imported": [
-      "FREYA_FULL_SPECTRAL_CAL_20260817_173914"
+  "acquisition_profiles": [
+    {
+      "schema_version": 1,
+      "profile_id": "PROFILE_1A055918700A",
+      "created_at": "2026-08-18T14:42:26.625047+00:00",
+      "label": "Session of 2026-08-17, as recorded in the seed",
+      "sensor": {
+        "device": "AS7265x",
+        "measurement_mode": 3,
+        "gain": 2,
+        "gain_x": "16x",
+        "integration_cycles": 100
+      },
+      "illumination": {
+        "white_current_ma": 25,
+        "uv_current_ma": 25,
+        "ir_current_ma": 25,
+        "order": [
+          "white",
+          "uv",
+          "ir"
+        ],
+        "warmup_ms": null,
+        "settling_ms": null
+      },
+      "geometry": {
+        "sensor_to_sample_distance_mm": null,
+        "sensor_angle_deg": null,
+        "illumination_angle_deg": null
+      },
+      "mechanical": {
+        "chamber_id": null,
+        "chamber_revision": null,
+        "carousel_revision": null,
+        "sample_holder_revision": null,
+        "sensor_mount_revision": null,
+        "illumination_mount_revision": null
+      },
+      "hardware": {
+        "pcb_revision": null,
+        "sensor_module_id": null,
+        "illumination_revision": null,
+        "firmware_version": null,
+        "git_commit": null
+      },
+      "environment": {
+        "temperature_c": null,
+        "humidity_percent": null,
+        "ambient_light_condition": null
+      },
+      "procedure": {
+        "raw_definition": "one-shot conversion, counts as reported by the AS7265x calibrated registers",
+        "averaging_method": null,
+        "estimator": null
+      },
+      "notes": "Geometry and mechanical revisions are null: they were not recorded during this session.",
+      "fingerprint": "1a055918700ab9250262f78bcc89b4e1",
+      "fingerprint_version": 1,
+      "unknown_fields": [
+        "geometry.sensor_to_sample_distance_mm",
+        "geometry.sensor_angle_deg",
+        "hardware.pcb_revision",
+        "hardware.sensor_module_id",
+        "hardware.illumination_revision",
+        "hardware.firmware_version"
+      ]
+    },
+    {
+      "schema_version": 1,
+      "profile_id": "PROFILE_E1768A854E37",
+      "created_at": "2026-08-18T14:57:13.169496+00:00",
+      "label": null,
+      "sensor": {
+        "device": "AS7265x",
+        "measurement_mode": 3,
+        "gain": 2,
+        "gain_x": "16x",
+        "integration_cycles": 100
+      },
+      "illumination": {
+        "white_current_ma": null,
+        "uv_current_ma": null,
+        "ir_current_ma": null,
+        "order": [
+          "white",
+          "uv",
+          "ir"
+        ],
+        "warmup_ms": null,
+        "settling_ms": null
+      },
+      "geometry": {
+        "sensor_to_sample_distance_mm": null,
+        "sensor_angle_deg": null,
+        "illumination_angle_deg": null
+      },
+      "mechanical": {
+        "chamber_id": null,
+        "chamber_revision": null,
+        "carousel_revision": null,
+        "sample_holder_revision": null,
+        "sensor_mount_revision": null,
+        "illumination_mount_revision": null
+      },
+      "hardware": {
+        "pcb_revision": null,
+        "sensor_module_id": null,
+        "illumination_revision": null,
+        "firmware_version": null,
+        "git_commit": null
+      },
+      "environment": {
+        "temperature_c": null,
+        "humidity_percent": null,
+        "ambient_light_condition": null
+      },
+      "procedure": {
+        "raw_definition": "one-shot conversion, counts as reported by the AS7265x calibrated registers",
+        "averaging_method": null,
+        "estimator": null
+      },
+      "notes": null,
+      "fingerprint": "e1768a854e37c02add35c2fd416d0923",
+      "fingerprint_version": 1,
+      "unknown_fields": [
+        "illumination.white_current_ma",
+        "illumination.uv_current_ma",
+        "illumination.ir_current_ma",
+        "geometry.sensor_to_sample_distance_mm",
+        "geometry.sensor_angle_deg",
+        "hardware.pcb_revision",
+        "hardware.sensor_module_id",
+        "hardware.illumination_revision",
+        "hardware.firmware_version"
+      ]
+    },
+    {
+      "schema_version": 1,
+      "profile_id": "PROFILE_01A0E824A01F",
+      "created_at": "2026-08-21T12:57:23.584136+00:00",
+      "label": null,
+      "sensor": {
+        "device": "AS7265x",
+        "measurement_mode": null,
+        "gain": 2,
+        "gain_x": null,
+        "integration_cycles": 100
+      },
+      "illumination": {
+        "white_current_ma": null,
+        "uv_current_ma": null,
+        "ir_current_ma": null,
+        "order": [
+          "white",
+          "uv",
+          "ir"
+        ],
+        "warmup_ms": null,
+        "settling_ms": null
+      },
+      "geometry": {
+        "sensor_to_sample_distance_mm": null,
+        "sensor_angle_deg": null,
+        "illumination_angle_deg": null
+      },
+      "mechanical": {
+        "chamber_id": null,
+        "chamber_revision": null,
+        "carousel_revision": null,
+        "sample_holder_revision": null,
+        "sensor_mount_revision": null,
+        "illumination_mount_revision": null
+      },
+      "hardware": {
+        "pcb_revision": null,
+        "sensor_module_id": null,
+        "illumination_revision": null,
+        "firmware_version": null,
+        "git_commit": null
+      },
+      "environment": {
+        "temperature_c": null,
+        "humidity_percent": null,
+        "ambient_light_condition": null
+      },
+      "procedure": {
+        "raw_definition": "one-shot conversion, counts as reported by the AS7265x calibrated registers",
+        "averaging_method": null,
+        "estimator": null
+      },
+      "notes": null,
+      "fingerprint": "01a0e824a01f26f303d5f54fe0867fa4",
+      "fingerprint_version": 1,
+      "unknown_fields": [
+        "sensor.measurement_mode",
+        "sensor.gain_x",
+        "illumination.white_current_ma",
+        "illumination.uv_current_ma",
+        "illumination.ir_current_ma",
+        "geometry.sensor_to_sample_distance_mm",
+        "geometry.sensor_angle_deg",
+        "hardware.pcb_revision",
+        "hardware.sensor_module_id",
+        "hardware.illumination_revision",
+        "hardware.firmware_version"
+      ]
+    }
+  ],
+  "fingerprint_version": 1,
+  "earlier_provenance": [
+    {
+      "layout": "one file per calibration + active pointer",
+      "at": "2026-08-17T18:14:46.635684+00:00",
+      "imported": [
+        "FREYA_FULL_SPECTRAL_CAL_20260817_173914"
+      ],
+      "note": "The original files were left in place and are no longer read."
+    }
+  ],
+  "provenance": {
+    "migrated_at": "2026-08-28T16:10:47.306298+00:00",
+    "from_layout": "calibrations.json + calibration_active.json + calibration_legacy.json + acquisition_profiles.json",
+    "sources": [
+      "calibrations.json",
+      "calibration_active.json",
+      "calibration_legacy.json",
+      "acquisition_profiles.json"
     ],
-    "note": "The original files were left in place and are no longer read."
+    "calibrations_imported": [
+      "FREYA_FULL_SPECTRAL_CAL_20260817_173914",
+      "FREYA_COMPETITION_2026_CAL_V1"
+    ],
+    "profiles_imported": 3,
+    "note": "The source files were deleted after this document was written and read back. Nothing reads them any more, and keeping them would be a second source of truth."
   }
 }

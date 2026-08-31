@@ -407,44 +407,50 @@ class AcquisitionProfileStore:
     """
     Every acquisition condition the instrument has been used in.
 
+    A VIEW OVER THE CALIBRATION DATABASE, not a file of its own. A
+    profile is the conditions a calibration was taken under and the
+    thing that decides whether that calibration may be applied to a
+    measurement at all; storing the two apart meant two files that had
+    to be kept in step and one more place a load could half-succeed.
+    The fingerprint mathematics is still here, where it belongs -
+    only the persistence moved.
+
     Append only. A profile is identified by its fingerprint, so asking
     for the same conditions twice returns the same profile rather than
-    filling the file with duplicates.
+    filling the database with duplicates.
     """
 
-    def __init__(self, path=None):
-        self.path = Path(path or config.ACQUISITION_PROFILES_FILE)
+    def __init__(self, path=None, database=None, directory=None):
+        from BD.calibrations import CalibrationDatabase
+
+        self.database = database or CalibrationDatabase(
+            path=path, directory=directory
+        )
+
+    @property
+    def path(self):
+        return self.database.path
 
     def _load(self):
-        document = _read_json(self.path)
-
-        if not isinstance(document, dict):
-            return {
-                "schema_version": config.ACQUISITION_PROFILE_SCHEMA_VERSION,
-                "fingerprint_version": FINGERPRINT_VERSION,
-                "updated_at": utc_now(),
-                "profiles": [],
-            }
-
-        document.setdefault("profiles", [])
-
-        return document
+        return self.database.load()
 
     def _save(self, document):
-        document["schema_version"] = config.ACQUISITION_PROFILE_SCHEMA_VERSION
         document["fingerprint_version"] = FINGERPRINT_VERSION
-        document["updated_at"] = utc_now()
 
-        _write_json(self.path, document)
+        self.database.save(document)
+
+    @staticmethod
+    def _profiles(document):
+        return document.setdefault("acquisition_profiles", [])
 
     def count(self):
-        return len(self._load()["profiles"])
+        return len(self._profiles(self._load()))
 
     def all(self):
-        return list(self._load()["profiles"])
+        return list(self._profiles(self._load()))
 
     def get(self, profile_id):
-        for profile in self._load()["profiles"]:
+        for profile in self._profiles(self._load()):
             if profile.get("profile_id") == profile_id:
                 return profile
 
@@ -463,7 +469,7 @@ class AcquisitionProfileStore:
         return profile
 
     def find_by_fingerprint(self, value):
-        for profile in self._load()["profiles"]:
+        for profile in self._profiles(self._load()):
             if profile.get("fingerprint") == value:
                 return profile
 
@@ -487,13 +493,14 @@ class AcquisitionProfileStore:
 
         document = self._load()
 
+        profile["schema_version"] = config.ACQUISITION_PROFILE_SCHEMA_VERSION
         profile["fingerprint"] = value
         profile["fingerprint_version"] = FINGERPRINT_VERSION
         profile["created_at"] = profile.get("created_at") or utc_now()
         profile["profile_id"] = "PROFILE_{}".format(value[:12].upper())
         profile["unknown_fields"] = unknown_fingerprint_fields(profile)
 
-        document["profiles"].append(profile)
+        self._profiles(document).append(profile)
         self._save(document)
 
         return profile
@@ -503,6 +510,7 @@ class AcquisitionProfileStore:
 
         return {
             "file": str(self.path),
+            "stored_in": "the calibration database",
             "count": len(profiles),
             "fingerprint_version": FINGERPRINT_VERSION,
             "profiles": [

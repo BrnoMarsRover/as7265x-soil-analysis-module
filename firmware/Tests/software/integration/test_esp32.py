@@ -133,7 +133,7 @@ checks.equal(data["sensor"]["state"], "NOT_INITIALIZED",
 checks.ok(not data["servo"]["connected"], "no servo is connected at boot")
 checks.ok(not data["carousel"]["position_valid"],
           "the carousel position is not valid at boot")
-checks.equal(len(data["commands"]), 25, "every command is registered")
+checks.equal(len(data["commands"]), 26, "every command is registered")
 
 # Reaching for the sensor fails, and leaves the protocol alone.
 response = send(cold, "measure_raw", slot=1)

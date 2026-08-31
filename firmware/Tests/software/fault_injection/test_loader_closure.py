@@ -318,7 +318,9 @@ for attribute, label in OPTIONAL:
 # refuses to produce a verdict rather than inventing one.
 with SandboxBD() as bd:
     mission = session_module.Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()

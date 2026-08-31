@@ -155,25 +155,52 @@ class DecisionEngine:
         decision["confidence"] = self._confidence(
             decision, separation, unknown, fusion
         )
+        decision["confidence_reasons"] = self._confidence_reasons(
+            decision, unknown, fusion
+        )
         decision["status"] = self._status(decision, evidence, fusion)
 
+        # WHAT THE STORED DECISION HAS TO BE ABLE TO ANSWER.
+        #
+        # "Why iron_oxide and not Activated Carbon?" is answerable only
+        # from the per-CANDIDATE support each database gave, and that
+        # used to be dropped here: the stored evidence kept the per-
+        # FAMILY winners and the database weights, so a reader could
+        # see that DB1 preferred Iron(II) Sulfate on cosine and could
+        # not see how much support DB1 gave to the material that
+        # actually won.
+        #
+        # Nothing new is computed. `fusion` already holds all of it;
+        # this stopped throwing it away.
         decision["evidence"] = {
             "databases": {
                 key: {
                     "families": support["families"],
                     "database_weight": support["database_weight"],
+                    "candidates": support["candidates"],
+                    "families_available": support["families_available"],
                 }
                 for key, support in fusion["per_database"].items()
             },
             "fusion_method": fusion["method"],
+            "family_weights": fusion.get("family_weights"),
+            "family_weight_status": fusion.get("family_weight_status"),
             "separation": separation,
             "family_support": families,
             "unknown_detection": unknown,
             "discounted": fusion["discounted"],
+            "class_support_available": fusion.get(
+                "class_support_available", False
+            ),
             "class_analysis_available": (
                 evidence.get("class_analysis") or {}
             ).get("available", False),
+            "coverage": self._coverage(evidence),
         }
+
+        decision["gates"] = self._gates(
+            decision, fusion, separation, unknown, families
+        )
 
         decision["provenance"] = self._provenance(evidence)
         decision["warnings"] = [
@@ -197,6 +224,16 @@ class DecisionEngine:
         base = {
             "decision_model_version": self.version,
             "decision_model_kind": self.kind,
+
+            # WHAT THE CANDIDATE LIST IS. Two different things are
+            # returned under one key: the candidates that were actually
+            # weighed (`WEIGHED`), and, for an UNKNOWN, the nearest
+            # known things - which are context, not candidates, and
+            # carry no per-database support because none was fused for
+            # them. A screen that cannot tell them apart prints
+            # "supported by 0 of the databases" over a list that was
+            # never a claim about the sample.
+            "candidates_are": "WEIGHED",
             "measurement_id": (
                 (evidence.get("measurement") or {}).get("measurement_id")
             ),
@@ -224,6 +261,7 @@ class DecisionEngine:
             base["candidates"] = contextual_neighbours(
                 candidates, self.taxonomy
             )
+            base["candidates_are"] = "NEAREST_KNOWN"
             base["nearest_known"] = [
                 entry["material"] for entry in base["candidates"]
             ]
@@ -318,6 +356,7 @@ class DecisionEngine:
         base["candidates"] = contextual_neighbours(
             candidates, self.taxonomy
         )
+        base["candidates_are"] = "NEAREST_KNOWN"
 
         return base
 
@@ -376,7 +415,32 @@ class DecisionEngine:
                     if self.taxonomy else None
                 ),
                 "supporting_databases": candidate.get("supporting_databases"),
+                "independent_sources": candidate.get("independent_sources"),
+
+                # HOW MUCH EACH DATABASE GAVE THIS CANDIDATE, kept per
+                # database and never summed into one number. This is
+                # the field that lets a screen say "DB3 supported it at
+                # 0.71 and DB1 at 0.12" instead of "0.41", which is the
+                # difference between evidence and an average.
+                "per_database": {
+                    key: {
+                        "support": entry.get("support"),
+                        "families": entry.get("families"),
+                        "family_agreement": entry.get("family_agreement"),
+                        "class_reliability": entry.get("class_reliability"),
+                        "class_reliability_basis": entry.get(
+                            "class_reliability_basis"
+                        ),
+                        "votes": entry.get("votes"),
+                    }
+                    for key, entry in (
+                        candidate.get("per_database") or {}
+                    ).items()
+                },
                 "class_evidence": candidate.get("class_evidence"),
+                "class_evidence_applied": candidate.get(
+                    "class_evidence_applied"
+                ),
             })
 
         return listed
@@ -535,6 +599,277 @@ class DecisionEngine:
             return CONFIDENCE_LOW
 
         return CONFIDENCE_NONE
+
+    @staticmethod
+    def _coverage(evidence):
+        """
+        How much measurement the conclusion actually rests on.
+
+        Read straight off the evidence package. It is the first thing
+        an operator needs when a result looks wrong: a decision taken
+        over three usable reflectance channels out of eighteen is a
+        different object from one taken over seventeen, and the level
+        and confidence alone do not say which happened.
+        """
+        reliability = evidence.get("channel_reliability") or {}
+        quality_block = evidence.get("quality") or {}
+
+        return {
+            "features_total": reliability.get("features_total"),
+            "raw_valid_total": reliability.get("raw_valid_total"),
+            "normalized_valid_total": reliability.get(
+                "normalized_valid_total"
+            ),
+            "by_illumination": reliability.get("by_illumination"),
+            "hardware_qc": (quality_block.get("hardware") or {}).get(
+                "status"
+            ),
+            "normalization": (quality_block.get("normalization") or {}).get(
+                "status"
+            ),
+        }
+
+    def _gates(self, decision, fusion, separation, unknown, families):
+        """
+        Each step of the ladder, with its verdict and the numbers behind it.
+
+        THE LADDER ALREADY MAKES THESE DECISIONS. `_resolve` walks
+        usability, then material, then family, then ambiguity, and
+        returns at the first honest answer - so the reason a result is
+        MATERIAL_FAMILY rather than KNOWN_MATERIAL is a comparison that
+        has already been computed and then discarded.
+
+        This records it. NOTHING HERE RE-DECIDES ANYTHING and nothing
+        here is a post-hoc rationalisation: every value is the same
+        object the corresponding branch of `_resolve` tested, and the
+        verdicts are derived from the level that branch produced.
+
+        A gate is PASS, FAIL or NOT_REACHED - the third because the
+        ladder stops, and a gate that never ran must not be reported as
+        one that failed.
+        """
+        level = decision.get("level")
+        candidates = fusion["candidates"]
+        leader = candidates[0] if candidates else {}
+
+        corroboration = decision.get("corroboration") or {}
+        required = corroboration.get("required_relative_margin")
+        observed = corroboration.get("observed_relative_margin")
+
+        gates = []
+
+        # 1 + 2. Usable, and inside a known domain?
+        gates.append({
+            "gate": "MEASUREMENT_USABLE",
+            "verdict": "FAIL" if unknown["unknown_required"] else "PASS",
+            "detail": (
+                unknown["reasons"][0]["detail"]
+                if unknown["unknown_required"] and unknown["reasons"]
+                else "no severe doubt, and fewer than {} moderate "
+                     "ones".format(MODERATE_REASONS_FOR_UNKNOWN)
+            ),
+            "severe_doubts": unknown["severe"],
+            "moderate_doubts": unknown["moderate"],
+            "codes": [entry["code"] for entry in unknown["reasons"]],
+        })
+
+        # A candidate to judge at all.
+        gates.append({
+            "gate": "CANDIDATES_PRESENT",
+            "verdict": (
+                "NOT_REACHED" if unknown["unknown_required"]
+                else "PASS" if candidates else "FAIL"
+            ),
+            "detail": (
+                "the ladder stopped before this test; {} candidate(s) "
+                "from {} database(s) had been found".format(
+                    len(candidates), len(fusion["per_database"]))
+                if unknown["unknown_required"]
+                else "{} candidate(s) from {} database(s)".format(
+                    len(candidates), len(fusion["per_database"]))
+            ),
+        })
+
+        # 6. Strong enough for an exact material?
+        if unknown["unknown_required"] or not candidates:
+            material_verdict = "NOT_REACHED"
+            material_detail = (
+                "the ladder stopped before the material test"
+            )
+
+        else:
+            strength = leader.get("evidence_strength")
+            strong = (
+                strength is not None
+                and strength >= KNOWN_MATERIAL_MIN_STRENGTH
+            )
+            separated = (
+                required is not None and observed is not None
+                and observed >= required
+            )
+
+            material_verdict = "PASS" if level == KNOWN_MATERIAL else "FAIL"
+
+            if strong and separated:
+                material_detail = (
+                    "{} carries {:.3f} evidence (needs {:.2f}) and leads by "
+                    "{:.0%} of its own strength (needs {:.0%})".format(
+                        leader.get("material"), strength,
+                        KNOWN_MATERIAL_MIN_STRENGTH, observed, required,
+                    )
+                )
+
+            elif not strong:
+                material_detail = (
+                    "{} carries {} evidence, below the {:.2f} needed to "
+                    "name a material".format(
+                        leader.get("material"),
+                        "{:.3f}".format(strength)
+                        if strength is not None else "no",
+                        KNOWN_MATERIAL_MIN_STRENGTH,
+                    )
+                )
+
+            else:
+                material_detail = (
+                    "{} leads by only {:.0%} of its own strength; {:.0%} is "
+                    "needed with {} independent source(s)".format(
+                        leader.get("material"), observed or 0.0,
+                        required or 0.0,
+                        corroboration.get("independent_sources"),
+                    )
+                )
+
+        gates.append({
+            "gate": "MATERIAL_LEVEL",
+            "verdict": material_verdict,
+            "detail": material_detail,
+            "leader": leader.get("material"),
+            "leader_strength": leader.get("evidence_strength"),
+            "min_strength": KNOWN_MATERIAL_MIN_STRENGTH,
+            "observed_relative_margin": observed,
+            "required_relative_margin": required,
+            "independent_sources": corroboration.get("independent_sources"),
+            "corroboration_possible": corroboration.get(
+                "corroboration_possible"
+            ),
+        })
+
+        # 3. Does a family hold instead?
+        if material_verdict in ("PASS", "NOT_REACHED"):
+            family_verdict = "NOT_REACHED"
+            family_detail = (
+                "not consulted: the material test already answered"
+                if material_verdict == "PASS"
+                else "the ladder stopped before the family test"
+            )
+
+        else:
+            family_verdict = "PASS" if families.get("decisive") else "FAIL"
+            share = families.get("leader_share")
+            family_detail = (
+                "the {} family carries {} of the candidate evidence".format(
+                    families.get("leader") or "leading",
+                    "{:.0%}".format(share) if share is not None else "none",
+                )
+                + ("" if families.get("decisive")
+                   else ", which is not decisive")
+            )
+
+        gates.append({
+            "gate": "FAMILY_LEVEL",
+            "verdict": family_verdict,
+            "detail": family_detail,
+            "leader": families.get("leader"),
+            "leader_share": families.get("leader_share"),
+        })
+
+        # 5. Several candidates that cannot be told apart.
+        #
+        # NOT_REACHED whenever the ladder stopped earlier, which
+        # includes the case that used to be reported as FAIL: an
+        # unusable measurement returns UNKNOWN from step 1 and the
+        # ambiguity test is never run. Saying FAIL there described a
+        # comparison that had not happened.
+        if unknown["unknown_required"] or not candidates:
+            ambiguity_verdict = "NOT_REACHED"
+            ambiguity_detail = "the ladder stopped before the "\
+                               "ambiguity test"
+
+        elif level in (KNOWN_MATERIAL, MATERIAL_FAMILY):
+            ambiguity_verdict = "NOT_REACHED"
+            ambiguity_detail = "not consulted: an earlier step already "\
+                               "answered"
+
+        elif level == AMBIGUOUS_SET:
+            ambiguity_verdict = "PASS"
+            ambiguity_detail = (
+                "{} candidate(s) lie within the leader's own "
+                "margin".format(len(decision.get("candidates") or []))
+            )
+
+        else:
+            ambiguity_verdict = "FAIL"
+            ambiguity_detail = (
+                "no second candidate lies inside the leader's margin"
+            )
+
+        gates.append({
+            "gate": "AMBIGUOUS_SET",
+            "verdict": ambiguity_verdict,
+            "detail": ambiguity_detail,
+            "margin": separation.get("margin"),
+            "relative_margin": separation.get("relative_margin"),
+            "runner_up": separation.get("runner_up"),
+        })
+
+        return gates
+
+    def _confidence_reasons(self, decision, unknown, fusion):
+        """
+        Why the confidence is what it is, as the penalties that produced it.
+
+        `_confidence` counts penalties and maps the total onto a word.
+        Counting them again here would be a second implementation that
+        could drift, so this lists the SAME conditions and each says
+        whether it applied - the total is the one `_confidence`
+        returned.
+        """
+        leader = (fusion["candidates"] or [{}])[0]
+        sources = leader.get("independent_sources") or 0
+
+        reasons = []
+
+        for entry in unknown["reasons"]:
+            weight = 3 if entry["severity"] == SEVERE else (
+                1 if entry["severity"] == MODERATE else 0
+            )
+
+            if weight:
+                reasons.append({
+                    "penalty": weight,
+                    "code": entry["code"],
+                    "detail": entry["detail"],
+                })
+
+        if sources < 2:
+            reasons.append({
+                "penalty": 1,
+                "code": "SINGLE_SOURCE",
+                "detail": "only {} database supports the leading "
+                          "candidate".format(sources or "no"),
+            })
+
+        if not fusion.get("class_support_available"):
+            reasons.append({
+                "penalty": 1,
+                "code": "NO_CLASS_STATISTICS",
+                "detail": "no measured class distribution exists yet, so "
+                          "'inside the region this material occupies' "
+                          "could not be checked",
+            })
+
+        return reasons
 
     def _provenance(self, evidence):
         """Everything needed to reproduce this conclusion exactly. §20."""

@@ -16,7 +16,7 @@ candidate training record; validation and training happen offline, in
 research/, and produce a versioned artifact.
 """
 
-from BD.decision_learning import LearningError
+from BD.decision_learning import LearningError, classify_prediction
 from BD.samples import (
     ACQUISITION_FAILED,
     ACQUISITION_SUCCESS,
@@ -25,6 +25,8 @@ from BD.samples import (
     latest_analysis_run,
     latest_measurement,
     measurements_of,
+    successful_measurements,
+    summary_of,
 )
 
 from serial_link import DeviceError, LinkError
@@ -50,7 +52,6 @@ from workflow.prompts import (
     ask_float,
     RULE,
     ask,
-    ask_int,
     banner,
     choose,
     confirm,
@@ -76,7 +77,14 @@ from BD.samples import (
 
 def save_acquisition_as_sample(mission, data, result):
     """
-    Turn a bench acquisition into a real Sample record.
+    Turn a bench acquisition into a PC ARCHIVE record.
+
+    STRAIGHT TO THE ARCHIVE, and that is not an exception to the
+    no-implicit-writes rule - it IS the explicit import. The operator
+    reached this by choosing "Save as a Sample in the archive" from the
+    disposition menu, on a screen that has just said "THIS MEASUREMENT
+    IS NOT SAVED YET". A bench acquisition belongs to no carousel slot
+    and to no run, so there is no session for it to sit in.
 
     RAW FIRST, exactly as menu_measure does it: the acquisition is
     stored before Science is asked anything, so a failure in the
@@ -127,8 +135,9 @@ def save_acquisition_as_sample(mission, data, result):
     # An existing ID is a handle to physical material. Adding a bench
     # measurement to somebody else's Sample would attach this spectrum
     # to the wrong specimen, which is the one mistake §59 says must
-    # never happen.
-    if mission.store.has_sample(sample_id):
+    # never happen. Checked against the ARCHIVE, which is where this
+    # is about to write.
+    if mission.archive.has_sample(sample_id):
         print()
         print("Sample {} already exists.".format(sample_id))
 
@@ -149,7 +158,9 @@ def save_acquisition_as_sample(mission, data, result):
             metadata["note"] = "bench sensor test, no carousel slot"
 
         try:
-            mission.store.create(sample_id, None, utc_timestamp(), metadata)
+            mission.archive.create(
+                sample_id, None, utc_timestamp(), metadata
+            )
 
         except StorageError as error:
             print()
@@ -164,7 +175,9 @@ def save_acquisition_as_sample(mission, data, result):
     fields = mission.measurement_from_acquisition(data, sample_id)
 
     try:
-        measurement = mission.store.add_measurement(sample_id, **fields)
+        measurement = mission.archive.add_measurement(
+            sample_id, **fields
+        )
 
     except StorageError as error:
         print()
@@ -185,7 +198,7 @@ def save_acquisition_as_sample(mission, data, result):
     run_id = None
 
     try:
-        stored_run = mission.store.add_analysis_run(
+        stored_run = mission.archive.add_analysis_run(
             sample_id, measurement_id, run
         )
         run_id = stored_run["analysis_run_id"]
@@ -204,7 +217,7 @@ def save_acquisition_as_sample(mission, data, result):
 
     if decision:
         try:
-            mission.store.set_conclusion(sample_id, {
+            mission.archive.set_conclusion(sample_id, {
                 "interpretation": decision.get("material")
                 or decision.get("family"),
                 "level": decision.get("level"),
@@ -277,12 +290,12 @@ def offer_measurement_disposition(mission, data, result,
         print()
 
         if saved_sample:
-            print("[2] Save as a Sample in the archive   ALREADY SAVED")
+            print("[2] Save as a Sample in the PC archive  ALREADY SAVED")
             print("    Stored as {}.".format(saved_sample))
         else:
-            print("[2] Save as a Sample in the archive")
-            print("    Creates a Sample record: RAW first, then the")
-            print("    analysis beside it.")
+            print("[2] Save as a Sample in the PC archive")
+            print("    Creates a Sample record IN THE PERMANENT PC")
+            print("    ARCHIVE: RAW first, then the analysis beside it.")
 
         print()
         print("[3] Exit without saving anything")
@@ -922,107 +935,789 @@ def ask_verification(answer):
     }.get(choice, ("OPERATOR_ASSERTED", "operator_assertion", None))
 
 
-def menu_learning_history(mission):
-    """What the system has seen, and how often it has been right."""
-    banner("DECISION LEARNING HISTORY")
+# ======================================================================
+# DECISION LEARNING - MATERIAL DATASETS
+# ======================================================================
+# WHAT THE OLD SCREEN GOT WRONG.
+#
+# It led with a CONFUSION HISTORY: one row per (measurement, model
+# version) pair, model names truncated to twelve characters, no
+# measurement id, no composition, no matrix, no percentage, and `None`
+# rendered as the word None for four different outcomes that are not
+# the same thing. Thirty-five predictions over twenty-three
+# observations filled the screen, and the material an operator was
+# actually studying was scattered through it.
+#
+# WHAT THE EXPERIMENTS ACTUALLY ARE.
+#
+# Material-centric. A bench session is "Activated Carbon: pure, then
+# 90, 70, 50, 30 and 10 percent in soil, twice each" - ONE dataset with
+# twelve observations in it. So the top level of this screen is the
+# list of materials the operator has established real truth for, and
+# everything else is inside one of them.
+#
+# WHAT FOUNDS A DATASET, AND WHAT DOES NOT.
+#
+# Only human-established truth. A model that predicted Activated
+# Carbon does not put an observation into the Activated Carbon dataset
+# - that is the system teaching itself, and the whole architecture
+# exists to prevent it. UNKNOWN_SAMPLE, NO_LABEL, family-only labels
+# and mixtures whose target cannot be established are all kept, all
+# inspectable, and none of them appears as a material dataset.
+#
+# DATA RETENTION IS NOT OPERATOR PRESENTATION. Every historical
+# prediction from every model version is still in the database and is
+# still readable, one screen down. It simply does not get a top-level
+# row any more.
 
-    if mission.learning is None:
-        print("The learning database is not available:")
-        print("  {}".format(mission.learning_error))
+# How many ungrouped rows to name per reason before summarising.
+# Enough to recognise what is in there; the material datasets are
+# what the screen is for.
+UNGROUPED_SHOWN = 8
+
+OUTCOME_LABEL = {
+    "EXACT": "CORRECT - named the material",
+    "FAMILY": "FAMILY ONLY - right family, no material",
+    "WRONG": "WRONG",
+    "ABSTAINED": "ABSTAINED - no material answer",
+}
+
+UNGROUPED_TITLE = {
+    "AMBIGUOUS_MIXTURE": "Ambiguous mixtures - target material not "
+                         "recorded",
+    "FAMILY_ONLY": "Family-level truth - no material was established",
+    "UNKNOWN_SAMPLE": "Unknown samples - the operator recorded not "
+                      "knowing",
+    "NO_LABEL": "Unlabelled observations - no truth was recorded",
+}
+
+UNGROUPED_NOTE = {
+    "AMBIGUOUS_MIXTURE":
+        "More than one library component, and nothing recorded about "
+        "which was under study. The system will not guess: assigning "
+        "one would put a scientific claim in the database that nobody "
+        "ever made. Re-label one with an explicit target to move it "
+        "into that material's dataset.",
+    "FAMILY_ONLY":
+        "The truth is a family, not a material. Real evidence, but it "
+        "cannot found a material dataset.",
+    "UNKNOWN_SAMPLE":
+        "The operator recorded that they did not know what this was. "
+        "That is a useful record and is deliberately not a label - "
+        "whatever a model said about it is a prediction, never truth.",
+    "NO_LABEL":
+        "No ground truth was recorded at all. The RAW spectra are "
+        "kept and can be labelled later.",
+}
+
+
+def _fraction(value):
+    return "-" if value is None else "{:.1f}%".format(value * 100.0)
+
+
+def _composition(record):
+    """
+    One line saying what was actually in the cup.
+
+    The matrix is never dropped and never rendered as "the rest". Two
+    Activated Carbon 20% measurements, one in garden soil and one in a
+    regolith simulant, are not the same experiment and this is the line
+    that says so.
+    """
+    if record.get("experiment_type") == "PURE_MATERIAL":
+        return "{} 100%".format(record.get("target_material_key"))
+
+    parts = []
+
+    for component in record.get("components") or []:
+        name = (
+            component.get("material_key")
+            or component.get("matrix_label")
+            or "?"
+        )
+        parts.append("{} {}".format(
+            name, _fraction(component.get("prepared_mass_fraction"))
+        ))
+
+    return " + ".join(parts) or "composition not recorded"
+
+
+def _matrix_line(record):
+    matrices = record.get("matrix")
+
+    if not matrices:
+        return "-"
+
+    return ", ".join(
+        "{} {}".format(
+            entry.get("label") or entry.get("material_key") or "?",
+            _fraction(entry.get("fraction")),
+        )
+        for entry in matrices
+    )
+
+
+def _context_line(context):
+    """Distance, packing, moisture - whichever were actually recorded."""
+    if not context:
+        return "-"
+
+    parts = []
+
+    for key, label, unit in (
+        ("sensor_to_sample_mm", "d", " mm"),
+        ("sample_mass_g", "m", " g"),
+        ("packing", "", ""),
+        ("moisture", "", ""),
+    ):
+        value = context.get(key)
+
+        if value in (None, "", "UNKNOWN"):
+            continue
+
+        parts.append("{}{}{}".format(
+            "{}=".format(label) if label else "", value, unit))
+
+    return ", ".join(parts) or "-"
+
+
+def learning_unavailable(mission, title):
+    """
+    Say the learning database is missing, and mean it.
+
+    Checked at the top of EVERY learning screen, not only the one that
+    happens to be the usual way in. A rover measurement must still work
+    when the history is unavailable, so `Mission` records the failure
+    and carries on - which means any of these screens can be entered
+    with `mission.learning` set to None, and an AttributeError there
+    would look like a program fault rather than a missing file.
+    """
+    if mission.learning is not None:
+        return False
+
+    banner(title)
+
+    print("The learning database is not available:")
+    print("  {}".format(mission.learning_error or "no reason recorded"))
+    print()
+    print("Measuring still works. Nothing is lost: an observation can be")
+    print("saved to the history later, from the Sample it was taken of.")
+    print()
+    pause()
+
+    return True
+
+
+def menu_learning_history(mission):
+    """
+    The Decision Learning database, organised the way the work is.
+
+    Materials first. Everything else - the mixtures gap report, model
+    performance, the observations with no material truth - is one
+    keystroke away and does not compete with them for the screen.
+    """
+    if learning_unavailable(mission, "DECISION LEARNING DATABASE"):
+        return
+
+    while True:
+        banner("DECISION LEARNING DATABASE")
+
+        status = mission.learning.status()
+        datasets = mission.learning.material_datasets()
+        ungrouped = mission.learning.ungrouped_observations()
+
+        print("Database: {}".format(status["file"]))
+        print("Observations: {}    Labelled: {}    Predictions: {}".format(
+            status["observations"], status["labelled"],
+            status["predictions"],
+        ))
+        print()
+        print("MATERIAL DATASETS  (operator-established truth only)")
+        print()
+
+        if datasets:
+            print("{:<4} {:<34} {:>5} {:>7} {:>10}".format(
+                "#", "Material", "Obs", "Pure", "Mixtures"))
+
+            for index, entry in enumerate(datasets, start=1):
+                print("{:<4} {:<34} {:>5} {:>7} {:>10}".format(
+                    index,
+                    entry["material_key"][:34],
+                    entry["observations"],
+                    entry["pure"],
+                    entry["mixtures"],
+                ))
+
+        else:
+            print("  Nothing yet. A material dataset appears when YOU say")
+            print("  what a sample was - a known material, or a mixture you")
+            print("  weighed. A model's prediction never creates one.")
+
+        stray = sum(len(rows) for rows in ungrouped.values())
+
+        print()
+        print("Not a material dataset: {} observation(s)  [u]".format(stray))
+        print()
+        print("[number] Open a material dataset")
+        print("[u] Observations with no material truth")
+        print("[m] Model performance")
+        print("[x] Prepared mixtures - what is still missing")
+        print("[c] Sample presentation coverage")
+        print("[0] Back")
+
+        selection = choose()
+
+        if selection == "0" or not selection:
+            return
+
+        if selection == "u":
+            menu_ungrouped_observations(mission, ungrouped)
+
+        elif selection == "m":
+            menu_model_performance(mission)
+
+        elif selection == "x":
+            print_mixture_gaps(status)
+
+        elif selection == "c":
+            print_context_coverage(status)
+
+        else:
+            try:
+                entry = datasets[int(selection) - 1]
+
+            except (ValueError, IndexError):
+                print("Not a listed number.")
+
+                continue
+
+            menu_material_dataset(mission, entry["material_key"])
+
+
+def menu_material_dataset(mission, material_key):
+    """
+    One material's experiments: the pure reference and every mixture.
+
+    THE 100% CASE BELONGS HERE. A sample labelled "this is Activated
+    Carbon" is the pure end of the Activated Carbon dataset, not a
+    separate kind of record - but it is still marked PURE, because a
+    pure material and a prepared mixture are different experiment types
+    and averaging them would hide the concentration series that is the
+    entire point of collecting them.
+    """
+    if learning_unavailable(
+        mission, "{} - LEARNING DATA".format(material_key.upper())
+    ):
+        return
+
+    while True:
+        banner("{} - LEARNING DATA".format(material_key.upper()))
+
+        records = mission.learning.material_dataset(material_key)
+
+        pure = [r for r in records if r["experiment_type"] == "PURE_MATERIAL"]
+        mixtures = [r for r in records
+                    if r["experiment_type"] == "PREPARED_MIXTURE"]
+
+        print("Observations: {}   ({} pure, {} prepared mixture(s))".format(
+            len(records), len(pure), len(mixtures)))
+        print()
+
+        if not records:
+            print("  Nothing recorded for this material.")
+            print()
+            pause()
+
+            return
+
+        print("{:<4} {:<24} {:>8}  {:<40}".format(
+            "#", "Measurement", "Target", "Composition as prepared"))
+        print("{:<4} {:<24} {:>8}  {:<40}".format(
+            "", "", "", "matrix / context"))
+        print()
+
+        for index, record in enumerate(records, start=1):
+            print("{:<4} {:<24} {:>8}  {}".format(
+                index,
+                str(record["measurement_id"]),
+                _fraction(record.get("target_fraction")),
+                _composition(record),
+            ))
+
+            matrix = _matrix_line(record)
+            context = _context_line(record.get("context"))
+
+            if matrix != "-" or context != "-":
+                print("{:<4} {:<24} {:>8}  matrix {} | {}".format(
+                    "", "", "", matrix, context))
+
+        # THE CONCENTRATION SERIES, which is what the dataset is for.
+        fractions = sorted(
+            record["target_fraction"] for record in records
+            if record.get("target_fraction") is not None
+        )
+
+        if fractions:
+            print()
+            print("Concentrations measured: {}".format(
+                ", ".join(_fraction(value) for value in fractions)))
+
+        matrices = sorted({
+            entry.get("label") or entry.get("material_key") or "?"
+            for record in records
+            for entry in (record.get("matrix") or [])
+        })
+
+        if matrices:
+            print("Matrices used:           {}".format(", ".join(matrices)))
+
+        print()
+        print("[number] Open one observation")
+        print("[m] How the models have done on this material")
+        print("[0] Back")
+
+        selection = choose()
+
+        if selection == "0" or not selection:
+            return
+
+        if selection == "m":
+            menu_model_performance(mission, material_key=material_key)
+
+            continue
+
+        try:
+            record = records[int(selection) - 1]
+
+        except (ValueError, IndexError):
+            print("Not a listed number.")
+
+            continue
+
+        print_observation_detail(mission, record["measurement_id"])
+
+
+def print_observation_detail(mission, measurement_id):
+    """
+    One observation, in full.
+
+    GROUND TRUTH AND PREDICTIONS ARE IN SEPARATE BLOCKS and are never
+    merged into an "identity" field. Seeing them side by side is the
+    point: it is how a person notices the model was wrong, and merging
+    them is how a system starts training on its own output.
+    """
+    if learning_unavailable(mission, "OBSERVATION {}".format(measurement_id)):
+        return
+
+    detail = mission.learning.observation_detail(measurement_id)
+
+    if detail is None:
+        print("No observation {}.".format(measurement_id))
         print()
         pause()
 
         return
 
-    status = mission.learning.status()
+    banner("OBSERVATION {}".format(measurement_id))
 
-    print("Database: {}".format(status["file"]))
+    observation = detail["observation"] or {}
+    truth = detail["ground_truth"] or {}
+
+    print("WHEN AND HOW")
     print()
-    print("Observations:      {}".format(status["observations"]))
-    print("Labelled:          {}".format(status["labelled"]))
+    print("  Recorded:        {}".format(observation.get("created_at")))
+    print("  Session:         {}".format(
+        observation.get("session_id") or "-"))
+    print("  Origin:          {}".format(observation.get("origin")))
+    print("  Profile:         {}".format(
+        observation.get("acquisition_profile_id") or "-"))
+    print("  Calibration:     {}".format(
+        observation.get("calibration_id") or "-"))
+    print("  Legacy cal:      {}".format(
+        observation.get("legacy_calibration_id") or "-"))
+    print("  RAW hash:        {}".format(
+        str(observation.get("raw_hash") or "-")[:32]))
 
-    for level, count in status["by_verification"].items():
-        print("  {:<18} {}".format(level, count))
-
-    print("Predictions:       {}".format(status["predictions"]))
-    print("Model versions:    {}".format(
-        ", ".join(status["model_versions"]) or "-"
+    print()
+    print("GROUND TRUTH  (established by the operator, never by a model)")
+    print()
+    print("  Label type:      {}".format(truth.get("label_type") or "-"))
+    print("  Target material: {}".format(
+        detail.get("target_material_key") or "NOT ESTABLISHED"))
+    print("  Target known by: {}".format(
+        detail.get("target_source") or "not derivable - ambiguous"))
+    print("  Target fraction: {}".format(
+        _fraction(detail.get("target_fraction"))))
+    print("  Verified as:     {} ({})".format(
+        truth.get("verification_status") or "-",
+        truth.get("verification_source") or "-",
     ))
 
+    if truth.get("note"):
+        print()
+
+        for line in textwrap.wrap("  Note: {}".format(truth["note"]), 66):
+            print("  {}".format(line))
+
+    components = detail.get("components") or []
+
+    if components:
+        print()
+        print("  COMPOSITION AS PREPARED")
+        print()
+        print("    {:<30} {:>8} {:>9}  {}".format(
+            "component", "fraction", "mass", "role"))
+
+        for component in components:
+            print("    {:<30} {:>8} {:>9}  {}".format(
+                str(component.get("material_key")
+                    or component.get("matrix_label") or "?")[:30],
+                _fraction(component.get("prepared_mass_fraction")),
+                "-" if component.get("mass_g") is None
+                else "{:.2f} g".format(component["mass_g"]),
+                component.get("role"),
+            ))
+
+    context = detail.get("context")
+
     print()
-    print("VERIFIED MATERIALS")
+    print("SAMPLE PRESENTATION")
     print()
 
-    if status["verified_materials"]:
-        for material, count in sorted(status["verified_materials"].items()):
-            print("  {:<34} {} independent measurement(s)".format(
-                material[:34], count
-            ))
+    if context:
+        for key, label in (
+            ("sensor_to_sample_mm", "Distance (mm)"),
+            ("sample_mass_g", "Mass (g)"),
+            ("sample_depth_mm", "Depth (mm)"),
+            ("packing", "Packing"),
+            ("moisture", "Moisture"),
+            ("grain_size", "Grain size"),
+            ("container", "Container"),
+            ("ambient_light", "Ambient light"),
+            ("substrate", "Substrate"),
+        ):
+            value = context.get(key)
+
+            if value is not None:
+                print("  {:<18} {}".format(label, value))
 
     else:
-        print("  none yet")
-
-    # ------------------------------------------------------------------
-    # PREPARED MIXTURES
-    #
-    # Shown as a gap report rather than a total, because "4 mixtures" on
-    # its own reads like progress and the useful question at the bench is
-    # what is still missing before any of it can be validated.
-    # ------------------------------------------------------------------
-    mixtures = status.get("mixtures") or {}
+        print("  Nothing recorded. Until distance and packing are known, a")
+        print("  difference between two measurements of one material")
+        print("  cannot be attributed to either of them.")
 
     print()
-    print("PREPARED MIXTURES  (what was weighed, for learning proportions)")
+    print("RAW SPECTRA")
     print()
 
-    if mixtures.get("mixtures"):
-        print("  {} mixture(s) over {} material(s)".format(
-            mixtures["mixtures"], mixtures["materials_spiked"]))
+    raw = observation.get("raw") or {}
+
+    if raw:
+        print_triad_table(raw)
+
+    else:
+        print("  no RAW stored with this observation")
+
+    print()
+    print("MODEL PREDICTIONS  (what a model said - never ground truth)")
+    print()
+
+    predictions = detail.get("predictions") or []
+
+    if not predictions:
+        print("  No model has been run against this observation.")
+
+    for prediction in predictions:
+        outcome = classify_prediction({
+            "level": prediction.get("level"),
+            "predicted_material": prediction.get("material_key"),
+            "predicted_family": prediction.get("family_id"),
+            "truth_material": truth.get("material_key")
+            or detail.get("target_material_key"),
+            "truth_family": truth.get("family_id"),
+        })
+
+        print("  {}".format(prediction.get("model_version")))
+        print("    predicted at: {}".format(prediction.get("predicted_at")))
+        print("    level:        {}".format(prediction.get("level")))
+        print("    material:     {}".format(
+            prediction.get("material_key") or "none named"))
+        print("    family:       {}".format(
+            prediction.get("family_id") or "none named"))
+        print("    confidence:   {}".format(
+            prediction.get("confidence") or "-"))
+        print("    outcome:      {}".format(
+            OUTCOME_LABEL.get(outcome, outcome)))
         print()
-        print("  {:<34} {:>5} {:>10} {:>10}".format(
-            "material", "n", "lowest", "highest"))
 
-        for material, entry in sorted(mixtures["by_material"].items()):
-            print("  {:<34} {:>5} {:>9.1f}% {:>9.1f}%".format(
-                material[:34], entry["n"],
-                (entry["lowest_fraction"] or 0.0) * 100.0,
-                (entry["highest_fraction"] or 0.0) * 100.0,
+    print()
+    pause()
+
+
+def menu_ungrouped_observations(mission, ungrouped=None):
+    """
+    Everything that is real evidence but not a material dataset.
+
+    Kept, inspectable, and deliberately out of the main list. Four
+    reasons, each with a different remedy, so a screen that lumped them
+    together would be telling the operator less than the database
+    knows.
+    """
+    if learning_unavailable(mission, "OBSERVATIONS WITH NO MATERIAL TRUTH"):
+        return
+
+    ungrouped = ungrouped or mission.learning.ungrouped_observations()
+
+    banner("OBSERVATIONS WITH NO MATERIAL TRUTH")
+
+    print("None of these is deleted and none is hidden. They are simply")
+    print("not material datasets, because no material truth was")
+    print("established for them.")
+
+    for reason in ("AMBIGUOUS_MIXTURE", "FAMILY_ONLY", "UNKNOWN_SAMPLE",
+                   "NO_LABEL"):
+        rows = ungrouped.get(reason) or []
+
+        print()
+        print("{}  ({})".format(UNGROUPED_TITLE[reason], len(rows)))
+
+        if not rows:
+            continue
+
+        print()
+
+        for line in textwrap.wrap(UNGROUPED_NOTE[reason], 66):
+            print("  {}".format(line))
+
+        print()
+
+        for record in rows[:UNGROUPED_SHOWN]:
+            parts = [str(record.get("measurement_id"))[:24]]
+
+            if reason == "AMBIGUOUS_MIXTURE":
+                parts.append(" + ".join(
+                    "{} {}".format(
+                        component.get("material_key")
+                        or component.get("matrix_label") or "?",
+                        _fraction(component.get("prepared_mass_fraction")),
+                    )
+                    for component in record.get("components") or []
+                ))
+
+            elif reason == "FAMILY_ONLY":
+                parts.append("family {}".format(record.get("family_id")))
+
+            print("    {}".format("   ".join(parts)))
+
+        if len(rows) > UNGROUPED_SHOWN:
+            print("    ... and {} more".format(len(rows) - UNGROUPED_SHOWN))
+
+    print()
+    pause()
+
+
+def menu_model_performance(mission, material_key=None):
+    """
+    How each model version has done against operator-established truth.
+
+    NOT AN ACCURACY. Four levels, scored as four outcomes, because they
+    are not interchangeable: abstaining on a genuinely ambiguous sample
+    is correct behaviour, and one percentage that mixes it with a wrong
+    answer would reward a model for guessing.
+
+    Every model version that has ever run is still here. What changed
+    is that they no longer each get a top-level row on the main screen.
+    """
+    if learning_unavailable(mission, "MODEL PERFORMANCE"):
+        return
+
+    while True:
+        banner("MODEL PERFORMANCE{}".format(
+            " - {}".format(material_key.upper()) if material_key else ""))
+
+        models = mission.learning.model_performance(
+            material_key=material_key)
+
+        if not models:
+            print("No model has been scored against established truth yet.")
+            print()
+            print("A model is scored only where the operator recorded what")
+            print("the sample was. A prediction against an unlabelled")
+            print("sample has nothing to be right or wrong about.")
+            print()
+            pause()
+
+            return
+
+        print("Scored against VERIFIED operator truth only.")
+        print()
+        print("{:<4} {:<24} {:>5} {:>7} {:>8} {:>7} {:>11}".format(
+            "#", "Model version", "Obs", "Exact", "Family", "Wrong",
+            "Abstained"))
+
+        for index, entry in enumerate(models, start=1):
+            print("{:<4} {:<24} {:>5} {:>7} {:>8} {:>7} {:>11}".format(
+                index,
+                entry["model_version"][:24],
+                entry["observations"],
+                entry["exact"],
+                entry["family"],
+                entry["wrong"],
+                entry["abstained"],
             ))
 
-        if mixtures.get("matrices"):
-            print()
-            print("  mixed into: {}".format(", ".join(
-                "{} (x{})".format(name, count)
-                for name, count in sorted(mixtures["matrices"].items())
+        print()
+        print("  Exact      named the material, and it was right")
+        print("  Family     named the right family, without the material")
+        print("  Wrong      named something else")
+        print("  Abstained  gave no material answer. On a genuinely")
+        print("             ambiguous sample this is correct behaviour,")
+        print("             which is why it is not counted as a miss.")
+        print()
+        print("[number] Every scored observation for one model")
+        print("[0] Back")
+
+        selection = choose()
+
+        if selection == "0" or not selection:
+            return
+
+        try:
+            entry = models[int(selection) - 1]
+
+        except (ValueError, IndexError):
+            print("Not a listed number.")
+
+            continue
+
+        print_model_rows(entry)
+
+
+def print_model_rows(entry):
+    """
+    The row-level history for one model, with the context to read it.
+
+    THE DETAIL THE OLD TABLE LEFT OUT. Measurement id, the established
+    truth, what the model actually returned and at which level, its
+    confidence, and the outcome named rather than implied. `None` is
+    never printed as a verdict: ABSTAINED, FAMILY ONLY and WRONG are
+    three different things and the model returned one of them.
+    """
+    banner("{}".format(entry["model_version"]))
+
+    # TWO LINES PER ROW, not one truncated to death.
+    #
+    # The old confusion table cut the model version to twelve characters
+    # and the material names to twenty-six, on one line, and the result
+    # was unreadable: FREYA_DECISI and LEGACY_ANALY are not names an
+    # operator can act on, and MATERIAL_F is not a level. Nothing here
+    # is abbreviated - the second line simply carries what will not fit
+    # beside the first.
+    for row in entry["rows"]:
+        said = (
+            row.get("predicted_material")
+            or (row.get("predicted_family")
+                and "family {}".format(row["predicted_family"]))
+            or "no material answer"
+        )
+
+        print("{:<26} {}".format(
+            str(row.get("measurement_id")),
+            OUTCOME_LABEL.get(row.get("outcome"), row.get("outcome")),
+        ))
+        print("{:<26}   truth: {}".format(
+            "", row.get("target") or row.get("truth_material")))
+
+        # WHAT WAS ACTUALLY IN THE CUP. A wrong answer on 10% carbon in
+        # soil and a wrong answer on the pure material are not the same
+        # result, and the old table showed neither.
+        if row.get("components"):
+            print("{:<26}   as prepared: {}".format("", " + ".join(
+                "{} {}".format(
+                    component.get("material_key")
+                    or component.get("matrix_label") or "?",
+                    _fraction(component.get("prepared_mass_fraction")),
+                )
+                for component in row["components"]
             )))
 
+        print("{:<26}   said:  {}  [{}{}]".format(
+            "", said, row.get("level") or "-",
+            ", confidence {}".format(row["confidence"])
+            if row.get("confidence") else "",
+        ))
         print()
-        print("  Score them with:")
-        # sys.executable, not `py`: the launcher exists only on Windows
-        # and the operator client runs on the Linux main computer.
-        print("    {} firmware/research/training/evaluate_mixtures.py"
-              .format(sys.executable))
 
-    else:
-        print("  none yet")
+    print("Predictions are immutable and are kept per model version. A")
+    print("newer model re-analysing an old measurement adds a row; it")
+    print("never replaces one.")
+    print()
+    pause()
+
+
+def print_mixture_gaps(status):
+    """
+    Prepared mixtures, as a gap report rather than a total.
+
+    "4 mixtures" reads like progress. The useful question at the bench
+    is what is still missing before any of it can be validated.
+    """
+    banner("PREPARED MIXTURES")
+
+    mixtures = status.get("mixtures") or {}
+
+    if not mixtures.get("mixtures"):
+        print("None yet.")
         print()
-        print("  A prepared mixture is the only thing that can ever turn a")
-        print("  spectral contribution into a percentage. Mix a known mass")
-        print("  of a library material into a known mass of soil, measure")
-        print("  it, and save it as a KNOWN PREPARED MIXTURE.")
+        print("A prepared mixture is the only thing that can ever turn a")
+        print("spectral contribution into a percentage. Mix a known mass")
+        print("of a library material into a known mass of soil, measure")
+        print("it, and save it as a KNOWN PREPARED MIXTURE.")
+        print()
+        pause()
 
-    # ------------------------------------------------------------------
-    # SAMPLE PRESENTATION
-    # ------------------------------------------------------------------
+        return
+
+    print("{} mixture(s) over {} material(s)".format(
+        mixtures["mixtures"], mixtures["materials_spiked"]))
+    print()
+    print("{:<34} {:>5} {:>10} {:>10}".format(
+        "material", "n", "lowest", "highest"))
+
+    for material, entry in sorted(mixtures["by_material"].items()):
+        print("{:<34} {:>5} {:>9.1f}% {:>9.1f}%".format(
+            material[:34], entry["n"],
+            (entry["lowest_fraction"] or 0.0) * 100.0,
+            (entry["highest_fraction"] or 0.0) * 100.0,
+        ))
+
+    if mixtures.get("matrices"):
+        print()
+        print("mixed into: {}".format(", ".join(
+            "{} (x{})".format(name, count)
+            for name, count in sorted(mixtures["matrices"].items())
+        )))
+
+    print()
+    print("Score them with:")
+    # sys.executable, not `py`: the launcher exists only on Windows
+    # and the operator client runs on the Linux main computer.
+    print("  {} firmware/research/training/evaluate_mixtures.py".format(
+        sys.executable))
+    print()
+    pause()
+
+
+def print_context_coverage(status):
+    banner("SAMPLE PRESENTATION COVERAGE")
+
     context = status.get("sample_context") or {}
 
-    print()
-    print("SAMPLE PRESENTATION  (distance, mass, packing)")
-    print()
-    print("  recorded on {} of {} observation(s)".format(
-        context.get("with_any_context", 0),
-        context.get("observations", 0),
-    ))
+    print("Distance, mass and packing recorded on {} of {} "
+          "observation(s).".format(
+              context.get("with_any_context", 0),
+              context.get("observations", 0),
+          ))
 
     by_field = context.get("by_field") or {}
 
@@ -1031,170 +1726,16 @@ def menu_learning_history(mission):
 
         for field, count in sorted(by_field.items()):
             if count:
-                print("    {:<24} {}".format(field, count))
+                print("  {:<24} {}".format(field, count))
 
     else:
         print()
-        print("  Nothing yet. Until distance and packing are recorded, a")
-        print("  difference between two measurements of one material")
-        print("  cannot be attributed to either of them.")
-
-    print()
-    print("CONFUSION HISTORY  (verified truth vs what a model said)")
-    print()
-
-    rows = mission.learning.confusion()
-
-    if rows:
-        for row in rows:
-            outcome = (
-                "correct" if row["predicted"] == row["actual"]
-                else "no answer" if not row["predicted"] else "WRONG"
-            )
-
-            print("  {:<12} {:<26} -> {:<26} {}".format(
-                row["model_version"][:12],
-                str(row["actual"])[:26],
-                str(row["predicted"])[:26],
-                outcome,
-            ))
-
-    else:
-        print("  no model has been scored against verified truth yet")
-
-    print()
-    print("A prediction is never ground truth. Retraining is an explicit")
-    print("command, never a consequence of measuring.")
-    print()
-    print("[1] Review saved observations")
-    print("[0] Back")
-
-    if choose() == "1":
-        menu_review_observations(mission)
-
-
-def menu_review_observations(mission):
-    """
-    What was actually saved, one line per record. §20.
-
-    The history screen counted observations and never showed one, so an
-    operator who had just saved a mixture could see the total go up and
-    could not check that the proportions had gone in the way they meant.
-    A record you cannot read is a record you cannot trust.
-
-    GROUND TRUTH AND PREDICTION ARE IN DIFFERENT COLUMNS, and the
-    prediction column is never filled from the label or the other way
-    round. Seeing them side by side is the point: it is how a person
-    notices the model was wrong, and it is why they must never be
-    merged into one "identity" field.
-    """
-    banner("SAVED OBSERVATIONS")
-
-    if mission.learning is None:
-        print("The learning database is not available.")
-        print()
-        pause()
-
-        return
-
-    observations = mission.learning.observations()
-
-    if not observations:
-        print("Nothing has been saved to the learning history yet.")
-        print()
-        pause()
-
-        return
-
-    print("{} observation(s), newest last.".format(len(observations)))
-    print()
-
-    for record in observations:
-        measurement_id = record.get("measurement_id")
-        truth = mission.learning.get_ground_truth(measurement_id) or {}
-
-        label_type = truth.get("label_type") or "NO_LABEL"
-
-        print("-" * 60)
-        print("{}   {}".format(measurement_id, label_type))
-
-        if truth.get("material_key"):
-            print("  Ground truth: {}".format(truth["material_key"]))
-
-        elif label_type == "PREPARED_MIXTURE":
-            print("  Ground truth:")
-
-            for part in mission.learning.components(measurement_id):
-                fraction = part.get("prepared_mass_fraction")
-                role = part.get("role", "COMPONENT")
-
-                print("    {:<28} {:>7}  [{}]".format(
-                    (part.get("material_key")
-                     or part.get("matrix_label") or "?")[:28],
-                    "-" if fraction is None
-                    else "{:.1f} %".format(fraction * 100.0),
-                    ROLE_NOTE.get(role, role.lower()),
-                ))
-
-        elif truth.get("family_id"):
-            print("  Ground truth: family {}".format(truth["family_id"]))
-
-        else:
-            # UNKNOWN_SAMPLE and NO_LABEL. Said explicitly, because
-            # "no label" and "label not shown" look identical otherwise.
-            print("  Ground truth: none - not a training label")
-
-        if truth.get("verification_status"):
-            print("  Verified as: {} ({})".format(
-                truth["verification_status"],
-                truth.get("verification_source") or "-",
-            ))
-
-        # The model's own answer, clearly marked as the model's.
-        for prediction in mission.learning.predictions(measurement_id):
-            print("  Model {}: {} ({})".format(
-                prediction.get("model_version"),
-                prediction.get("material_key")
-                or prediction.get("family_id") or "no answer",
-                prediction.get("level"),
-            ))
+        print("Nothing yet. Until distance and packing are recorded, a")
+        print("difference between two measurements of one material")
+        print("cannot be attributed to either of them.")
 
     print()
     pause()
-
-
-def print_sample_table(store):
-    summaries = store.summaries()
-
-    if not summaries:
-        print("No samples have been saved yet.")
-
-        return summaries
-
-    # Measurements and runs are counted separately, because a Sample
-    # with three measurements and a Sample with one are not the same
-    # record and a single "MEASURED" hides the difference. The
-    # interpretation column shows the CURRENT conclusion and the status
-    # that produced it - an AMBIGUOUS "Pink Clay" is not a
-    # classification, and a bare material name would read as one.
-    print("{:<4} {:<12} {:<5} {:<13} {:>3} {:>3} {:<20} {:<12}".format(
-        "#", "Sample", "Slot", "State", "M", "A", "Interpretation",
-        "Decision"
-    ))
-
-    for index, entry in enumerate(summaries, start=1):
-        print("{:<4} {:<12} {:<5} {:<13} {:>3} {:>3} {:<20} {:<12}".format(
-            index,
-            str(entry.get("sample_id"))[:12],
-            str(entry.get("slot_id") or "-"),
-            str(entry.get("state"))[:13],
-            entry.get("measurement_count", 0),
-            entry.get("analysis_run_count", 0),
-            str(entry.get("interpretation") or "-")[:20],
-            str(entry.get("decision_status") or "-")[:12],
-        ))
-
-    return summaries
 
 
 def print_full_sample(record):
@@ -1409,41 +1950,386 @@ def _print_analysis_run(run):
 
 
 
-def pick_sample(summaries, prompt="Sample number"):
-    index = ask_int(prompt, 1, len(summaries))
+# ======================================================================
+# THREE STORES, NEVER IMPLICIT
+# ======================================================================
+# A Sample can be in up to three places at once, and until this release
+# the screen showed one of them and called it "the sample database".
+#
+#     ESP32     the device's own buffer. One acquisition per slot, in
+#               RAM, gone when the board resets - which happens every
+#               time the serial port is opened.
+#     SESSION   the PC's working set for the run in progress. Written
+#               by Prepare and Measure.
+#     ARCHIVE   the PC's permanent record. Written ONLY by an explicit
+#               import.
+#
+# Every table below names all three, and every destructive operation
+# names exactly one.
 
-    if index is None:
+STORE_ESP32 = "ESP32"
+STORE_SESSION = "SESSION"
+STORE_ARCHIVE = "ARCHIVE"
+
+# WHAT EACH STORE IS, IN ONE SENTENCE THE OPERATOR CAN ACT ON.
+#
+# The test these have to pass is: after reading this, can the operator
+# answer "if I close this program right now, where does s01 still
+# exist?" Both of the first two entries used to fail it. The ESP32 was
+# described as a RAM buffer emptied by opening the serial port -
+# neither half is true any more, and the second half was never true of
+# this client, which holds DTR and RTS low precisely so the board does
+# not reset. The session was described as surviving a restart, which is
+# what it did when it was written to samples.json and is exactly what
+# it must not do now.
+STORE_NOTES = (
+    (STORE_ESP32, "the device's own store, one acquisition per slot, on "
+                  "the ESP32's filesystem. It SURVIVES a board reset, a "
+                  "power cut and a restart of this program. Only a "
+                  "delete here removes it."),
+    (STORE_SESSION, "this run's working set, in THIS PROGRAM'S MEMORY. "
+                    "Prepare and Measure write here. It is NOT a file: "
+                    "closing this program discards it, and nothing in "
+                    "it is saved on the PC until you import or archive "
+                    "it. The measurement itself is safe - the device "
+                    "still has it."),
+    (STORE_ARCHIVE, "the permanent PC record, in samples.json on this "
+                    "computer. The only PC store that survives closing "
+                    "this program, and nothing arrives here except by "
+                    "an explicit import or archive."),
+)
+
+
+def esp32_index(mission):
+    """
+    What the device is holding, or why we could not ask.
+
+    Never raises. An unreachable ESP32 must not stop the operator from
+    looking at, or deleting from, the PC's own stores - and it must not
+    be reported as an empty device either, because "no samples" and "no
+    answer" call for opposite responses.
+    """
+    try:
+        index = mission.link.list_saved_samples()
+
+    except (LinkError, TimeoutError, DeviceError) as error:
+        return {
+            "reachable": False,
+            "entries": [],
+            "by_id": {},
+            "error": getattr(error, "message", None) or str(error),
+        }
+
+    entries = [
+        entry for entry in (index.get("samples") or [])
+        if entry.get("sample_id")
+    ]
+
+    return {
+        "reachable": True,
+        "entries": entries,
+        # What the device says about its OWN storage, carried through
+        # rather than assumed by the screen that prints it.
+        "durable": bool(index.get("durable")),
+        "storage": index.get("storage"),
+        "by_id": {entry["sample_id"]: entry for entry in entries},
+        "error": None,
+    }
+
+
+def storage_rows(mission, device=None):
+    """
+    One row per Sample ID, saying which of the three stores holds it.
+
+    The union, not any one store's list. A Sample the ESP32 has and the
+    PC does not is exactly the row an operator needs to see before
+    pressing anything destructive, and it is the row the previous
+    screen could not draw at all.
+    """
+    device = device if device is not None else esp32_index(mission)
+
+    in_session = {
+        record.get("sample_id"): record
+        for record in mission.session._records()
+    }
+    in_archive = {
+        record.get("sample_id"): record
+        for record in mission.archive._records()
+    }
+
+    order = []
+    seen = set()
+
+    for sample_id in (
+        list(device["by_id"]) + list(in_session) + list(in_archive)
+    ):
+        if sample_id not in seen:
+            seen.add(sample_id)
+            order.append(sample_id)
+
+    rows = []
+
+    for sample_id in order:
+        # The SESSION copy describes the run in progress, so it is the
+        # one the summary columns describe when both exist. The archive
+        # copy is still carried on the row, and `open_sample` asks which
+        # one to read rather than choosing.
+        record = in_session.get(sample_id) or in_archive.get(sample_id)
+        summary = summary_of(record) if record else {}
+        on_device = device["by_id"].get(sample_id)
+
+        rows.append({
+            "sample_id": sample_id,
+            "on_esp32": on_device is not None,
+            "in_session": sample_id in in_session,
+            "in_archive": sample_id in in_archive,
+            "device_entry": on_device,
+            "session_record": in_session.get(sample_id),
+            "archive_record": in_archive.get(sample_id),
+            "slot_id": (
+                summary.get("slot_id")
+                or (on_device or {}).get("slot_id")
+            ),
+            "state": summary.get("state"),
+            "measurement_count": summary.get("measurement_count", 0),
+            "analysis_run_count": summary.get("analysis_run_count", 0),
+            # A DECISION THAT NAMED NOTHING IS STILL A DECISION.
+            #
+            # `interpretation` is the material or the family, and an
+            # AMBIGUOUS_SET conclusion has neither - so the column read
+            # "-" for a measurement the model had thought hard about,
+            # which is indistinguishable from one that was never
+            # analysed. The level fills in, because "AMBIGUOUS_SET" and
+            # "not analysed" are different things.
+            "interpretation": (
+                summary.get("interpretation")
+                or summary.get("decision_status")
+            ),
+            "decision_status": summary.get("decision_status"),
+        })
+
+    return rows
+
+
+def _mark(present):
+    return "yes" if present else " - "
+
+
+def print_storage_table(rows, device):
+    """
+    The union table. Location is a column, never an assumption.
+
+    The three store columns come BEFORE the scientific ones on purpose:
+    the first question at this screen is "where is it", and every
+    destructive option below the table is answered by these columns.
+    """
+    print("{:<4} {:<12} {:<5} {:<6} {:<8} {:<8} {:<13} {:>3} {:>3} "
+          "{:<18}".format(
+              "#", "Sample", "Slot", "ESP32", "SESSION", "ARCHIVE",
+              "State", "M", "A", "Interpretation"))
+
+    if not rows:
+        print()
+        print("  No Sample is held in any of the three stores.")
+
+    for index, row in enumerate(rows, start=1):
+        print("{:<4} {:<12} {:<5} {:<6} {:<8} {:<8} {:<13} {:>3} {:>3} "
+              "{:<18}".format(
+                  index,
+                  str(row["sample_id"])[:12],
+                  str(row["slot_id"] or "-"),
+                  _mark(row["on_esp32"]),
+                  _mark(row["in_session"]),
+                  _mark(row["in_archive"]),
+                  str(row["state"] or "-")[:13],
+                  row["measurement_count"],
+                  row["analysis_run_count"],
+                  str(row["interpretation"] or "-")[:18],
+              ))
+
+    print()
+
+    if device["reachable"]:
+        # THE DEVICE SAYS WHETHER IT IS DURABLE. `list_saved_samples`
+        # carries `durable`, and a board whose filesystem is
+        # unavailable is holding those acquisitions in RAM - which is
+        # exactly the case where telling the operator they survive a
+        # reset would be the most expensive sentence on the screen.
+        if device.get("durable"):
+            print("ESP32:   {} acquisition(s) held  - on the device's own "
+                  "filesystem; survives a reset.".format(
+                      len(device["entries"])))
+
+        else:
+            print("ESP32:   {} acquisition(s) held  - IN RAM ONLY on this "
+                  "board; a reset would lose them.".format(
+                      len(device["entries"])))
+    else:
+        # NOT "0". An unreachable device is not an empty one, and the
+        # difference decides whether "delete all from ESP32" has
+        # anything to do.
+        print("ESP32:   NOT REACHABLE - {}".format(
+            device["error"] or "no answer"))
+        print("         The device's own copies are neither shown nor "
+              "counted above.")
+
+    # EACH COLUMN SAYS WHAT IT SURVIVES, on the screen where the
+    # deletes are. The three headings are ESP32 / SESSION / ARCHIVE and
+    # nothing about those words tells an operator that closing the
+    # client empties the middle one - so the counts say it, every time,
+    # rather than only inside [s].
+    print("SESSION: {} sample(s)  - THIS PROGRAM'S MEMORY. Closing the "
+          "client discards it.".format(
+              sum(1 for row in rows if row["in_session"])))
+    print("ARCHIVE: {} sample(s)  - kept on this PC. Reached only by an "
+          "import.".format(
+              sum(1 for row in rows if row["in_archive"])))
+
+
+def pick_row(rows, predicate, prompt, empty_message):
+    """
+    Choose one Sample from the rows that satisfy a storage predicate.
+
+    The filter is the point: "delete from the ESP32" offers only rows
+    the ESP32 actually has, so the operator cannot select a Sample that
+    the chosen operation could not act on and then be told so
+    afterwards.
+    """
+    eligible = [row for row in rows if predicate(row)]
+
+    if not eligible:
+        print()
+        print(empty_message)
+
         return None
 
-    return summaries[index - 1].get("sample_id")
+    print()
+
+    for index, row in enumerate(eligible, start=1):
+        print("  [{}] {:<14} ESP32 {}   SESSION {}   ARCHIVE {}".format(
+            index, str(row["sample_id"])[:14],
+            _mark(row["on_esp32"]), _mark(row["in_session"]),
+            _mark(row["in_archive"]),
+        ))
+
+    print()
+    answer = ask("{} (blank = cancel)".format(prompt))
+
+    if not answer:
+        return None
+
+    try:
+        chosen = eligible[int(answer) - 1]
+
+    except (ValueError, IndexError):
+        print("Not a listed number.")
+
+        return None
+
+    return chosen
+
+
+def _elsewhere(row, keep):
+    """What is left after deleting from `keep`, as an operator sentence."""
+    remaining = []
+
+    for name, present in (
+        (STORE_ESP32, row["on_esp32"]),
+        (STORE_SESSION, row["in_session"]),
+        (STORE_ARCHIVE, row["in_archive"]),
+    ):
+        if present and name != keep:
+            remaining.append(name)
+
+    return remaining
+
+
+def confirm_deletion(target, sample_ids, remaining, extra=None):
+    """
+    A destructive confirmation that names its storage and its survivors.
+
+    THE SURVIVORS ARE HALF THE INFORMATION. "Delete s01?" is a question
+    an operator cannot answer; "delete the ESP32 copy of s01, leaving
+    the PC archive copy" is one they can. Where nothing survives, this
+    says THAT, in the same place, in the same words.
+    """
+    print()
+    print(RULE)
+    print()
+    print("Target:        {}".format(target))
+    print("Samples:       {}".format(len(sample_ids)))
+
+    for sample_id in sample_ids:
+        print("                 {}".format(sample_id))
+
+    if remaining:
+        print("Left intact:   {}".format(", ".join(remaining)))
+    else:
+        print("Left intact:   NOTHING - this is the last copy of {}".format(
+            "these samples" if len(sample_ids) != 1 else "this sample"))
+
+    print("Untouched:     Decision Learning, DB1, DB2, DB3, calibrations")
+
+    for line in extra or []:
+        print("               {}".format(line))
+
+    print()
+
+    answer = ask("Delete {} from {}? [y/N]".format(
+        "all {} sample(s)".format(len(sample_ids))
+        if len(sample_ids) != 1 else sample_ids[0],
+        target,
+    ))
+
+    return answer.strip().lower() in ("y", "yes")
+
+
+# ======================================================================
+# the screen
+# ======================================================================
 
 
 def menu_sample_database(mission):
     """
-    View and manage saved samples.
+    View and manage Samples across all three stores.
 
     Measurement fields are read-only here: raw, dark_corrected,
     normalized, sensor settings, matches, analysis and calibration are
     scientific results, not editable text. Metadata may be corrected.
+
+    EVERY DESTRUCTIVE OPTION NAMES ITS STORE. There is deliberately no
+    "Delete sample": the previous screen had one, it removed the PC
+    record and left the device copy alone, and no operator could have
+    known that from the menu.
     """
-    store = mission.store
+    device = esp32_index(mission)
 
     while True:
         banner("SAMPLE DATABASE")
 
-        summaries = print_sample_table(store)
+        rows = storage_rows(mission, device)
+        print_storage_table(rows, device)
 
         print()
-        print("[1] Open sample")
-        print("[2] Edit metadata")
-        print("[3] Rename sample")
-        print("[4] Delete sample")
-        print("[5] Refresh")
+        print("[1] Open a sample")
         print()
-        print("[6] Import ALL Samples from ESP32")
-        print("[7] Delete ALL Samples from ESP32")
+        print("COPY - never moves, never overwrites")
+        print("[2] Import ALL samples from ESP32 to the PC archive")
+        print("[3] Archive one SESSION sample to the PC archive")
         print()
-        print("[0] Back")
+        print("EDIT - the PC archive")
+        print("[4] Edit metadata")
+        print("[5] Rename")
+        print()
+        print("DELETE - each names exactly one store")
+        print("[6] Delete a sample from the ESP32")
+        print("[7] Delete a sample from the PC session")
+        print("[8] Delete a sample from the PC archive")
+        print("[9] Delete ALL samples from the ESP32")
+        print("[10] Clear the PC session working set")
+        print()
+        print("[s] What these three stores are")
+        print("[r] Refresh   [0] Back")
 
         selection = choose()
 
@@ -1451,83 +2337,65 @@ def menu_sample_database(mission):
             if selection == "0":
                 return
 
-            if selection == "5":
-                store.load()
+            if selection in ("r", "R"):
+                # Both stores re-read, and the device asked again. A
+                # refresh that only reloaded the PC would leave the
+                # ESP32 column showing what the device held a minute
+                # ago, which is the column the destructive options
+                # below are read from.
+                mission.samples.load()
+                device = esp32_index(mission)
 
                 continue
 
-            if selection == "6":
-                sync_esp32_samples(mission)
-                store.load()
-
+            if not selection:
                 continue
 
-            if selection == "7":
-                delete_esp32_samples(mission)
-
-                continue
-
-            if not summaries:
-                if selection:
-                    print("There are no samples yet.")
+            if selection == "s":
+                print_store_help()
 
                 continue
 
             if selection == "1":
-                sample_id = pick_sample(summaries)
-
-                if sample_id:
-                    record = store.get_sample(sample_id)
-
-                    if record is None:
-                        print("Record file for {} is missing.".format(
-                            sample_id
-                        ))
-                    else:
-                        print_full_sample(record)
+                open_sample(mission, rows)
 
             elif selection == "2":
-                sample_id = pick_sample(summaries)
-
-                if sample_id:
-                    metadata = ask_metadata()
-
-                    if metadata:
-                        store.update_metadata(sample_id, metadata)
-                        print("Metadata updated.")
-                    else:
-                        print("Nothing entered; metadata unchanged.")
+                import_esp32_samples(mission)
+                mission.samples.load()
+                device = esp32_index(mission)
 
             elif selection == "3":
-                sample_id = pick_sample(summaries)
-
-                if sample_id:
-                    new_id = ask("New Sample ID (blank = cancel)")
-
-                    if new_id:
-                        store.rename(sample_id, new_id)
-                        print("Renamed {} -> {}.".format(sample_id, new_id))
+                archive_session_sample(mission, rows)
+                device = esp32_index(mission)
 
             elif selection == "4":
-                sample_id = pick_sample(summaries)
+                edit_archive_metadata(mission, rows)
 
-                if sample_id:
-                    print()
-                    print("This permanently deletes the scientific record "
-                          "for {}.".format(sample_id))
-                    print("Clearing a physical slot is a different thing "
-                          "and keeps the record.")
-                    print()
+            elif selection == "5":
+                rename_archive_sample(mission, rows)
 
-                    typed = ask(
-                        "Type the Sample ID to confirm deletion"
-                    )
+            elif selection == "6":
+                delete_one_from_esp32(mission, rows)
+                device = esp32_index(mission)
 
-                    if typed == sample_id:
-                        store.delete(sample_id)
-                        print("Sample {} deleted.".format(sample_id))
-                    else:
-                        print("Not deleted.")
+            elif selection == "7":
+                delete_one_from_collection(
+                    mission, rows, mission.session, STORE_SESSION,
+                    "in_session",
+                )
+
+            elif selection == "8":
+                delete_one_from_collection(
+                    mission, rows, mission.archive, STORE_ARCHIVE,
+                    "in_archive",
+                )
+
+            elif selection == "9":
+                delete_all_esp32_samples(mission)
+                device = esp32_index(mission)
+
+            elif selection == "10":
+                clear_session(mission, rows)
 
             elif selection:
                 print("Unknown option.")
@@ -1537,56 +2405,184 @@ def menu_sample_database(mission):
             print("Storage error: {} ({})".format(error.message, error.code))
 
 
-# ======================================================================
-# ESP32 -> PC sample synchronization
-# ======================================================================
+def print_store_help():
+    """What the three stores are, in the operator's own vocabulary."""
+    print()
+    print(RULE)
+    print()
+
+    for name, description in STORE_NOTES:
+        print("{}".format(name))
+
+        for line in textwrap.wrap(description, 62):
+            print("   {}".format(line))
+
+        print()
+
+    print("A sample is only in the stores its row says it is in.")
+    print("Import COPIES; it never moves and never overwrites.")
+    print("Every delete names one store and touches only that one.")
+    print()
+    pause()
 
 
-def sync_esp32_samples(mission):
+def open_sample(mission, rows):
     """
-    Copy every acquisition the ESP32 holds into the PC archive.
+    Read one Sample, from a store the operator chooses.
 
-    This is a COPY, never a move: the ESP32 keeps its records, and an ID
-    that already exists on the PC is never overwritten. Running it twice
-    therefore transfers nothing the second time.
-
-        ID not on the PC              -> IMPORT
-        ID on the PC, same spectrum   -> SKIP
-        ID on the PC, different data  -> CONFLICT, left untouched
-
-    It writes only to the measured-Sample archive. The material database
-    and the White/Dark references are never opened for writing anywhere
-    in this program.
+    Asked rather than guessed, because the two PC copies of one Sample
+    ID can legitimately differ - a second measurement taken after the
+    first was archived is exactly that - and showing one while the
+    operator believes they are looking at the other is how a conflict
+    goes unnoticed.
     """
-    banner("IMPORT ESP32 SAMPLES TO PC")
+    row = pick_row(
+        rows,
+        lambda entry: entry["in_session"] or entry["in_archive"],
+        "Sample number",
+        "No Sample is held on the PC yet. Import from the ESP32, or "
+        "measure one.",
+    )
 
-    try:
-        index = mission.link.list_saved_samples()
+    if row is None:
+        return
 
-    except (LinkError, TimeoutError) as error:
+    if row["in_session"] and row["in_archive"]:
+        print()
+        print("{} is in BOTH PC stores.".format(row["sample_id"]))
+        print("  [1] the SESSION copy")
+        print("  [2] the ARCHIVE copy")
+
+        answer = choose("Which")
+
+        record = (
+            row["archive_record"] if answer == "2" else row["session_record"]
+        )
+        source = STORE_ARCHIVE if answer == "2" else STORE_SESSION
+
+    elif row["in_archive"]:
+        record, source = row["archive_record"], STORE_ARCHIVE
+
+    else:
+        record, source = row["session_record"], STORE_SESSION
+
+    print()
+    print("Reading the {} copy.".format(source))
+
+    print_full_sample(record)
+
+
+def edit_archive_metadata(mission, rows):
+    row = pick_row(
+        rows, lambda entry: entry["in_archive"], "Sample number",
+        "The PC archive is empty. Metadata is edited on archived "
+        "records; import first.",
+    )
+
+    if row is None:
+        return
+
+    metadata = ask_metadata()
+
+    if metadata:
+        mission.archive.update_metadata(row["sample_id"], metadata)
+        print("Metadata updated on the PC archive copy.")
+
+    else:
+        print("Nothing entered; metadata unchanged.")
+
+
+def rename_archive_sample(mission, rows):
+    row = pick_row(
+        rows, lambda entry: entry["in_archive"], "Sample number",
+        "The PC archive is empty.",
+    )
+
+    if row is None:
+        return
+
+    new_id = ask("New Sample ID (blank = cancel)")
+
+    if not new_id:
+        return
+
+    mission.archive.rename(row["sample_id"], new_id)
+
+    print("Renamed {} -> {} IN THE PC ARCHIVE.".format(
+        row["sample_id"], new_id))
+
+    if row["in_session"] or row["on_esp32"]:
+        # Said plainly rather than propagated. Renaming across stores
+        # would be a write to a store the operator did not name, and
+        # the ESP32 has no rename at all.
+        print("The SESSION and ESP32 copies still use {}.".format(
+            row["sample_id"]))
+
+
+# ======================================================================
+# IMPORT - the one door into the PC archive
+# ======================================================================
+
+
+def import_esp32_samples(mission):
+    """
+    Copy every acquisition the ESP32 holds into the PC ARCHIVE.
+
+    THIS IS THE ONLY WAY A DEVICE MEASUREMENT REACHES THE ARCHIVE.
+    Nothing else in the program writes there on the operator's behalf,
+    which is what makes this button mean what it says.
+
+    A COPY, NEVER A MOVE: the ESP32 keeps its records and this command
+    is deliberately not chained to a delete. An ID that already exists
+    on the PC is never overwritten.
+
+        ID not in the archive              -> IMPORT
+        ID in the archive, same spectrum   -> SKIP, already have it
+        ID in the archive, different data  -> CONFLICT, left untouched
+
+    Running it twice therefore transfers nothing the second time, and a
+    run interrupted half way can simply be run again: every sample is
+    committed on its own, so the ones that landed stay landed.
+
+    It writes to the archive and to nothing else. The Decision Learning
+    database, the material libraries and the White/Dark references are
+    never opened for writing anywhere in this program.
+    """
+    banner("IMPORT ESP32 SAMPLES TO THE PC ARCHIVE")
+
+    device = esp32_index(mission)
+
+    if not device["reachable"]:
         print("Reading Sample index............ FAIL")
-        report_failure(error)
+        print()
+        print("  {}".format(device["error"]))
+        print()
+        print("NOTHING WAS IMPORTED. The PC archive is unchanged.")
         print()
         pause()
 
-        return
+        return {"imported": [], "skipped": [], "conflicts": [],
+                "failed": [], "reachable": False}
 
     print("Connecting to ESP32............. PASS")
     print("Reading Sample index............ PASS")
     print()
 
-    entries = index.get("samples") or []
+    entries = device["entries"]
 
-    print("ESP32 Samples: {}".format(len(entries)))
+    print("Source: ESP32          {} acquisition(s)".format(len(entries)))
+    print("Target: PC archive     {} sample(s) before".format(
+        mission.archive.count()))
     print()
 
     if not entries:
-        print("The ESP32 is holding no acquisitions. Its buffer is RAM "
-              "only and is empty after a reset.")
+        print("The ESP32 is holding no acquisitions. Its buffer is RAM")
+        print("only and is empty after a reset.")
         print()
         pause()
 
-        return
+        return {"imported": [], "skipped": [], "conflicts": [],
+                "failed": [], "reachable": True}
 
     imported = []
     skipped = []
@@ -1596,31 +2592,47 @@ def sync_esp32_samples(mission):
     for entry in entries:
         sample_id = entry.get("sample_id")
 
-        if not sample_id:
-            continue
-
         try:
             payload = mission.link.get_saved_sample(sample_id)
 
-        except (LinkError, TimeoutError) as error:
+        except (LinkError, TimeoutError, DeviceError) as error:
+            # A CONNECTION FAILURE PART WAY THROUGH IS NOT A ROLLBACK.
+            # Everything already committed is valid and stays; this one
+            # is reported and the loop carries on, so a flaky link
+            # costs the samples it actually dropped and no others.
             failed.append(sample_id)
-            print("{:<12}FAILED              {}".format(sample_id, error))
+            print("{:<14}FAILED            {}".format(
+                sample_id, getattr(error, "message", None) or error))
 
             continue
 
         device_raw = _white_spectrum(payload.get("measurement"))
-        existing = mission.store.get_sample(sample_id)
+
+        if not device_raw:
+            # An entry the device lists but cannot produce a spectrum
+            # for is a corrupt or incomplete record. Refused rather
+            # than stored as an empty measurement that would look like
+            # a dark reading forever after.
+            failed.append(sample_id)
+            print("{:<14}NO SPECTRUM       refused".format(sample_id))
+
+            continue
+
+        existing = mission.archive.get_sample(sample_id)
 
         if existing is not None:
-            stored_raw = _white_spectrum(existing.get("measurement"))
+            stored_raw = _white_spectrum(
+                latest_measurement(existing, successful_only=True)
+                or existing.get("measurement")
+            )
 
             if _same_spectrum(stored_raw, device_raw):
                 skipped.append(sample_id)
-                print("{:<12}already exists      SKIP".format(sample_id))
+                print("{:<14}already archived  SKIP".format(sample_id))
 
             else:
                 conflicts.append(sample_id)
-                print("{:<12}conflict            CONFLICT".format(sample_id))
+                print("{:<14}DIFFERENT DATA    CONFLICT".format(sample_id))
 
             continue
 
@@ -1628,41 +2640,105 @@ def sync_esp32_samples(mission):
             _import_retained(mission, sample_id, entry, payload)
 
             imported.append(sample_id)
-            print("{:<12}imported            PASS".format(sample_id))
+            print("{:<14}imported          PASS".format(sample_id))
 
         except StorageError as error:
             failed.append(sample_id)
-            print("{:<12}FAILED              {}".format(
-                sample_id, error.message
-            ))
+            print("{:<14}FAILED            {}".format(
+                sample_id, error.message))
 
     print()
     print("Imported:   {}".format(len(imported)))
-    print("Skipped:    {}".format(len(skipped)))
+    print("Skipped:    {}  (identical copy already in the archive)".format(
+        len(skipped)))
     print("Conflicts:  {}".format(len(conflicts)))
     print("Failed:     {}".format(len(failed)))
 
-    if imported:
-        print()
-        print("Imported:")
-
-        for sample_id in imported:
-            print("  {}".format(sample_id))
-
     if conflicts:
         print()
-        print("CONFLICTS - the PC already has these IDs with DIFFERENT")
-        print("measurement data. Nothing was overwritten. Rename or delete")
-        print("the PC record first if the device copy is the one you want:")
+        print("CONFLICTS - the archive already holds these IDs with")
+        print("DIFFERENT measurement data. NOTHING WAS OVERWRITTEN. The")
+        print("archived record is a scientific result and this command")
+        print("will not replace one. Rename the archived copy, or delete")
+        print("it deliberately, if the device copy is the one you want:")
 
         for sample_id in conflicts:
             print("  {}".format(sample_id))
 
     print()
-    print("ESP32 database was NOT modified.")
-    print("BD Sample archive updated: {}".format(mission.store.path))
+    print("ESP32:       NOT MODIFIED - it still holds every acquisition")
+    print("PC session:  NOT MODIFIED")
+    print("PC archive:  {} sample(s) now, in {}".format(
+        mission.archive.count(), mission.archive.path))
     print()
     pause()
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "conflicts": conflicts,
+        "failed": failed,
+        "reachable": True,
+    }
+
+
+def archive_session_sample(mission, rows):
+    """
+    Copy one measured SESSION sample into the PC archive.
+
+    The second explicit import, and the one that matters when the ESP32
+    has already been reset: the device's buffer is RAM and the session
+    file is not, so this is how the science of a finished run is kept
+    without the board still being powered.
+
+    A COPY. The session keeps its record, so a run in progress is not
+    disturbed by archiving part of it.
+    """
+    row = pick_row(
+        rows,
+        lambda entry: entry["in_session"],
+        "Session sample number",
+        "The session working set is empty.",
+    )
+
+    if row is None:
+        return None
+
+    sample_id = row["sample_id"]
+    record = row["session_record"]
+
+    if row["in_archive"]:
+        print()
+        print("The archive already holds {}.".format(sample_id))
+        print("Nothing was overwritten - an archived record is a")
+        print("scientific result, and this command will not replace one.")
+        print()
+        print("Rename the archived copy first if you want both.")
+        print()
+        pause()
+
+        return None
+
+    if not successful_measurements(record):
+        print()
+        print("{} has no successful measurement. There is no spectrum "
+              "to archive.".format(sample_id))
+        print()
+        pause()
+
+        return None
+
+    stored = mission.archive.adopt(record)
+
+    print()
+    print("Copied {} into the PC archive.".format(sample_id))
+    print("  measurements: {}".format(len(measurements_of(stored))))
+    print("  the SESSION copy is untouched and still in slot {}".format(
+        stored.get("slot_id") or "-"))
+    print()
+    pause()
+
+    return stored
 
 
 def _white_spectrum(measurement):
@@ -1718,12 +2794,12 @@ def _same_spectrum(first, second):
 
 def _import_retained(mission, sample_id, entry, payload):
     """
-    Store one retained ESP32 acquisition as a Sample and Measurement.
+    Store one retained ESP32 acquisition in the PC ARCHIVE.
 
     THE SAME ORDER AS A LIVE MEASUREMENT: the Sample and its RAW are
-    written to BD first, and only then is Science asked anything. An
-    import that cannot be analysed still lands the spectrum, which is
-    the entire reason the device keeps a buffer at all.
+    written first, and only then is Science asked anything. An import
+    that cannot be analysed still lands the spectrum, which is the
+    entire reason the device keeps a buffer at all.
 
     Nothing is invented. The device records no timestamps and no
     metadata, so those stay null and the record says why rather than
@@ -1732,8 +2808,8 @@ def _import_retained(mission, sample_id, entry, payload):
     measurement = payload.get("measurement") or {}
     slot_id = payload.get("slot_id") or entry.get("slot_id")
 
-    if not mission.store.has_sample(sample_id):
-        mission.store.create(sample_id, slot_id)
+    if not mission.archive.has_sample(sample_id):
+        mission.archive.create(sample_id, slot_id)
 
     fields = mission.measurement_from_acquisition(measurement, sample_id)
 
@@ -1741,16 +2817,17 @@ def _import_retained(mission, sample_id, entry, payload):
     acquisition["origin"] = "esp32_buffer"
     acquisition["esp_uptime_ms"] = measurement.get("esp_uptime_ms")
     acquisition["note"] = (
-        "Copied from the ESP32 acquisition buffer. The device records "
-        "no wall-clock time and no metadata, so created_at, loaded_at "
-        "and the sample metadata are unknown rather than assumed."
+        "Copied from the ESP32 acquisition buffer by an explicit import. "
+        "The device records no wall-clock time and no metadata, so "
+        "created_at, loaded_at and the sample metadata are unknown "
+        "rather than assumed."
     )
     fields["acquisition"] = acquisition
 
     if not fields.get("raw"):
         # An entry with no spectrum is an operational record, not a
         # measurement. Stored as the failure it is.
-        return mission.store.add_measurement(
+        return mission.archive.add_measurement(
             sample_id,
             acquisition_status=ACQUISITION_FAILED,
             acquisition=acquisition,
@@ -1758,47 +2835,223 @@ def _import_retained(mission, sample_id, entry, payload):
                    "message": "the retained entry carried no spectrum"},
         )
 
-    stored = mission.store.add_measurement(sample_id, **fields)
+    stored = mission.archive.add_measurement(sample_id, **fields)
 
     run = mission.analyse_measurement(stored)
 
-    mission.store.add_analysis_run(
+    # AN ANALYSIS THAT FAILS DOES NOT FAIL THE IMPORT. RAW is already
+    # in the archive at this point and is the irreplaceable half; the
+    # run records its own status and can be redone from the stored
+    # spectrum at any time.
+    mission.archive.add_analysis_run(
         sample_id, stored["measurement_id"], run
     )
+
+    decision = run.get("decision")
+
+    if decision:
+        mission.archive.set_conclusion(sample_id, {
+            "interpretation": decision.get("material")
+            or decision.get("family"),
+            "level": decision.get("level"),
+            "status": decision.get("level"),
+            "confidence": decision.get("confidence"),
+            "from_measurement": stored["measurement_id"],
+            "decision_model_version": (
+                run.get("versions") or {}
+            ).get("decision_model"),
+        })
 
     return stored
 
 
+# ======================================================================
+# DELETE - one store at a time, named every time
+# ======================================================================
 
-def delete_esp32_samples(mission):
+
+def delete_one_from_esp32(mission, rows):
     """
-    Delete every Sample record held on the ESP32.
+    Delete the ESP32's copy of one Sample. Nothing else, anywhere.
 
-    Destructive and deliberately narrow. It removes the device's own
-    records and nothing else: the PC archive, the physical slot states,
-    the material database and the White/Dark references are all
-    untouched.
+    The device DOES have a per-sample delete - `delete_saved_sample`,
+    named by Sample ID - so this asks for exactly the record the
+    operator chose. It used to have to clear the whole slot, which
+    meant an operator who wanted one device copy gone had to reason
+    about which slot it had come from.
 
-    Import first if the data matters - this is not chained to the import
-    on purpose, so the operator can verify the copy before destroying
-    the original.
+    The device's answer is not taken on trust: the index is read back
+    afterwards and a device that reports success while still holding
+    the sample is reported as a FAILED VERIFICATION, not a delete.
     """
-    banner("DELETE ALL ESP32 SAMPLES")
+    row = pick_row(
+        rows,
+        lambda entry: entry["on_esp32"],
+        "Sample number",
+        "The ESP32 is holding no acquisitions, or could not be reached.",
+    )
 
-    try:
-        index = mission.link.list_saved_samples()
+    if row is None:
+        return
 
-    except (LinkError, TimeoutError) as error:
-        report_failure(error)
+    sample_id = row["sample_id"]
+    remaining = _elsewhere(row, STORE_ESP32)
+
+    if not confirm_deletion(
+        "ESP32 (the device's own buffer)", [sample_id], remaining,
+        extra=["PC session and PC archive: untouched"],
+    ):
+        print("Cancelled. Nothing was deleted.")
         print()
         pause()
 
         return
 
-    entries = index.get("samples") or []
+    try:
+        data = mission.link.delete_saved_sample(sample_id)
+
+    except (LinkError, TimeoutError, DeviceError) as error:
+        print()
+        print("DELETE FAILED on the device:")
+        report_failure(error)
+        print()
+        print("Nothing on the PC was touched.")
+        print()
+        pause()
+
+        return
+
+    print()
+    print("Device reported: {} deleted".format(data.get("deleted_count", 0)))
+
+    # Do not trust the return code. Ask the device what it still holds.
+    after = esp32_index(mission)
+
+    if not after["reachable"]:
+        print()
+        print("DELETE VERIFICATION FAILED - could not read the device back:")
+        print("  {}".format(after["error"]))
+
+    elif sample_id in after["by_id"]:
+        print()
+        print("DELETE VERIFICATION FAILED")
+        print("The device reported success and still holds {}.".format(
+            sample_id))
+
+    else:
+        print()
+        print("ESP32:       {} is gone".format(sample_id))
+        print("PC session:  NOT MODIFIED")
+        print("PC archive:  NOT MODIFIED")
+        print("Slot state:  NOT MODIFIED - soil may still be in the slot")
+
+    print()
+    pause()
+
+
+def delete_one_from_collection(mission, rows, collection, store_name,
+                               presence_key):
+    """
+    Delete one Sample from ONE PC collection.
+
+    Session and archive share this because the operation is identical
+    and the WORDING is what differs - and the wording is the safety
+    feature. `store_name` appears in the confirmation, in the survivor
+    list and in the result, so there is no point at which the operator
+    is looking at a screen that does not say which store they are
+    emptying.
+    """
+    row = pick_row(
+        rows,
+        lambda entry: entry[presence_key],
+        "Sample number",
+        "The PC {} holds no samples.".format(store_name.lower()),
+    )
+
+    if row is None:
+        return
+
+    sample_id = row["sample_id"]
+    remaining = _elsewhere(row, store_name)
+
+    record = collection.get_sample(sample_id) or {}
+    measurements = len(measurements_of(record))
+
+    if not confirm_deletion(
+        "PC {} ({})".format(store_name, collection.path),
+        [sample_id], remaining,
+        extra=[
+            "{} measurement(s) and their analyses go with it".format(
+                measurements),
+            "Clearing a physical slot is a different thing entirely",
+        ],
+    ):
+        print("Cancelled. Nothing was deleted.")
+        print()
+        pause()
+
+        return
+
+    collection.delete(sample_id)
+
+    print()
+    print("PC {}: {} deleted".format(store_name, sample_id))
+
+    for name in (STORE_ESP32, STORE_SESSION, STORE_ARCHIVE):
+        if name == store_name:
+            continue
+
+        print("{:<12} {}".format(
+            name + ":",
+            "still holds {}".format(sample_id)
+            if name in remaining else "did not hold it",
+        ))
+
+    print("Learning DB: NOT MODIFIED")
+    print()
+    pause()
+
+
+def delete_all_esp32_samples(mission):
+    """
+    Delete every retained acquisition held on the ESP32.
+
+    Destructive and deliberately narrow. It removes the device's own
+    records and NOTHING else: the PC session, the PC archive, the
+    physical slot states, the Decision Learning database and the
+    material libraries are all untouched.
+
+    Import first if the data matters. This is deliberately not chained
+    to the import, so the operator can verify the copy before
+    destroying the original - and the confirmation below names every
+    device sample the PC does not already have.
+    """
+    banner("DELETE ALL SAMPLES FROM THE ESP32")
+
+    device = esp32_index(mission)
+
+    if not device["reachable"]:
+        print("Could not read the device:")
+        print()
+        print("  {}".format(device["error"]))
+        print()
+        print("NOTHING WAS DELETED. An unreachable device is not an empty")
+        print("one, and this command will not report success over a link")
+        print("it could not use.")
+        print()
+        pause()
+
+        return
+
+    entries = device["entries"]
 
     if not entries:
         print("ESP32 Sample storage is already empty.")
+        print()
+        print("Its buffer is RAM only: a board reset empties it, and")
+        print("opening the serial port resets the board. If you measured")
+        print("this session, the spectrum is in the PC session - the")
+        print("SESSION column on the Sample Database screen says so.")
         print()
         pause()
 
@@ -1807,32 +3060,48 @@ def delete_esp32_samples(mission):
     print("ESP32 Samples: {}".format(len(entries)))
     print()
 
-    for entry in entries:
-        on_pc = mission.store.has_sample(entry.get("sample_id"))
+    on_pc = []
+    only_on_device = []
 
-        print("  {:<12}{}".format(
-            entry.get("sample_id"),
-            "already imported to PC" if on_pc else "NOT ON THE PC YET",
+    for entry in entries:
+        sample_id = entry["sample_id"]
+
+        stores = []
+
+        if mission.session.has_sample(sample_id):
+            stores.append(STORE_SESSION)
+
+        if mission.archive.has_sample(sample_id):
+            stores.append(STORE_ARCHIVE)
+
+        print("  {:<14}{}".format(
+            sample_id,
+            "also in " + ", ".join(stores) if stores
+            else "ONLY ON THE DEVICE",
         ))
 
-    missing = [
-        entry.get("sample_id") for entry in entries
-        if not mission.store.has_sample(entry.get("sample_id"))
-    ]
+        (on_pc if stores else only_on_device).append(sample_id)
 
-    if missing:
-        print()
-        print("!! {} of these are NOT in the PC archive. Import them "
-              "first, or they are gone for good.".format(len(missing)))
+    extra = []
 
-    print()
-    print("PC Samples, the material database, the White/Dark references")
-    print("and the physical slot states will NOT be changed.")
-    print()
+    if only_on_device:
+        extra.append(
+            "!! {} of these exist NOWHERE ELSE: {}".format(
+                len(only_on_device), ", ".join(only_on_device))
+        )
+        extra.append(
+            "   Import them first, or their spectra are gone for good."
+        )
 
-    if ask("Delete ALL saved Samples from ESP32? [y/N]").strip().lower() \
-            not in ("y", "yes"):
-        print("Cancelled.")
+    if not confirm_deletion(
+        "ESP32 (the device's own buffer)",
+        [entry["sample_id"] for entry in entries],
+        [STORE_SESSION, STORE_ARCHIVE] if on_pc else [],
+        extra=extra + [
+            "PC session, PC archive and slot occupancy: untouched",
+        ],
+    ):
+        print("Cancelled. Nothing was deleted.")
         print()
         pause()
 
@@ -1844,45 +3113,126 @@ def delete_esp32_samples(mission):
     try:
         data = mission.link.delete_saved_samples()
 
-    except (LinkError, TimeoutError) as error:
+    except (LinkError, TimeoutError, DeviceError) as error:
         report_failure(error)
+        print()
+        print("Nothing on the PC was touched.")
         print()
         pause()
 
         return
 
-    print("Deleted: {}".format(data.get("deleted_count", 0)))
+    print("Device reported: {} deleted".format(data.get("deleted_count", 0)))
 
     # Do not trust the return code. Ask the device what it still holds.
-    try:
-        after = mission.link.list_saved_samples()
+    after = esp32_index(mission)
 
-    except (LinkError, TimeoutError) as error:
+    if not after["reachable"]:
         print()
         print("DELETE VERIFICATION FAILED - could not read the device back:")
-        report_failure(error)
-        print()
-        pause()
+        print("  {}".format(after["error"]))
 
-        return
-
-    remaining = after.get("samples") or []
-
-    if remaining:
+    elif after["entries"]:
         print()
         print("DELETE VERIFICATION FAILED")
         print("The device reported success but still holds {} "
-              "record(s):".format(len(remaining)))
+              "record(s):".format(len(after["entries"])))
 
-        for entry in remaining:
+        for entry in after["entries"]:
             print("  {}".format(entry.get("sample_id")))
 
     else:
         print()
-        print("ESP32 Sample storage is now empty.")
-        print("PC Sample archive was not modified.")
-        print("Physical slot occupancy was not changed.")
+        print("ESP32:       now empty  (verified by reading it back)")
+        print("PC session:  {} sample(s), NOT MODIFIED".format(
+            mission.session.count()))
+        print("PC archive:  {} sample(s), NOT MODIFIED".format(
+            mission.archive.count()))
+        print("Slot state:  NOT MODIFIED - soil may still be in the slots")
+        print("Learning DB: NOT MODIFIED")
 
+    print()
+    pause()
+
+
+def clear_session(mission, rows):
+    """
+    End the run: empty the PC session working set.
+
+    The one place the operator is told, before anything is destroyed,
+    exactly which session samples have no archived copy - because the
+    session is where a measurement lives between being taken and being
+    imported, and that is precisely the window in which clearing it
+    loses science.
+    """
+    banner("CLEAR THE PC SESSION WORKING SET")
+
+    session_rows = [row for row in rows if row["in_session"]]
+
+    if not session_rows:
+        print("The session working set is already empty.")
+        print()
+        pause()
+
+        return
+
+    print("The session holds the run in progress. Clearing it does not")
+    print("touch the PC archive, the ESP32 or the Decision Learning")
+    print("database.")
+    print()
+
+    # WHAT COUNTS AS A SURVIVING COPY HERE, AND WHAT DOES NOT.
+    #
+    # The archive does. The ESP32 does NOT: its buffer is RAM, a board
+    # reset empties it, and opening the serial port resets the board -
+    # so "the device still has it" is not a reason to believe the
+    # science is safe, and offering it as one is exactly how a spectrum
+    # gets lost between two screens that each thought the other had it.
+    # It is still SHOWN, because it is true and it is worth knowing;
+    # it just does not make a sample archived.
+    unarchived = []
+
+    for row in session_rows:
+        elsewhere = _elsewhere(row, STORE_SESSION)
+
+        print("  {:<14}{}".format(
+            row["sample_id"],
+            "also in " + ", ".join(elsewhere) if elsewhere
+            else "ONLY IN THE SESSION",
+        ))
+
+        if not row["in_archive"]:
+            unarchived.append(row["sample_id"])
+
+    extra = []
+
+    if unarchived:
+        extra.append("!! {} of these are NOT in the PC archive: {}".format(
+            len(unarchived), ", ".join(unarchived)))
+        extra.append("   Archive them first ([3]), or they are gone.")
+        extra.append("   A copy on the ESP32 does not count: its buffer")
+        extra.append("   is RAM and the next reset empties it.")
+
+    if not confirm_deletion(
+        "PC SESSION ({})".format(mission.session.path),
+        [row["sample_id"] for row in session_rows],
+        [STORE_ARCHIVE] if len(unarchived) < len(session_rows) else [],
+        extra=extra,
+    ):
+        print("Cancelled. Nothing was deleted.")
+        print()
+        pause()
+
+        return
+
+    removed = mission.session.clear()
+
+    print()
+    print("PC session:  cleared, {} sample(s) removed".format(len(removed)))
+    print("PC archive:  {} sample(s), NOT MODIFIED".format(
+        mission.archive.count()))
+    print("ESP32:       NOT MODIFIED")
+    print("Learning DB: NOT MODIFIED")
     print()
     pause()
 

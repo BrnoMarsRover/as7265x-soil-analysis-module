@@ -244,10 +244,12 @@ checks.section("2026-08: a full disk crashed the client")
 #   mid-mission instead of saying "could not save".
 
 from BD import samples as samples_module                     # noqa: E402
-from BD.samples import SampleStore, StorageError             # noqa: E402
+from BD.samples import StorageError, archive_store             # noqa: E402
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    # THE ARCHIVE: this regression is about a failed FILE
+    # write, and the session never reaches a file.
+    store = bd.sample_database().archive()
     store.create("R001", 1)
 
     before = bd.samples_file.read_bytes()
@@ -394,7 +396,9 @@ checks.section("2026-08: a failed save left a phantom Sample in memory")
 #   the Sample. On exit it is gone.
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    # THE ARCHIVE: this regression is about a failed FILE
+    # write, and the session never reaches a file.
+    store = bd.sample_database().archive()
     store.create("R001", 1)
 
     original = samples_module.os.replace
@@ -416,7 +420,7 @@ with SandboxBD() as bd:
     checks.ok(not store.has_sample("PHANTOM"),
               "the store in memory does not hold a Sample whose save "
               "failed")
-    checks.ok(not bd.sample_store().has_sample("PHANTOM"),
+    checks.ok(not store.has_sample("PHANTOM"),
               "and neither does the disk")
     checks.ok(store.has_sample("R001"),
               "while everything that WAS saved is still there")
@@ -435,7 +439,9 @@ checks.section("2026-08: RAW was stored by reference")
 #   the sensor, quietly editable by any later caller.
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    # THE ARCHIVE: this regression is about a failed FILE
+    # write, and the session never reaches a file.
+    store = bd.sample_database().archive()
     store.create("R001", 1)
     store.set_state("R001", "LOADED")
 
@@ -446,7 +452,7 @@ with SandboxBD() as bd:
     raw["white"]["INJECTED"] = 1.0
     raw["EXTRA_BLOCK"] = {"A": 1.0}
 
-    stored = bd.sample_store().get_sample("R001")["measurements"][0]["raw"]
+    stored = store.get_sample("R001")["measurements"][0]["raw"]
 
     checks.close(stored["white"]["A"], 1.0,
                  "editing the caller's dict does not change stored RAW")
@@ -771,6 +777,112 @@ checks.ok(ok_probe.get("available") is True,
 
 checks.ok((ok_probe.get("channels_compared") or 0) >= len(BD_CHANNELS),
           "over every channel both sides carry")
+
+
+# ======================================================================
+checks.section("a slot the BOARD says is occupied is not shown as empty")
+
+# FOUND ON THE BENCH, 2026-08-28, during the real-UI qualification.
+#
+# SYMPTOM. Measure a sample, close the client, start it again, open
+# Tools -> Clear Physical Slot. Every slot printed EMPTY, and clearing
+# slot 1 answered "Slot 1 is already empty" - over a cup the firmware
+# was reporting as occupied and that the operator could see soil in.
+#
+# ROOT CAUSE. `slot_view` merges two facts: `state`, the PC's Sample
+# lifecycle, and `occupied`, what the FIRMWARE believes about the cup.
+# It has carried `occupied` from the beginning and NOTHING READ IT -
+# every screen decided from `state` alone. That was survivable while
+# the working set was persisted, because the state came back with the
+# file. The working set is this process's memory now, so after any
+# client restart `state` is EMPTY for every slot while the board still
+# knows which cups have soil in them.
+#
+# THE DANGEROUS HALF was not the un-clearable slot. `menu_prepare` used
+# the same test, so it would happily prepare a new Sample into a slot
+# the firmware reported as occupied - and its next line is "the rover
+# arm can now deposit soil".
+
+from fakes.storage import sandbox_mission                     # noqa: E402
+from fakes.esp32 import loopback_link                         # noqa: E402
+from workflow import measure as measure_screens               # noqa: E402
+from workflow import status as ui_status                      # noqa: E402
+from BD.samples import STATE_EMPTY                            # noqa: E402
+
+bench_link, bench_port, bench_loop = loopback_link(serial_link)
+bench_mission, bench_bd = sandbox_mission(bench_link)
+
+try:
+    bench_link.connect_servo()
+    bench_link.sync_position(load_slot=1)
+    bench_link.select_slot(1, sample_id="R-OCCUPIED")
+
+    # A real acquisition, so the FIRMWARE marks the slot occupied.
+    bench_mission.session.create("R-OCCUPIED", 1)
+    bench_link.measure_raw(1, sample_id="R-OCCUPIED")
+
+    # THE CLIENT RESTARTS: a new working set, the same board.
+    bench_mission.session.clear()
+
+    status = bench_mission.hardware_status()
+    view = bench_mission.slot_view(status)
+    entry = bench_mission.entry_for(view, 1)
+
+    checks.equal(entry["state"], STATE_EMPTY,
+                 "after a client restart the PC has no lifecycle state "
+                 "for the slot")
+    checks.ok(entry["occupied"],
+              "while the firmware still reports the cup as occupied")
+
+    checks.equal(ui_status.slot_state_label(entry), "OCCUPIED (device)",
+                 "the slot is shown as OCCUPIED (device), not EMPTY - "
+                 "the screen may not report a cup as free because this "
+                 "process forgot about it")
+
+    checks.ok(not ui_status.slot_is_free(entry),
+              "and it is NOT offered as free to prepare into")
+
+    checks.ok(ui_status.slot_needs_clearing(entry),
+              "while Clear Physical Slot does have something to do")
+
+    # The screens themselves, driven.
+    _value, prepared, _console = run_screen(
+        ["S-SECOND", "", "", "", "", "", ""],
+        lambda: measure_screens.menu_prepare(bench_mission, status, view),
+        exhausted="0")
+
+    checks.ok("reports soil in slot 1" in prepared,
+              "menu_prepare REFUSES the slot and says why")
+
+    checks.ok(not bench_mission.session.has_sample("S-SECOND"),
+              "and no second Sample was created over the first one")
+
+    _value, cleared, _console = run_screen(
+        ["1", "y", ""],
+        lambda: measure_screens.menu_clear_slot(
+            bench_mission, status, view),
+        exhausted="0")
+
+    checks.ok("already empty" not in cleared,
+              "menu_clear_slot no longer calls an occupied slot empty")
+
+    checks.ok("record could not be updated" not in cleared,
+              "and clearing a slot with no PC record is not reported as "
+              "a half-failed save")
+
+    after = bench_mission.link.get_status()
+    slots = {s["slot_id"]: s for s in (after.get("slots") or [])}
+
+    checks.ok(not slots[1]["occupied"],
+              "the slot really was freed on the device")
+
+    checks.ok(slots[1]["has_measurement"],
+              "and the acquisition taken from it was KEPT - clearing a "
+              "cup is not deleting a measurement")
+
+finally:
+    bench_link.close()
+    bench_bd.close()
 
 
 # ======================================================================

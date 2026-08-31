@@ -8,8 +8,11 @@ AS7265x that speaks the actual virtual-register protocol, so the driver
 under test is exercised rather than replaced.
 """
 
+import atexit
+import shutil
 import struct
 import sys
+import tempfile
 import time
 import types
 from pathlib import Path
@@ -989,6 +992,7 @@ def install_machine(device, servo=None):
 # boot.py's do-nothing. tools/device.py asserts the two agree.
 ESP32_MODULES = (
     "boot", "main", "config", "sensor", "servo", "carousel", "protocol",
+    "retention",
 )
 
 
@@ -1021,6 +1025,46 @@ def load_esp32(device, servo=None):
     return servo
 
 
+# Every temporary retention directory this process has handed out, so
+# `atexit` can remove them. They are tiny, but a suite that builds a
+# hundred firmwares would otherwise leave a hundred directories behind.
+_RETENTION_SANDBOXES = []
+
+
+def sandbox_retention(config):
+    """
+    Point the firmware's retained-acquisition store at a temporary dir.
+
+    THE FIRMWARE WRITES TO A FILESYSTEM, AND ON THE HOST THAT IS THIS
+    ONE. `retention.py` keeps un-imported acquisitions in
+    `config.RETAINED_DIR`, which on the device is `/retained`. Imported
+    here, that is an absolute path on the developer's own drive: the
+    first run of the feature created it at the root of C: and left two
+    spectra in it, and because the path is fixed, the NEXT fake device
+    loaded them back and reported samples no test had measured.
+
+    So every built firmware gets its own empty directory. Two
+    consequences the tests depend on: a fake device starts with nothing
+    retained, and one test's measurements cannot be seen by another.
+    """
+    directory = tempfile.mkdtemp(prefix="freya-retained-")
+
+    config.RETAINED_DIR = directory
+    _RETENTION_SANDBOXES.append(directory)
+
+    return directory
+
+
+def _clear_retention_sandboxes():
+    for directory in _RETENTION_SANDBOXES:
+        shutil.rmtree(directory, ignore_errors=True)
+
+    del _RETENTION_SANDBOXES[:]
+
+
+atexit.register(_clear_retention_sandboxes)
+
+
 def shrink_timings(config):
     """
     Take the real hardware settling delays out of a test run.
@@ -1049,7 +1093,8 @@ def shrink_timings(config):
     return config
 
 
-def build_firmware(device=None, servo=None, bring_up_sensor=True):
+def build_firmware(device=None, servo=None, bring_up_sensor=True,
+                   retained_dir=None):
     """
     A freshly loaded firmware instance, wired to fake hardware.
 
@@ -1066,6 +1111,14 @@ def build_firmware(device=None, servo=None, bring_up_sensor=True):
     `bring_up_sensor` runs the sensor's first initialization eagerly,
     for the tests that want a ready sensor without going through a
     command.
+
+    `retained_dir` REUSES A DEVICE FILESYSTEM instead of making a fresh
+    one. That is what makes a simulated reset honest: rebuilding the
+    firmware is how this harness models a reboot, and a reboot does not
+    reformat the flash. Without it, every simulated reset would silently
+    hand the board an empty retained-acquisition store and the tests
+    could not tell "the device kept it" from "the harness threw it
+    away".
     """
     if device is None:
         device = FakeAS7265X()
@@ -1076,6 +1129,12 @@ def build_firmware(device=None, servo=None, bring_up_sensor=True):
     import config
 
     shrink_timings(config)
+
+    if retained_dir is None:
+        sandbox_retention(config)
+
+    else:
+        config.RETAINED_DIR = str(retained_dir)
 
     import main
     import protocol

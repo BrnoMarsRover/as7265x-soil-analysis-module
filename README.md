@@ -761,7 +761,17 @@ Loader: Slot 1    Scanner: Slot 5
 [q] Exit
 ```
 
-Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot.
+Everything secondary lives behind `[t]`: Sample Database, System Status, Re-sync Carousel, Servo / Carousel Test, Sensor Test, Clear Physical Slot, Import ESP32 Acquisitions, Decision Learning Database.
+
+**The Sample Database shows all three stores at once.** A Sample can be on the ESP32, in the PC session, in the PC archive, or in any combination, and the table has a column for each:
+
+```text
+#    Sample       Slot  ESP32  SESSION  ARCHIVE  State       M   A Interpretation
+1    s01          1     yes    yes      yes      MEASURED    1   1 iron_oxide
+2    s02          2     yes    yes       -       MEASURED    1   1 AMBIGUOUS_SET
+```
+
+Every destructive option names exactly one store — *Delete a sample from the ESP32*, *…from the PC session*, *…from the PC archive*, *Delete ALL samples from the ESP32*, *Clear the PC session working set* — and every confirmation prints what survives it. There is deliberately no "Delete sample".
 
 **Sensor Test is one command.** The operator never has to decide which internal layer to test: it runs the whole chain — ESP32 sensor recovery, I2C, internal devices, configuration, illumination, a new 18-channel acquisition, then the PC's dark correction, normalization and database comparison — through the production code path, prints every stage as PASS or FAIL, and saves nothing.
 
@@ -788,14 +798,27 @@ MEASURE SAMPLE
     ↓        PC      receives RAW
     ↓        BD      validation, C = S - D, R = (S-D)/(W-D)
     ↓        BD      comparison against ALL materials, interpretation
-    ↓        PC      completes and saves the SAME record
+    ↓        PC      completes the SAME record in the SESSION
     ↓
 state = MEASURED, soil still physically in the slot
     ↓
+    ↓        the acquisition is now in TWO places:
+    ↓          ESP32     its own RAM buffer, until the board resets
+    ↓          SESSION   the PC's working set for this run
+    ↓
+    ↓        the PC ARCHIVE is NOT touched. It never is, without
+    ↓        an explicit import.
+    ↓
 operator adds location, map point, photo, notes
+    ↓
+IMPORT                         explicitly, when the result is worth keeping
+    ↓        from the ESP32, or from the session working set
+    ↓        a COPY - the source keeps its own record
     ↓
 REPORT
 ```
+
+**Why the session exists at all.** RAW that lives only in ESP32 RAM is one board reset from being gone — and opening the serial port resets the board, so a PC client that crashed and restarted would take the spectrum with it. The session file means a crash costs an ANALYSIS and not an EXPERIMENT. It is durable scaffolding, not an archive: the archive is what the operator has decided to keep.
 
 A typical mid-run state:
 

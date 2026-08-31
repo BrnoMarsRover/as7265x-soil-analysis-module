@@ -63,8 +63,9 @@ import rover_science_client                                 # noqa: E402
 import serial_link                                          # noqa: E402
 from serial_link import DeviceError, LinkError              # noqa: E402
 
+from BD import config as bd_config          # noqa: E402
 from BD import samples as samples_module                     # noqa: E402
-from BD.samples import SampleStore, StorageError            # noqa: E402
+from BD.samples import StorageError, archive_store            # noqa: E402
 
 from workflow import screen                                  # noqa: E402
 from workflow.prompts import OperatorGone, ask, choose       # noqa: E402
@@ -449,7 +450,7 @@ for label, when in (("before the command is written", "before"),
     link.connect_servo()
     link.sync_position(load_slot=1)
     link.select_slot(1, sample_id="S-INT")
-    mission.store.create("S-INT", 1)
+    mission.session.create("S-INT", 1)
 
     durable_before = bd.samples_file.read_bytes()
     writes_before = len(port.written)
@@ -472,9 +473,12 @@ for label, when in (("before the command is written", "before"),
                  "  and the archive is byte-identical - an interrupted "
                  "measurement saves nothing")
 
-    reread = SampleStore(bd.samples_file).load()
-
-    checks.equal(len(reread.get_sample("S-INT").get("measurements") or []),
+    # The LIVE working set, which is where the Measurement would have
+    # been created. Re-reading the file would prove nothing: the
+    # session is never in it, so the check would pass even if an
+    # interrupted measurement had recorded one.
+    checks.equal(len(mission.session.get_sample("S-INT")
+                     .get("measurements") or []),
                  0,
                  "  and no Measurement record was created")
 
@@ -499,7 +503,7 @@ mission, bd = sandbox_mission(link)
 link.connect_servo()
 link.sync_position(load_slot=1)
 link.select_slot(1, sample_id="S-SAVE")
-mission.store.create("S-SAVE", 1)
+mission.session.create("S-SAVE", 1)
 
 acquisition = link.measure_raw(1, sample_id="S-SAVE")
 
@@ -510,16 +514,39 @@ checks.ok(bool(acquisition.get("illuminations")),
 durable_before = bd.samples_file.read_bytes()
 fields = mission.measurement_from_acquisition(acquisition, "S-SAVE")
 
+# RECORDING THE MEASUREMENT TOUCHES NO FILE, so a Ctrl+C aimed at the
+# rename cannot land on it. That is not a weaker test than before - it
+# is the property that replaced the old one: an interrupt during a
+# measurement cannot cost the spectrum, because there is no save to
+# interrupt.
 with interrupting(samples_module.os, "replace", KeyboardInterrupt()):
     kind, detail = outcome(
-        lambda: mission.store.add_measurement("S-SAVE", **fields))
+        lambda: mission.session.add_measurement("S-SAVE", **fields))
 
-checks.equal(detail, "KeyboardInterrupt",
-             "Ctrl+C during the save propagates")
+checks.equal(kind, "ok",
+             "recording the Measurement reaches no rename, so a Ctrl+C "
+             "aimed at one cannot interrupt it")
 
 checks.equal(bd.samples_file.read_bytes(), durable_before,
-             "and the archive is byte-identical - the interrupted save "
-             "wrote nothing")
+             "and the archive is byte-identical - measuring writes "
+             "nothing to it")
+
+# THE INTERRUPT STILL LANDS WHERE A WRITE REALLY HAPPENS.
+with interrupting(samples_module.os, "replace", KeyboardInterrupt()):
+    kind, detail = outcome(
+        lambda: mission.archive.adopt(
+            mission.session.get_sample("S-SAVE")))
+
+checks.equal(detail, "KeyboardInterrupt",
+             "Ctrl+C during an IMPORT propagates")
+
+checks.equal(bd.samples_file.read_bytes(), durable_before,
+             "and the archive is still byte-identical - the interrupted "
+             "import wrote nothing")
+
+checks.ok(mission.archive.get_sample("S-SAVE") is None,
+          "and the in-memory archive matches the file, so nothing shows "
+          "a record the disk does not have")
 
 # The spectra are not lost: the device still holds them, which is the
 # whole reason Sync ESP32 Acquisitions to BD exists.
@@ -554,13 +581,13 @@ for label, target, name in SAVE_POINTS:
     path.write_text('{"schema_version": 4, "samples": []}',
                     encoding="utf-8")
 
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     store.create("S001", 1)
     store.add_measurement("S001", raw={"white": [1] * 18})
 
     durable = path.read_bytes()
     durable_count = len(
-        json.loads(durable)["samples"][0].get("measurements") or [])
+        json.loads(durable)[bd_config.ARCHIVE_COLLECTION][0].get("measurements") or [])
 
     with interrupting(target, name, Terminated("SIGTERM")):
         kind, detail = outcome(
@@ -572,7 +599,7 @@ for label, target, name in SAVE_POINTS:
     checks.equal(path.read_bytes(), durable,
                  "  and the archive on disk is byte-identical")
 
-    reopened = SampleStore(path).load()
+    reopened = archive_store(path).load()
     reopened_count = len(
         reopened.get_sample("S001").get("measurements") or [])
 
@@ -596,7 +623,7 @@ directory = Path(tempfile.mkdtemp(prefix="freya-orphan-"))
 path = directory / "samples.json"
 path.write_text('{"schema_version": 4, "samples": []}', encoding="utf-8")
 
-store = SampleStore(path).load()
+store = archive_store(path).load()
 store.create("REAL", 1)
 durable = path.read_bytes()
 
@@ -618,7 +645,7 @@ orphan.write_text(json.dumps({
     "samples": [{"sample_id": "GHOST", "slot_id": 9, "state": "MEASURED"}],
 }), encoding="utf-8")
 
-restarted = SampleStore(path).load()
+restarted = archive_store(path).load()
 
 checks.ok(restarted.get_sample("GHOST") is None,
           "a temporary file left by a killed process is not read as "
@@ -637,7 +664,7 @@ checks.ok(orphan.exists(),
 # The restarted process must be able to write normally.
 restarted.add_measurement("REAL", raw={"white": [3] * 18})
 
-checks.equal(SampleStore(path).load().get_sample("REAL")["measurements"]
+checks.equal(archive_store(path).load().get_sample("REAL")["measurements"]
              .__len__(), 1,
              "and the next save works normally beside the orphan")
 
@@ -665,13 +692,13 @@ for label, target, name, exception in FAILURES:
     path.write_text('{"schema_version": 4, "samples": []}',
                     encoding="utf-8")
 
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     store.create("S001", 1)
     store.add_measurement("S001", raw={"white": [1] * 18})
 
     durable_count = len(
         json.loads(path.read_text(encoding="utf-8"))
-        ["samples"][0].get("measurements") or [])
+        [bd_config.ARCHIVE_COLLECTION][0].get("measurements") or [])
 
     with interrupting(target, name, exception):
         outcome(lambda: store.add_measurement(
@@ -681,7 +708,7 @@ for label, target, name, exception in FAILURES:
     # memory of what the previous one was holding.
     del store
 
-    restarted = SampleStore(path).load()
+    restarted = archive_store(path).load()
     restarted_count = len(
         restarted.get_sample("S001").get("measurements") or [])
 
@@ -698,7 +725,7 @@ for label, target, name, exception in FAILURES:
     restarted.add_measurement("S001", raw={"white": [4] * 18})
 
     checks.equal(
-        len(SampleStore(path).load()
+        len(archive_store(path).load()
             .get_sample("S001").get("measurements") or []),
         durable_count + 1,
         "  and the next save after the restart works")
@@ -729,7 +756,10 @@ class BrokenStdout(io.StringIO):
 
 link, port, loopback = loopback_link(serial_link)
 mission, bd = sandbox_mission(link)
-mission.store.create("S001", 1)
+
+# In the ARCHIVE, because the last check of this case counts what is in
+# the FILE afterwards. A session Sample is never in one.
+mission.archive.create("S001", 1)
 
 broken = BrokenStdout(break_after=3)
 saved_stdout = sys.stdout
@@ -739,7 +769,7 @@ try:
     from workflow.records import print_full_sample
 
     kind, detail = outcome(
-        lambda: print_full_sample(mission.store.get_sample("S001")))
+        lambda: print_full_sample(mission.archive.get_sample("S001")))
 
 finally:
     sys.stdout = saved_stdout
@@ -752,7 +782,7 @@ checks.equal(detail, "BrokenPipeError",
              "as BrokenPipeError, which is what the OS reported")
 
 # The archive must be untouched by a display failure.
-checks.equal(SampleStore(bd.samples_file).load().count(), 1,
+checks.equal(archive_store(bd.samples_file).load().count(), 1,
              "and the archive is unaffected - a screen that could not "
              "print changed no data")
 

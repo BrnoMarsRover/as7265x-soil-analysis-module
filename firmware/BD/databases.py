@@ -1,15 +1,15 @@
 """
-Reference material databases and the legacy White/Dark references.
+The reference material databases: DB1, DB2 and DB3.
 
 PERSISTENCE ONLY. This module loads, validates the structure of, and
 reports on scientific data files. It computes no similarity, no
 reflectance and no ranking — those moved to Science/metrics/ and
 Science/analysis.py when the layers were separated (see Documentation/ARCHITECTURE.md).
 
-Both files here are PROTECTED SCIENTIFIC DATA and are opened read-only.
+Everything here is PROTECTED SCIENTIFIC DATA and is opened read-only.
 There is deliberately no save/write path in this module: normal operation
-must never be able to modify DB1 or the legacy references, and a bug
-cannot corrupt what it cannot open for writing.
+must never be able to modify DB1, DB2 or DB3, and a bug cannot corrupt
+what it cannot open for writing.
 
 Layer rule: BD must never import Science.
 """
@@ -71,96 +71,20 @@ def _load_json(path, what):
 
 
 # ----------------------------------------------------------------------
-# the legacy White / Dark
+# THE LEGACY WHITE / DARK IS NOT HERE
 # ----------------------------------------------------------------------
-
-class References:
-    """
-    The one White and one Dark accepted before the competition.
-
-    Normal operation never measures a new White or Dark through this
-    class, and the operator is never asked to recalibrate it. Every
-    comparison against DB1 is normalized against this same immutable
-    pair, which is what makes DB1 mean anything at all.
-
-    A NEW full spectral calibration does not replace this — it lives
-    alongside it. See BD/repositories/calibrations.py.
-    """
-
-    kind = "LEGACY"
-    protected = True
-
-    def __init__(self, path=None):
-        self.path = path or config.REFERENCES_FILE
-        self.calibration_id = config.LEGACY_CALIBRATION_ID
-
-        data = _load_json(self.path, "references.json")
-
-        self.white, self.white_missing = self._extract(data, "white")
-        self.dark, self.dark_missing = self._extract(data, "dark")
-
-        problems = []
-
-        if self.white_missing:
-            problems.append(
-                "white is missing channels {}".format(
-                    ",".join(self.white_missing)
-                )
-            )
-
-        if self.dark_missing:
-            problems.append(
-                "dark is missing channels {}".format(
-                    ",".join(self.dark_missing)
-                )
-            )
-
-        if problems:
-            raise DatabaseError(
-                "REFERENCES_INCOMPLETE",
-                "{}: {}".format(self.path, "; ".join(problems)),
-            )
-
-    @staticmethod
-    def _extract(data, key):
-        values = data.get(key)
-
-        if values is None:
-            return {}, list(CHANNELS)
-
-        missing = validate_spectrum(values)
-
-        return copy_channels(values), missing
-
-    def zero_denominator_channels(self):
-        """
-        Channels where White - Dark is zero.
-
-        Reflectance is undefined there; normalize() reports 0.0 for
-        them, and the operator deserves to know which ones.
-        """
-        return [
-            channel for channel in CHANNELS
-            if (self.white[channel] - self.dark[channel]) == 0.0
-        ]
-
-    def status(self):
-        return {
-            "kind": self.kind,
-            "file": str(self.path),
-            "calibration_id": self.calibration_id,
-            "protected": True,
-            "database": str(config.DB1_FILE),
-            "illuminations": ["white"],
-            "white_channels": len(CHANNELS) - len(self.white_missing),
-            "dark_channels": len(CHANNELS) - len(self.dark_missing),
-            "channels_required": len(CHANNELS),
-            "zero_denominator_channels": self.zero_denominator_channels(),
-            "read_only": True,
-            "note": "Immutable. The only calibration ever used to compare "
-                    "a measurement against DB1.",
-        }
-
+# It used to be: a `References` class in this module, reading its own
+# a `References` class reading its own file. It is a CALIBRATION -
+# the immutable
+# White/Dark DB1 was measured against - and it now lives where every
+# other calibration lives, as a protected record inside the one
+# calibration database:
+#
+#     BD.calibrations.CalibrationStore().legacy()  ->  LegacyCalibration
+#
+# Same numbers, same immutability, same `.white` / `.dark` /
+# `.calibration_id` / `.status()`. One fewer file that could disagree
+# with the calibration subsystem it belongs to.
 
 # ----------------------------------------------------------------------
 # reference materials

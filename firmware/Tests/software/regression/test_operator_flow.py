@@ -162,7 +162,7 @@ with OperatorBench(servo=stuck_encoder()) as bench:
     checks.equal(len(servo.goals), 1,
                  "exactly one relative movement was ever transmitted")
 
-    measurements = bench.mission.store.get_sample("s0007")["measurements"]
+    measurements = bench.mission.session.get_sample("s0007")["measurements"]
 
     checks.equal(len(measurements), 1,
                  "one measurement record was written")
@@ -292,7 +292,7 @@ with OperatorBench(sensor=support.FakeAS7265X(data_ready=False)) as bench:
 
     run = bench.run(["4", "0", "q"])
 
-    sample = bench.mission.store.get_sample("s0007")
+    sample = bench.mission.session.get_sample("s0007")
     measurements = sample["measurements"]
 
     checks.ok(all(m["acquisition_status"] == "FAILED"
@@ -335,7 +335,7 @@ with OperatorBench(servo=stuck_on_return()) as bench:
     checks.ok("POSITION UNKNOWN" in recovery,
               "while the carousel position is not trusted")
 
-    sample = bench.mission.store.get_sample("s0007")
+    sample = bench.mission.session.get_sample("s0007")
     measurement = sample["measurements"][-1]
 
     checks.equal(measurement["acquisition_status"], "SUCCESS",
@@ -733,7 +733,7 @@ with OperatorBench() as bench:
     bench.bring_up().loaded_sample()
     bench.run(["4", "", "n", "", "q"])
 
-    measurement = bench.mission.store.get_sample(
+    measurement = bench.mission.session.get_sample(
         "s0007")["measurements"][-1]
     quality = bench.mission.analyse_measurement(measurement).get("quality")
 

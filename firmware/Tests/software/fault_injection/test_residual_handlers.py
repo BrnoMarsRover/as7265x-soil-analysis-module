@@ -303,14 +303,16 @@ with SandboxBD() as bd:
     from workflow.session import Mission                     # noqa: E402
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
 
     status_failure = counting_raiser(RuntimeError("the archive is gone"))
 
-    with patched(type(mission.store), "status", status_failure):
+    with patched(type(mission.session), "status", status_failure):
         saved = sys.stdout
         sys.stdout = io.StringIO()
 
@@ -458,8 +460,8 @@ checks.ok(mission.registry.databases["DB2"].ready,
 
 from BD.channels import CHANNELS                             # noqa: E402
 
-mission.store.create("S-DB2", 1)
-measurement = mission.store.add_measurement(
+mission.session.create("S-DB2", 1)
+measurement = mission.session.add_measurement(
     "S-DB2",
     raw={
         name: {channel: 1000.0 + index * 7

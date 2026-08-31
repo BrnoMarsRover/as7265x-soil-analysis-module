@@ -95,8 +95,7 @@ checks.ok(len(BEFORE) >= 8,
           "{} protected files are being watched".format(len(BEFORE)))
 
 for name in ("DB1/DB1.json", "DB2/DB2.json", "DB3/DB3.json",
-             "calibration/calibrations.json",
-             "calibration/calibration_legacy.json"):
+             "calibration/calibration.json"):
     checks.ok(name in BEFORE,
               "{} is one of them".format(name))
 
@@ -108,7 +107,11 @@ checks.section("every store, written through, lands in the sandbox")
 # files are re-hashed.
 
 with SandboxBD() as sandbox:
-    store = sandbox.sample_store()
+    # THE ARCHIVE, because this section proves that writes LAND IN THE
+    # SANDBOX FILE rather than the real BD. The session writes to no
+    # file at all, so it could not tell the two apart - the size check
+    # below would have failed over a store that was working correctly.
+    store = sandbox.sample_database().archive()
 
     for index in range(1, 6):
         sample_id = "INTEGRITY-{:03d}".format(index)
@@ -141,6 +144,16 @@ with SandboxBD() as sandbox:
 
     checks.ok(sandbox.samples_file.stat().st_size > 100,
               "the sandbox file really grew - the writes went somewhere")
+
+    # AND THE WORKING SET REACHES NO FILE AT ALL, which is the other
+    # half of "the writes went where they were supposed to".
+    before = sandbox.samples_file.stat().st_size
+    sandbox_session = sandbox.sample_database().session()
+    sandbox_session.create("INTEGRITY-SESSION", 1)
+
+    checks.equal(sandbox.samples_file.stat().st_size, before,
+                 "while a SESSION Sample grows no file - it is the run "
+                 "in progress, not stored science")
 
 after_writes = snapshot()
 changed = sorted(name for name in set(BEFORE) | set(after_writes)
@@ -207,12 +220,12 @@ checks.section("the store defaults are the real files, and are not used")
 # it is where the mission's records belong. What matters is that no
 # test constructs a store without saying where.
 
-from BD.samples import SampleStore                            # noqa: E402
+from BD.samples import session_store                            # noqa: E402
 
-default_store = SampleStore()
+default_store = session_store()
 
 checks.equal(default_store.path, bd_config.SAMPLES_FILE,
-             "SampleStore() with no argument means the real archive - "
+             "session_store() with no argument means the real archive - "
              "which is right, and is exactly why a test must never do "
              "it")
 
@@ -247,10 +260,11 @@ checks.section("the reference libraries are readable and self-consistent")
 # Reading them is safe, and worth doing: a database that will not parse
 # is a mission that stops at the first measurement.
 
-from BD.databases import MaterialDatabase, References        # noqa: E402
+from BD.calibrations import CalibrationStore
+from BD.databases import MaterialDatabase        # noqa: E402
 from BD.registry import DatabaseRegistry                     # noqa: E402
 
-references = References()
+references = CalibrationStore().legacy()
 
 checks.equal(len(references.dark), 18,
              "the legacy dark reference has all 18 channels")

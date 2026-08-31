@@ -63,8 +63,9 @@ from serial_link import (                                   # noqa: E402
     SerialLink,
 )
 
+from BD import config as bd_config          # noqa: E402
 from BD import samples as samples_module                     # noqa: E402
-from BD.samples import SampleStore, StorageError            # noqa: E402
+from BD.samples import StorageError, archive_store            # noqa: E402
 
 from fakes import FakeSerialPort, open_link                  # noqa: E402
 from fakes.serial_port import make_serial_module             # noqa: E402
@@ -381,8 +382,8 @@ directory = Path(tempfile.mkdtemp(prefix="freya-two-"))
 path = directory / "samples.json"
 path.write_text('{"schema_version": 4, "samples": []}', encoding="utf-8")
 
-first = SampleStore(path).load()
-second = SampleStore(path).load()
+first = archive_store(path).load()
+second = archive_store(path).load()
 
 first.create("A001", 1)
 second.create("B001", 2)
@@ -391,13 +392,15 @@ second.create("B001", 2)
 # the second write was built from a snapshot taken before the first,
 # so A001 is not in it.
 final = json.loads(path.read_text(encoding="utf-8"))
-names = sorted(record["sample_id"] for record in final["samples"])
+names = sorted(record["sample_id"]
+               for record in final[bd_config.ARCHIVE_COLLECTION])
 
 checks.equal(names, ["B001"],
              "two processes writing the same archive is LAST WRITER "
              "WINS - the first process's sample is not in the file")
 
-checks.ok(isinstance(final.get("samples"), list),
+checks.ok(isinstance(final.get(bd_config.ARCHIVE_COLLECTION), list)
+          and isinstance(final.get(bd_config.ARCHIVE_COLLECTION), list),
           "but the file is never left corrupt or half-written - that is "
           "what os.replace buys, and it is all it buys")
 
@@ -413,7 +416,7 @@ checks.ok(True,
 
 # A reader that reloads sees the truth on disk, which is the recovery
 # an operator has: restart the client.
-reloaded = SampleStore(path).load()
+reloaded = archive_store(path).load()
 checks.equal(reloaded.count(), 1,
              "and reopening the archive shows exactly what is durable")
 
@@ -700,11 +703,11 @@ for name, label in AWKWARD:
     nested.mkdir(parents=True, exist_ok=True)
     archive = nested / "samples.json"
 
-    store = SampleStore(archive).load()
+    store = archive_store(archive).load()
     store.create("S001", 1)
     store.add_measurement("S001", raw={"white": [1] * 18})
 
-    reread = SampleStore(archive).load()
+    reread = archive_store(archive).load()
 
     checks.equal(reread.count(), 1,
                  "an archive under a directory whose name has {} is "
@@ -802,7 +805,13 @@ def render_on(encoding, record, apply_fix):
 
 
 bd = SandboxBD()
-store = bd.sample_store()
+
+# THE ARCHIVE, because the last two checks here are about what reached
+# the FILE. The session is this process's memory and writes nothing, so
+# a record created in it could never appear in samples.json - and the
+# question being asked is whether UTF-8 survives the encoder, not
+# whether the terminal can draw it.
+store = bd.sample_database().archive()
 store.create("S001", 1, metadata={"note": CZECH_NOTE,
                                   "location": CZECH_PLACE})
 record = store.get_sample("S001")

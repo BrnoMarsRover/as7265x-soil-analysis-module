@@ -210,11 +210,21 @@ class LoopbackDevice:
     """
 
     def __init__(self, lie=None, bring_up_sensor=True, device=None,
-                 servo=None):
+                 servo=None, retained_dir=None):
         self.lie = dict(lie or {})
         self.bring_up_sensor = bring_up_sensor
         self._device = device
         self._servo = servo
+
+        # THE DEVICE'S FILESYSTEM, WHICH OUTLIVES ITS FIRMWARE.
+        #
+        # Setting `service = None` and calling build() again is how a
+        # reset is modelled, and a reset does not erase flash. Holding
+        # the directory here means the rebuilt firmware comes up on the
+        # same filesystem it went down on - so a test can prove that
+        # retained acquisitions survive a reboot, and would notice if
+        # they stopped.
+        self.retained_dir = retained_dir
 
         self.main = None
         self.service = None
@@ -234,7 +244,12 @@ class LoopbackDevice:
          self.fake_servo) = support.build_firmware(
             device=self._device, servo=self._servo,
             bring_up_sensor=self.bring_up_sensor,
+            retained_dir=self.retained_dir,
         )
+
+        # Whatever directory the first build was given, every later one
+        # gets the same.
+        self.retained_dir = self.config.RETAINED_DIR
 
         self.fake_sensor = self.service.fake_sensor
 

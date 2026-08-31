@@ -113,6 +113,17 @@ VERIFICATION_LEVELS = (VERIFIED, OPERATOR_ASSERTED, UNVERIFIED, UNKNOWN)
 TRUSTED_LEVELS = (VERIFIED,)
 TRAINABLE_LEVELS = (VERIFIED, OPERATOR_ASSERTED)
 
+# How the target material of an experiment was established. NULL is a
+# fifth state and the important one: it means AMBIGUOUS, and it is what
+# a historical mixture with two library components gets.
+TARGET_EXACT_LABEL = "EXACT_LABEL"
+TARGET_SOLE_COMPONENT = "SOLE_COMPONENT"
+TARGET_OPERATOR_STATED = "OPERATOR_STATED"
+
+TARGET_SOURCES = (
+    TARGET_EXACT_LABEL, TARGET_SOLE_COMPONENT, TARGET_OPERATOR_STATED,
+)
+
 # A ground-truth source that names a model is refused outright: see rule 1.
 FORBIDDEN_LABEL_SOURCES = (
     "decision_model", "model", "prediction", "inference", "classifier",
@@ -307,6 +318,117 @@ def normalize_mixture(components):
     return cleaned
 
 
+def derive_target(label_type, material_key, components):
+    """
+    Which library material an experiment was ABOUT, or None.
+
+    Returns (target_material_key, target_source). None means AMBIGUOUS
+    and is a real answer, not a failure.
+
+        EXACT_MATERIAL          -> the material itself. A pure sample
+                                   is the 100% case of its own dataset.
+
+        PREPARED_MIXTURE with
+        exactly one COMPONENT
+        carrying a library
+        material               -> that material. Everything else in the
+                                   mixture is matrix, which is recorded
+                                   in full and is not a target.
+
+        anything else          -> None.
+
+    THE LAST LINE IS THE POINT. A historical mixture of Iron(III) Oxide
+    Red and Activated Carbon, with nothing recorded about which was
+    being studied, has no derivable target. Assigning one would be
+    fabricating provenance, so it stays NULL and the screens call it
+    ambiguous. An operator can state it later; nothing else may.
+
+    A MATERIAL_FAMILY label names a family and not a material, and
+    UNKNOWN_SAMPLE / NO_LABEL name nothing at all - none of them can
+    found a material dataset.
+    """
+    if label_type == LABEL_EXACT_MATERIAL and material_key:
+        return material_key, TARGET_EXACT_LABEL
+
+    if label_type == LABEL_PREPARED_MIXTURE:
+        named = [
+            component for component in components or []
+            if component.get("role") == ROLE_COMPONENT
+            and component.get("material_key")
+        ]
+
+        if len(named) == 1:
+            return named[0]["material_key"], TARGET_SOLE_COMPONENT
+
+    return None, None
+
+
+OUTCOME_EXACT = "EXACT"
+OUTCOME_FAMILY = "FAMILY"
+OUTCOME_WRONG = "WRONG"
+OUTCOME_ABSTAINED = "ABSTAINED"
+
+PREDICTION_OUTCOMES = (
+    OUTCOME_EXACT, OUTCOME_FAMILY, OUTCOME_WRONG, OUTCOME_ABSTAINED,
+)
+
+# What each outcome MEANS, in words an operator can act on. `None` in a
+# prediction row is four different things depending on the level the
+# model answered at, and printing the bare word None for all of them is
+# what made the old confusion table unreadable.
+OUTCOME_MEANING = {
+    OUTCOME_EXACT: "named the material, and it was right",
+    OUTCOME_FAMILY: "named the right family, without the material",
+    OUTCOME_WRONG: "named something else",
+    OUTCOME_ABSTAINED: "gave no material answer",
+}
+
+
+def classify_prediction(row):
+    """
+    One prediction against one operator label: which of four outcomes.
+
+    NOT a right/wrong pair. The model has four levels and they are not
+    interchangeable - abstaining on a genuinely ambiguous sample is
+    correct behaviour, and scoring it as a miss would push a model
+    towards guessing, which is precisely the failure mode this whole
+    architecture exists to prevent.
+
+        EXACT       the named material matches the established truth
+        FAMILY      no material named, or the wrong one, but the family
+                    is right
+        WRONG       a material or family was named and neither matches
+        ABSTAINED   the model returned UNKNOWN
+
+    `row` is a prediction joined to its ground truth: level,
+    predicted_material, predicted_family, truth_material, truth_family.
+    """
+    level = row.get("level")
+    predicted_material = row.get("predicted_material")
+    predicted_family = row.get("predicted_family")
+
+    truth_material = row.get("truth_material") or row.get("target")
+    truth_family = row.get("truth_family")
+
+    if predicted_material and truth_material:
+        if predicted_material == truth_material:
+            return OUTCOME_EXACT
+
+    if predicted_family and truth_family:
+        if predicted_family == truth_family:
+            return OUTCOME_FAMILY
+
+    if predicted_material or predicted_family:
+        return OUTCOME_WRONG
+
+    if level in ("UNKNOWN", None):
+        return OUTCOME_ABSTAINED
+
+    # A level such as AMBIGUOUS_SET with no material and no family
+    # named. The model answered, and its answer identified nothing.
+    return OUTCOME_ABSTAINED
+
+
 def hash_payload(payload):
     """
     Stable SHA256 of a JSON-serialisable payload.
@@ -372,8 +494,34 @@ CREATE TABLE IF NOT EXISTS ground_truth (
     verification_status TEXT NOT NULL,
     verification_source TEXT,
     certainty           REAL,
-    note                TEXT
+    note                TEXT,
+
+    -- WHICH MATERIAL THIS EXPERIMENT WAS ABOUT.
+    --
+    -- Experiments are material-centric: "Activated Carbon at 100%,
+    -- 50%, 30% and 10% in soil" is ONE dataset with four observations
+    -- in it, and browsing the history by anything else scatters it.
+    -- The target is the library material under study.
+    --
+    -- It is DERIVED where the derivation is provable and NULL where it
+    -- is not. `target_source` says which:
+    --
+    --   EXACT_LABEL      the label names the material outright
+    --   SOLE_COMPONENT   a prepared mixture with exactly one library
+    --                    component; whatever else is in it is matrix
+    --   OPERATOR_STATED  the operator said so, explicitly
+    --   NULL             ambiguous. A mixture of two library materials
+    --                    with nothing recorded about which one was
+    --                    being studied is exactly that, and guessing
+    --                    would put a scientific claim in the database
+    --                    that nobody ever made.
+    --
+    -- Never filled from a prediction. A model that says "Activated
+    -- Carbon" does not make this an Activated Carbon experiment.
+    target_material_key TEXT,
+    target_source       TEXT
 );
+
 
 -- The components of a PREPARED mixture, one row each.
 --
@@ -520,6 +668,174 @@ class DecisionLearningStore:
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)",
                 ("created_at", utc_now()),
             )
+
+        self.migrate()
+
+    # ------------------------------------------------------------------
+    # migration
+    # ------------------------------------------------------------------
+
+    def stored_schema_version(self):
+        row = self.connection.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()
+
+        try:
+            return int(row["value"]) if row else None
+
+        except (TypeError, ValueError):
+            return None
+
+    def _columns(self, table):
+        return {
+            row["name"]
+            for row in self.connection.execute(
+                "PRAGMA table_info({})".format(table)
+            )
+        }
+
+    def migrate(self):
+        """
+        Bring an older database up to the current schema, in place.
+
+        NOTHING IS RECREATED AND NOTHING IS DROPPED. Every observation,
+        every label, every component and every historical prediction
+        stays exactly where it is; the migration only adds what the new
+        schema needs and fills it in where filling it in is PROVABLE.
+
+        Returns what it did, so a caller can report it.
+        """
+        version = self.stored_schema_version()
+        report = {"from": version, "to": SCHEMA_VERSION, "changes": []}
+
+        if version == SCHEMA_VERSION:
+            return report
+
+        columns = self._columns("ground_truth")
+
+        with self.connection:
+            if "target_material_key" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE ground_truth "
+                    "ADD COLUMN target_material_key TEXT"
+                )
+                report["changes"].append(
+                    "ground_truth.target_material_key added"
+                )
+
+            if "target_source" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE ground_truth ADD COLUMN target_source TEXT"
+                )
+                report["changes"].append("ground_truth.target_source added")
+
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS ground_truth_target "
+                "ON ground_truth (target_material_key)"
+            )
+
+        report["targets"] = self.backfill_targets()
+
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                ("schema_version", str(SCHEMA_VERSION)),
+            )
+            self.connection.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                ("migrated_at", utc_now()),
+            )
+
+        return report
+
+    def backfill_targets(self):
+        """
+        Derive the target material of every existing label, where provable.
+
+        AND ONLY WHERE PROVABLE. A row this cannot decide is left NULL
+        and shows up in the UI as ambiguous, which is the honest answer
+        - the alternative is inventing a scientific claim about which
+        material a historical experiment was studying, and no amount of
+        plausibility makes that a record.
+        """
+        derived = {"resolved": 0, "ambiguous": 0, "not_a_material": 0}
+
+        rows = list(self.connection.execute(
+            "SELECT measurement_id, label_type, material_key, "
+            "target_material_key, target_source FROM ground_truth"
+        ))
+
+        for row in rows:
+            if row["target_source"] in TARGET_SOURCES:
+                # Already established, including by an operator. Never
+                # recomputed - a stated target outranks a derived one.
+                derived["resolved"] += 1
+
+                continue
+
+            target, source = derive_target(
+                row["label_type"],
+                row["material_key"],
+                self.components(row["measurement_id"]),
+            )
+
+            if target is None:
+                if row["label_type"] in (LABEL_EXACT_MATERIAL,
+                                         LABEL_PREPARED_MIXTURE):
+                    derived["ambiguous"] += 1
+                else:
+                    derived["not_a_material"] += 1
+
+                continue
+
+            with self.connection:
+                self.connection.execute(
+                    "UPDATE ground_truth SET target_material_key = ?, "
+                    "target_source = ? WHERE measurement_id = ?",
+                    (target, source, row["measurement_id"]),
+                )
+
+            derived["resolved"] += 1
+
+        return derived
+
+    def record_seed_provenance(self, seed_id, source, content_hash,
+                               observations=None):
+        """
+        Note in the database itself what it was bootstrapped from.
+
+        The seed used to sit beside the database as a second copy of the
+        same twenty-two observations. It is an IMPORT INPUT and lives
+        with the tooling that produces it; what belongs here is the
+        provenance, so the history can still say where it came from
+        without a second runtime store to keep in step.
+        """
+        with self.connection:
+            for key, value in (
+                ("seed_id", seed_id),
+                ("seed_source", source),
+                ("seed_hash", content_hash),
+                ("seed_observations", observations),
+                ("seed_imported_at", utc_now()),
+            ):
+                if value is None:
+                    continue
+
+                self.connection.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (key, str(value)),
+                )
+
+    def seed_provenance(self):
+        rows = {
+            row["key"]: row["value"]
+            for row in self.connection.execute("SELECT key, value FROM meta")
+        }
+
+        return {
+            key: rows.get("seed_{}".format(key))
+            for key in ("id", "source", "hash", "observations", "imported_at")
+        }
 
     def close(self):
         self.connection.close()
@@ -699,7 +1015,8 @@ class DecisionLearningStore:
                          family_id=None, mixture=None,
                          verification_status=UNVERIFIED,
                          verification_source=None, certainty=None,
-                         note=None, recorded_at=None, replace=False):
+                         note=None, recorded_at=None, replace=False,
+                         target_material_key=None):
         """
         Record what the sample actually was.
 
@@ -775,6 +1092,23 @@ class DecisionLearningStore:
             # record, but it is not a label and must never be trained on.
             verification_status = UNKNOWN
 
+        # WHICH MATERIAL THIS EXPERIMENT IS ABOUT.
+        #
+        # Derived where the derivation is provable, and left NULL where
+        # it is not. An operator may state it outright - that outranks
+        # the derivation - but nothing else may, and a model certainly
+        # may not: the source check above has already refused any label
+        # attributed to one, and the target rides on the label.
+        target_source = None
+
+        if target_material_key:
+            target_source = TARGET_OPERATOR_STATED
+
+        else:
+            target_material_key, target_source = derive_target(
+                label_type, material_key, mixture
+            )
+
         existing = self.get_ground_truth(measurement_id)
 
         if existing is not None and not replace:
@@ -794,8 +1128,8 @@ class DecisionLearningStore:
                     measurement_id, recorded_at, label_type, material_key,
                     material_id, family_id, mixture_json,
                     verification_status, verification_source, certainty,
-                    note
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    note, target_material_key, target_source
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     measurement_id,
@@ -809,6 +1143,8 @@ class DecisionLearningStore:
                     verification_source,
                     certainty,
                     note,
+                    target_material_key,
+                    target_source,
                 ),
             )
 
@@ -1332,6 +1668,375 @@ class DecisionLearningStore:
             records.append(self._observation_from(row))
 
         return records
+
+    # ------------------------------------------------------------------
+    # MATERIAL DATASETS
+    # ------------------------------------------------------------------
+    # The history is material-centric because the EXPERIMENTS are. A
+    # bench session is "Activated Carbon, pure, then at 90, 70, 50, 30
+    # and 10 percent in soil, twice each" - one dataset with twelve
+    # observations in it, not twelve unrelated rows.
+    #
+    # ONLY HUMAN-ESTABLISHED TRUTH FOUNDS A DATASET. A dataset appears
+    # because the operator said what the sample was, never because a
+    # model guessed. Predictions are attached to observations for
+    # scoring and can never create one.
+
+    def material_datasets(self, levels=None):
+        """
+        One entry per material the operator has real labelled data for.
+
+        Sorted by name. `pure` counts EXACT_MATERIAL observations - the
+        100% case - and `mixtures` counts prepared mixtures whose target
+        is this material; they are different experiment types inside one
+        dataset and are never added into an undifferentiated total.
+        """
+        levels = tuple(levels or TRAINABLE_LEVELS)
+        placeholders = ",".join("?" for _ in levels)
+
+        rows = self.connection.execute(
+            "SELECT g.target_material_key AS material, g.label_type, "
+            "       g.target_source, g.measurement_id "
+            "FROM ground_truth g "
+            "WHERE g.target_material_key IS NOT NULL "
+            "  AND g.verification_status IN ({}) "
+            "ORDER BY g.target_material_key".format(placeholders),
+            levels,
+        )
+
+        datasets = {}
+
+        for row in rows:
+            entry = datasets.setdefault(row["material"], {
+                "material_key": row["material"],
+                "observations": 0,
+                "pure": 0,
+                "mixtures": 0,
+                "measurement_ids": [],
+                "target_sources": set(),
+            })
+
+            entry["observations"] += 1
+            entry["measurement_ids"].append(row["measurement_id"])
+            entry["target_sources"].add(row["target_source"])
+
+            if row["label_type"] == LABEL_PREPARED_MIXTURE:
+                entry["mixtures"] += 1
+
+            elif row["label_type"] == LABEL_EXACT_MATERIAL:
+                entry["pure"] += 1
+
+        listed = []
+
+        for entry in datasets.values():
+            entry["target_sources"] = sorted(
+                source for source in entry["target_sources"] if source
+            )
+            listed.append(entry)
+
+        listed.sort(key=lambda item: item["material_key"].lower())
+
+        return listed
+
+    def material_dataset(self, material_key, levels=None):
+        """
+        Every labelled observation of one material, oldest first.
+
+        Each row carries what the experiment actually was: the exact
+        composition, the matrix it was mixed into and the fraction of
+        each - never a flattened "Activated Carbon 50%" that has lost
+        what the other half was.
+        """
+        levels = tuple(levels or TRAINABLE_LEVELS)
+        placeholders = ",".join("?" for _ in levels)
+
+        rows = self.connection.execute(
+            "SELECT g.*, o.created_at, o.session_id, "
+            "       o.acquisition_profile_id "
+            "FROM ground_truth g "
+            "JOIN observations o ON o.measurement_id = g.measurement_id "
+            "WHERE g.target_material_key = ? "
+            "  AND g.verification_status IN ({}) "
+            "ORDER BY o.created_at, g.measurement_id".format(placeholders),
+            (material_key,) + levels,
+        )
+
+        records = []
+
+        for row in rows:
+            record = dict(row)
+            mixture = record.pop("mixture_json", None)
+            record["mixture"] = json.loads(mixture) if mixture else None
+
+            record["components"] = self.components(record["measurement_id"])
+            record["experiment_type"] = (
+                "PREPARED_MIXTURE"
+                if record["label_type"] == LABEL_PREPARED_MIXTURE
+                else "PURE_MATERIAL"
+            )
+            record["target_fraction"] = self._target_fraction(
+                material_key, record
+            )
+            record["matrix"] = self._matrix_of(record["components"])
+            record["context"] = self.get_sample_context(
+                record["measurement_id"]
+            )
+            record["predictions"] = self.predictions(
+                record["measurement_id"]
+            )
+
+            records.append(record)
+
+        return records
+
+    @staticmethod
+    def _target_fraction(material_key, record):
+        """
+        The prepared fraction of the target, or None.
+
+        A pure material is 1.0 - it IS the sample, which is a fact about
+        the label and not an assumption. A mixture reports what was
+        weighed; a mixture with no fraction recorded reports None, never
+        a guess.
+        """
+        if record.get("label_type") == LABEL_EXACT_MATERIAL:
+            return 1.0
+
+        for component in record.get("components") or []:
+            if (component.get("role") == ROLE_COMPONENT
+                    and component.get("material_key") == material_key):
+                return component.get("prepared_mass_fraction")
+
+        return None
+
+    @staticmethod
+    def _matrix_of(components):
+        """
+        What the target was mixed INTO, in full.
+
+        Never collapsed to "the rest". Two Activated Carbon 20%
+        measurements in garden soil and in a regolith simulant are not
+        the same experiment, and the thing that distinguishes them is
+        this.
+        """
+        matrices = [
+            {
+                "label": component.get("matrix_label"),
+                "material_key": component.get("material_key"),
+                "fraction": component.get("prepared_mass_fraction"),
+                "mass_g": component.get("mass_g"),
+            }
+            for component in components or []
+            if component.get("role") == ROLE_MATRIX
+        ]
+
+        return matrices or None
+
+    def ungrouped_observations(self):
+        """
+        Records that found no material dataset, and why.
+
+        Four different reasons, kept apart because they call for
+        different things:
+
+            AMBIGUOUS_MIXTURE   more than one library component and no
+                                recorded target. Needs an operator to
+                                say which was under study - and until
+                                one does, it is not evidence about any
+                                particular material.
+            FAMILY_ONLY         the truth is a family, not a material.
+            UNKNOWN_SAMPLE      the operator recorded that they did not
+                                know. A real record; not a label.
+            NO_LABEL            nothing was recorded at all.
+
+        None of these is deleted and none is hidden. They are simply not
+        material datasets, because no material truth was established for
+        them - and a screen that listed them beside real ones would be
+        claiming otherwise.
+        """
+        grouped = {
+            "AMBIGUOUS_MIXTURE": [],
+            "FAMILY_ONLY": [],
+            "UNKNOWN_SAMPLE": [],
+            "NO_LABEL": [],
+        }
+
+        rows = self.connection.execute(
+            "SELECT g.*, o.created_at, o.session_id FROM ground_truth g "
+            "JOIN observations o ON o.measurement_id = g.measurement_id "
+            "WHERE g.target_material_key IS NULL "
+            "ORDER BY o.created_at, g.measurement_id"
+        )
+
+        for row in rows:
+            record = dict(row)
+            record.pop("mixture_json", None)
+            record["components"] = self.components(record["measurement_id"])
+
+            if record["label_type"] == LABEL_PREPARED_MIXTURE:
+                reason = "AMBIGUOUS_MIXTURE"
+
+            elif record["label_type"] == LABEL_FAMILY:
+                reason = "FAMILY_ONLY"
+
+            elif record["label_type"] == LABEL_UNKNOWN_SAMPLE:
+                reason = "UNKNOWN_SAMPLE"
+
+            else:
+                reason = "NO_LABEL"
+
+            record["reason"] = reason
+            record["predictions"] = self.predictions(
+                record["measurement_id"]
+            )
+
+            grouped[reason].append(record)
+
+        # An observation that was never labelled at all has no
+        # ground_truth row to find, so it is looked up separately. It is
+        # still an observation and still holds RAW.
+        for row in self.connection.execute(
+            "SELECT o.measurement_id, o.created_at, o.session_id, o.origin "
+            "FROM observations o "
+            "LEFT JOIN ground_truth g ON g.measurement_id = o.measurement_id "
+            "WHERE g.measurement_id IS NULL "
+            "ORDER BY o.created_at, o.measurement_id"
+        ):
+            record = dict(row)
+            record["label_type"] = LABEL_NONE
+            record["verification_status"] = UNKNOWN
+            record["reason"] = "NO_LABEL"
+            record["components"] = []
+            record["predictions"] = self.predictions(
+                record["measurement_id"]
+            )
+
+            grouped["NO_LABEL"].append(record)
+
+        return grouped
+
+    def observation_detail(self, measurement_id):
+        """
+        Everything the database holds about one observation, in one call.
+
+        Ground truth, composition, matrix, context, provenance and every
+        prediction ever made for it - each still in its own field, so
+        nothing on a screen can accidentally print a model's answer
+        where the operator's label belongs.
+        """
+        observation = self.get_observation(measurement_id)
+
+        if observation is None:
+            return None
+
+        truth = self.get_ground_truth(measurement_id)
+        components = self.components(measurement_id)
+
+        target = (truth or {}).get("target_material_key")
+        fraction = None
+
+        if truth and target:
+            fraction = self._target_fraction(
+                target, dict(truth, components=components)
+            )
+
+        return {
+            "measurement_id": measurement_id,
+            "observation": observation,
+            "ground_truth": truth,
+            "components": components,
+            "matrix": self._matrix_of(components),
+            "target_material_key": target,
+            "target_source": (truth or {}).get("target_source"),
+            "target_fraction": fraction,
+            "context": self.get_sample_context(measurement_id),
+            "predictions": self.predictions(measurement_id),
+        }
+
+    # ------------------------------------------------------------------
+    # model performance
+    # ------------------------------------------------------------------
+
+    def model_performance(self, levels=None, material_key=None):
+        """
+        How each model version has done against operator-established truth.
+
+        NOT AN ACCURACY. The decision model answers at four levels and
+        they are not interchangeable: naming the material, naming only
+        the family, offering an ambiguous set and abstaining are four
+        different outcomes, and averaging them into one percentage would
+        reward a model for guessing.
+
+            EXACT       named the material, and it was right
+            FAMILY      named the right family, without the material
+            WRONG       named a material or family, and it was not this
+            ABSTAINED   returned UNKNOWN - no material answer at all
+
+        The truth's own family lives on the ground-truth row, so a
+        family verdict is measured rather than inferred.
+        """
+        levels = tuple(levels or TRUSTED_LEVELS)
+        placeholders = ",".join("?" for _ in levels)
+
+        query = (
+            "SELECT p.model_version, p.level, p.confidence, "
+            "       p.material_key AS predicted_material, "
+            "       p.family_id AS predicted_family, "
+            "       p.measurement_id, p.predicted_at, "
+            "       g.material_key AS truth_material, "
+            "       g.family_id AS truth_family, "
+            "       g.target_material_key AS target, "
+            "       g.label_type "
+            "FROM predictions p "
+            "JOIN ground_truth g ON g.measurement_id = p.measurement_id "
+            "WHERE g.verification_status IN ({}) "
+            "  AND g.target_material_key IS NOT NULL "
+        ).format(placeholders)
+
+        params = list(levels)
+
+        if material_key is not None:
+            query += " AND g.target_material_key = ? "
+            params.append(material_key)
+
+        query += " ORDER BY p.model_version, p.measurement_id"
+
+        by_model = {}
+
+        for row in self.connection.execute(query, params):
+            entry = by_model.setdefault(row["model_version"], {
+                "model_version": row["model_version"],
+                "observations": 0,
+                "exact": 0,
+                "family": 0,
+                "wrong": 0,
+                "abstained": 0,
+                "rows": [],
+            })
+
+            outcome = classify_prediction(dict(row))
+
+            # THE COMPOSITION TRAVELS WITH THE ROW.
+            #
+            # "Activated Carbon -> Epsom Salt, WRONG" reads as a model
+            # failure until you know the sample was 10% carbon in soil,
+            # at which point it reads as a hard case. The old confusion
+            # table had no column for it and there was no way to tell
+            # the two apart.
+            components = (
+                self.components(row["measurement_id"])
+                if row["label_type"] == LABEL_PREPARED_MIXTURE else []
+            )
+
+            entry["observations"] += 1
+            entry[outcome.lower()] += 1
+            entry["rows"].append(dict(
+                row, outcome=outcome, components=components,
+                matrix=self._matrix_of(components),
+            ))
+
+        return sorted(by_model.values(),
+                      key=lambda item: item["model_version"])
 
     def confusion(self, model_version=None, levels=None):
         """

@@ -137,8 +137,8 @@ class OperatorBench:
         """A sample prepared, confirmed and selected - ready to measure."""
         from BD.samples import STATE_LOADED
 
-        self.mission.store.create(sample_id, slot)
-        self.mission.store.set_state(sample_id, STATE_LOADED)
+        self.mission.session.create(sample_id, slot)
+        self.mission.session.set_state(sample_id, STATE_LOADED)
         self.link.select_slot(slot, sample_id=sample_id)
 
         return self

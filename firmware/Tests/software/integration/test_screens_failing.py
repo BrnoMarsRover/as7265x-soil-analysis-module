@@ -67,7 +67,7 @@ from BD import samples as samples_module                     # noqa: E402
 from BD.samples import (                                    # noqa: E402
     STATE_LOADED,
     STATE_MEASURED,
-    SampleStore,
+    archive_store,
     StorageError,
 )
 
@@ -148,7 +148,9 @@ class Bench:
         self.bd = SandboxBD()
 
         self.mission = Mission(self.link)
-        self.mission.store = self.bd.sample_store()
+        self.mission.samples = self.bd.sample_database()
+        self.mission.session = self.mission.samples.session()
+        self.mission.archive = self.mission.samples.archive()
         self.mission.calibrations = self.bd.calibration_store()
         self.mission.profiles = self.bd.profile_store()
         self.mission.load_science()
@@ -158,7 +160,7 @@ class Bench:
 
         if prepared:
             self.link.select_slot(1, sample_id=prepared)
-            self.mission.store.create(prepared, 1)
+            self.mission.session.create(prepared, 1)
 
             # `loaded=False` leaves the Sample at READY_TO_LOAD, which
             # is the ONLY state `menu_confirm` will write from - with it
@@ -166,14 +168,14 @@ class Bench:
             # save, so the injected failure never fired and the case
             # proved nothing.
             if loaded:
-                self.mission.store.set_state(prepared, STATE_LOADED)
+                self.mission.session.set_state(prepared, STATE_LOADED)
 
             if measured:
                 data = self.link.measure_raw(1, sample_id=prepared)
                 fields = self.mission.measurement_from_acquisition(
                     data, prepared)
-                self.mission.store.add_measurement(prepared, **fields)
-                self.mission.store.set_state(prepared, STATE_MEASURED)
+                self.mission.session.add_measurement(prepared, **fields)
+                self.mission.session.set_state(prepared, STATE_MEASURED)
 
     def status(self):
         return self.mission.hardware_status()
@@ -273,9 +275,14 @@ SCREENS = (
      lambda m, s, v: records_screens.menu_sample_database(m),
      ["0"], "S-PREP", True, True),
 
-    ("records.sync_esp32_samples",
-     lambda m, s, v: records_screens.sync_esp32_samples(m),
-     ["", "", ""], None, False, True),
+    # measured=True, because an import with nothing to import writes
+    # nothing - and this is the one row the write-failure guard below
+    # relies on. It passed for a while on a device that was holding an
+    # acquisition leaked from a previous bench; with the device's store
+    # properly sandboxed the bench has to measure one for itself.
+    ("records.import_esp32_samples",
+     lambda m, s, v: records_screens.import_esp32_samples(m),
+     ["", "", ""], "S-PREP", True, True),
 
     ("carousel.menu_initial_calibration",
      lambda m, s, v: carousel_screens.menu_initial_calibration(m),
@@ -336,13 +343,23 @@ for name, call, script, prepared, measured, loaded in SCREENS:
                     "{} + {}: the archive CHANGED despite a failing "
                     "write".format(name, label))
 
-            # AND NOTHING CLAIMED A SUCCESS.
+            # AND NOTHING CLAIMED A SUCCESS IT DID NOT ACHIEVE.
+            #
+            # ONLY WHERE THE FAULT ACTUALLY FIRED. A success claim is
+            # false when a write was attempted and failed; a screen
+            # that never went near the disk has not lied by reporting
+            # that it finished. Measure is exactly that case now - it
+            # completes a real measurement into the in-memory working
+            # set while the filesystem is broken, and "MEASUREMENT
+            # COMPLETE" is the truth.
             lowered = output.lower()
 
-            for phrase in FALSE_SUCCESS:
-                if phrase in lowered:
-                    false_successes.append(
-                        "{} + {}: printed {!r}".format(name, label, phrase))
+            if injector.calls:
+                for phrase in FALSE_SUCCESS:
+                    if phrase in lowered:
+                        false_successes.append(
+                            "{} + {}: printed {!r}".format(
+                                name, label, phrase))
 
         finally:
             bench.close()
@@ -415,16 +432,37 @@ checks.ok(handled >= attempts * 0.8,
 # So the claim is made per screen instead: the ones that SAVE must have
 # tried to save, under every one of the four failure modes.
 
+# THE SCREENS THAT WRITE A FILE, WHICH IS NOT THE SAME LIST AS BEFORE.
+#
+# Prepare, Confirm and Measure used to be here, because they wrote the
+# working set into samples.json. They write nothing now: the working
+# set is this process's memory, and that is the point of the ownership
+# model - measuring does not save a sample on the PC.
+#
+# So the screens that must still prove they tried to write are the ones
+# that put something into the PC ARCHIVE, which is the only collection
+# with a file. If this list ever empties, the guard below fails and
+# says so, rather than letting the section pass because nothing writes
+# any more.
 WRITING_SCREENS = (
-    "measure.menu_prepare",
-    "measure.menu_confirm",
-    "measure.menu_measure",
+    "records.import_esp32_samples",
 )
+
+checks.ok(bool(WRITING_SCREENS),
+          "there is at least one screen that writes a file at all - an "
+          "empty list here would make every check above vacuous")
 
 for name in WRITING_SCREENS:
     checks.equal(fired_by_screen.get(name, 0), len(WRITE_FAILURES),
                  "{} attempted a write under all {} failure modes"
                  .format(name, len(WRITE_FAILURES)))
+
+# AND THE THREE THAT USED TO WRITE NOW PROVABLY DO NOT.
+for name in ("measure.menu_prepare", "measure.menu_confirm",
+             "measure.menu_measure"):
+    checks.equal(fired_by_screen.get(name, 0), 0,
+                 "{} reaches no file write at all - the run in progress "
+                 "is memory".format(name))
 
 checks.ok(fired > 0,
           "{} of {} combinations reached a write at all; the other {} "
@@ -576,11 +614,25 @@ finally:
 
 
 # ======================================================================
-checks.section("76. the measurement screen says what was and was not saved")
+checks.section("76. the measurement screen says where the spectrum is")
 
 # The most important single screen, checked in detail rather than in
-# aggregate: a measurement whose save fails must say the analysis was
-# NOT run and must point at the ESP32 buffer that still holds the data.
+# aggregate.
+#
+# WHAT THIS CASE USED TO PROVE, AND WHAT IT PROVES NOW.
+#
+# It used to inject a full disk and require the screen to say the SAVE
+# FAILED, because Measure wrote the working set to samples.json and a
+# failed write meant the spectrum was gone.
+#
+# Measure no longer writes to any file. The working set is this
+# process's memory and the durable copy is on the ESP32, so a full disk
+# is simply not on the measurement path any more - and a screen that
+# announced a save failure here would be describing something that did
+# not happen. The filesystem is still broken for the whole run; what
+# has to be true is that the measurement completes anyway, the operator
+# is told where the spectrum actually is, and nothing claims the PC
+# archive has it.
 
 bench = Bench(prepared="S-DETAIL", measured=False)
 
@@ -598,43 +650,54 @@ try:
 
     lowered = output.lower()
 
-    checks.ok("could not save" in lowered
-              or "not saved" in lowered
-              or "failed" in lowered,
-              "the measurement screen says the save failed")
-
     checks.ok("raw saved:      yes" not in lowered,
-              "and does NOT print 'RAW saved: YES'")
+              "the screen does NOT print 'RAW saved: YES' - the PC has "
+              "saved nothing")
 
-    checks.ok("sync esp32" in lowered or "esp32" in lowered,
-              "and points at the ESP32 buffer, which still holds the "
-              "acquisition")
+    checks.ok("esp32" in lowered,
+              "and names the ESP32, which is where the durable copy is")
 
-    checks.ok("analysis was not run" in lowered
-              or "not run" in lowered,
-              "and says the analysis was not run - a conclusion about a "
-              "measurement that does not exist would be worse than none")
+    checks.ok("archive" in lowered,
+              "and names the archive, so the operator can see the "
+              "spectrum is not in it yet")
 
-    # And the archive really is untouched.
-    store = SampleStore(bench.bd.samples_file).load()
-    record = store.get_sample("S-DETAIL")
+    # The measurement completed despite the broken filesystem.
+    live = bench.mission.session.get_sample("S-DETAIL")
 
-    checks.equal(len(record.get("measurements") or []), 0,
-                 "and the durable archive holds no measurement for it")
+    checks.ok(live is not None,
+              "the Sample is in the working set")
 
-    checks.equal(record.get("state"), STATE_LOADED,
-                 "with the Sample still LOADED, not MEASURED")
+    checks.equal(len(live.get("measurements") or []), 1,
+                 "with its Measurement - a full disk cannot cost a "
+                 "spectrum that is not written to the disk")
+
+    checks.equal(live.get("state"), STATE_MEASURED,
+                 "and the Sample is MEASURED, because it was")
+
+    # And the archive really is untouched - by the measurement, not
+    # merely by the failure.
+    archive = archive_store(bench.bd.samples_file).load()
+
+    checks.ok(archive.get_sample("S-DETAIL") is None,
+              "and the PC archive holds nothing for it, because nobody "
+              "imported it")
 
 finally:
     bench.close()
 
 
 # ======================================================================
-checks.section("76. a save that fails, then succeeds on the retry")
+checks.section("76. the write that CAN fail is the archive, and it retries")
 
 # The recovery an operator actually performs: free some space and do it
-# again. The retry must produce exactly one record, not two, and not a
-# record carrying the failed attempt's leftovers.
+# again.
+#
+# WHERE THE FAILURE MOVED TO. Measure writes no file any more, so a
+# broken filesystem cannot fail a measurement - it is proved above that
+# the spectrum survives one. The write that can still fail is the one
+# the operator asks for: putting a Sample into the PC archive. That is
+# where "a save that fails is not reported as a save" has to hold, and
+# where a retry must produce exactly one record rather than two.
 
 bench = Bench(prepared="S-RETRY", measured=False)
 
@@ -649,34 +712,66 @@ try:
                        bench.mission, status, view),
                    exhausted="0")
 
-    after_failure = SampleStore(bench.bd.samples_file).load()
+    measured = bench.mission.session.get_sample("S-RETRY")
 
-    checks.equal(
-        len(after_failure.get_sample("S-RETRY").get("measurements") or []),
-        0,
-        "after the failed save the archive holds no measurement")
+    checks.equal(len(measured.get("measurements") or []), 1,
+                 "the measurement itself is unaffected by the full disk")
 
-    # Space is freed; the operator measures again.
-    status = bench.status()
-    view = bench.view(status)
+    after_failure = archive_store(bench.bd.samples_file).load()
 
-    run_screen(["", "", "", ""],
-               lambda: measure_screens.menu_measure(
-                   bench.mission, status, view),
-               exhausted="0")
+    checks.ok(after_failure.get_sample("S-RETRY") is None,
+              "and the archive holds nothing, because nothing was "
+              "archived")
 
-    after_retry = SampleStore(bench.bd.samples_file).load()
-    measurements = after_retry.get_sample("S-RETRY").get("measurements") or []
+    # The operator archives it, and the disk is still full.
+    failed = None
+
+    with patched(samples_module.os, "replace",
+                 raiser(OSError(errno.ENOSPC, "full"))):
+        try:
+            bench.mission.archive.adopt(measured)
+
+        except StorageError as error:
+            failed = error
+
+    checks.ok(failed is not None,
+              "archiving onto a full disk raises rather than pretending")
+
+    checks.ok(archive_store(bench.bd.samples_file).load()
+              .get_sample("S-RETRY") is None,
+              "and the archive FILE still holds nothing for it")
+
+    checks.ok(bench.mission.archive.get_sample("S-RETRY") is None,
+              "and the in-memory archive matches the file - a failed "
+              "write leaves no record the disk does not have")
+
+    checks.equal(len(bench.mission.session.get_sample("S-RETRY")
+                     .get("measurements") or []), 1,
+                 "while the working set is untouched by the archive's "
+                 "failure - they are different stores")
+
+    # Space is freed; the operator archives again.
+    bench.mission.archive.adopt(bench.mission.session.get_sample("S-RETRY"))
+
+    after_retry = archive_store(bench.bd.samples_file).load()
+    record = after_retry.get_sample("S-RETRY")
+
+    checks.ok(record is not None,
+              "the retry archives it")
+
+    checks.equal(after_retry.count(), 1,
+                 "and the archive holds exactly ONE Sample - the failed "
+                 "attempt did not leave a ghost behind it")
+
+    measurements = record.get("measurements") or []
 
     checks.equal(len(measurements), 1,
-                 "and after the retry it holds exactly ONE - the failed "
-                 "attempt did not leave a ghost behind it")
+                 "with exactly one Measurement on it")
 
     checks.ok(bool(measurements[0].get("raw")),
               "with a real spectrum in it")
 
-    checks.equal(after_retry.get_sample("S-RETRY").get("state"),
-                 STATE_MEASURED,
+    checks.equal(record.get("state"), STATE_MEASURED,
                  "and the Sample is MEASURED, once")
 
 finally:

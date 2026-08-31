@@ -322,12 +322,12 @@ def analyse(path):
         #
         # EVERY writable store, and the no-argument form too.
         #
-        # This checked `SampleStore(` alone, and only when the line also
+        # This checked `session_store(` alone, and only when the line also
         # named ARCHIVE_PATH or config.SAMPLES_FILE. It therefore missed
         # the two ways a suite actually reaches the production archive:
         #
         #   DecisionLearningStore()   no argument means BD/training/
-        #   SampleStore()             no argument means BD/samples/
+        #   session_store()             no argument means BD/samples/
         #
         # The first is not hypothetical. `sandbox_mission` did not
         # redirect the learning store, so code driving a sandboxed
@@ -344,7 +344,8 @@ def analyse(path):
         if "data_integrity" in relative:
             continue
 
-        for store in ("SampleStore", "CalibrationStore",
+        for store in ("SampleDatabase", "session_store", "archive_store",
+                      "CalibrationDatabase", "CalibrationStore",
                       "DecisionLearningStore", "AcquisitionProfileStore"):
             call = store + "("
 
@@ -359,10 +360,34 @@ def analyse(path):
                     "{}() with no argument is the production store"
                     .format(store)))
 
+
             elif "ARCHIVE_PATH" in stripped or "config." in stripped:
                 findings.append(Finding(
                     "real-BD-write", relative, index,
                     "opens the production {} directly".format(store)))
+
+    # A MISSION REDIRECTED HALF WAY IS A MISSION POINTED AT BD/.
+    #
+    # `Mission.__init__` builds a `SampleDatabase()` on the production
+    # path and exposes TWO views of it. A test that replaces
+    # `mission.session` and leaves `mission.archive` alone has a Mission
+    # whose archive is the operator's real one - and the bench-save and
+    # import paths write THERE. That happened: four test records
+    # (BENCH1, S001, S-DEVICE, S-DOUBLE) reached
+    # `BD/samples/samples.json` and had to be removed by hand.
+    #
+    # The campaign's BD/ hash check snapshots once per campaign, so it
+    # never saw a suite run on its own. This rule does.
+    if "Mission(" in source and "sandbox_mission" not in source:
+        redirects_session = ".session = " in source
+        redirects_archive = ".archive = " in source
+
+        if redirects_session and not redirects_archive:
+            findings.append(Finding(
+                "real-BD-write", relative, 0,
+                "a Mission's session is redirected but its archive is "
+                "not - the archive is still BD/samples/samples.json, "
+                "and the import and bench-save paths write there"))
 
     return findings
 

@@ -255,8 +255,8 @@ esp32_files = sorted(p.name for p in DOMAINS["ESP32"].glob("*.py"))
 checks.equal(
     esp32_files,
     ["boot.py", "carousel.py", "config.py", "main.py", "protocol.py",
-     "sensor.py", "servo.py"],
-    "the ESP32 tree is flat: seven modules, no packages",
+     "retention.py", "sensor.py", "servo.py"],
+    "the ESP32 tree is flat: eight modules, no packages",
 )
 checks.ok(
     not any(p.is_dir() for p in DOMAINS["ESP32"].iterdir()

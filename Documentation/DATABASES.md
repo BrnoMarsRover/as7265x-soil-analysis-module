@@ -1,21 +1,48 @@
 # Databases
 
-Three databases, one file each, in `firmware/BD/`.
+**One canonical persistent store per subsystem**, in `firmware/BD/`.
 
 ```text
-DB1.json                  measured here, 18 bands, 23 materials   READY
-DB1_source.txt            the verbatim record DB1 is built from
-DB2.json                  measured here, 54 features, 22 materials  READY
-DB2_source.txt            the verbatim record DB2 is built from
-DB3.json                  external spectra, projected, 84 spectra   READY
-calibration_legacy.json   the White/Dark DB1 was measured against
-calibrations.json         every calibration ever made, and which is active
-samples.json              samples measured during a run
+BD/
+├── calibration/  calibration.json          every calibration ever made,
+│                                           the protected LEGACY
+│                                           White/Dark, which one is
+│                                           ACTIVE, and the acquisition
+│                                           profiles they were taken under
+├── DB1/          DB1.json                  measured here, 18 bands,
+│                 DB1_source.txt            23 materials      PROTECTED
+│                 operator_aliases.json     bench names only
+├── DB2/          DB2.json                  measured here, 54 features,
+│                 DB2_source.txt            22 materials      PROTECTED
+├── DB3/          DB3.json                  external spectra, projected
+├── models/       registry.json             model artifacts, and which
+│                                           one is ACTIVE
+├── samples/      samples.json              the PC session and the PC
+│                                           archive
+└── training/     decision_learning.sqlite3 observations, ground truth,
+                                            predictions. OFFLINE only
 ```
 
-Each database carries its own metadata, provenance and audit **inside the
+Each store carries its own metadata, provenance and audit **inside the
 same file**. There are no side-car manifests to fall out of step with the
-data they describe, and no second copy of any database anywhere.
+data they describe, and no second copy of any store anywhere.
+
+## Why one file per subsystem
+
+The layout used to hold several truths twice. `calibration/` had four
+files - the library, a pointer saying which entry was active, the legacy
+White/Dark, and the acquisition profiles - and three of them were
+persisted VIEWS of the fourth. `training/` had the SQLite database and a
+JSON seed containing every row already in it. `samples/` had the archive
+and a `*.backup.json` written by an earlier migration and never removed.
+
+Files that must agree can disagree, and the program had a read path for
+each of them. They were consolidated, and the redundant files were
+**deleted** rather than kept as a fallback: a fallback reader that
+survives migration is a second source of truth wearing a different name.
+
+`Tests/software/regression/test_bd_migration.py` runs each migration on a
+copy of the repository's own data and compares the result field by field.
 
 ---
 
@@ -304,20 +331,30 @@ confidence model believes. Nothing is pinned by hand.
 
 ## Calibrations
 
-**Legacy** (`calibration_legacy.json`) — the White/Dark DB1 was measured
-against. Immutable, and the only calibration ever used to compare against
-DB1. Re-normalising the library against a newer White would silently
-change what every stored number means.
+Everything below lives in **one** file, `calibration/calibration.json`.
+
+**Legacy** (`kind: "LEGACY"`, `protected: true`) — the White/Dark DB1 was
+measured against. Immutable, and the only calibration ever used to compare
+against DB1. Re-normalising the library against a newer White would
+silently change what every stored number means. It is a RECORD in the
+calibration list rather than a separate file: being protected is a
+property of the record, and every write path refuses it by name. It is
+never offered in the selection list and can never become active, because
+it was measured under white light only and normalising a UV acquisition
+against it would be a fault the numbers would not reveal.
 
 **Active** — a full Dark + WHITE/UV/IR calibration made by the operator,
-used for the scientific record and quality control. It is one entry in
-`calibrations.json`, which holds **every** calibration ever made, in full,
-and records which of them is in force.
+used for the scientific record and quality control. One entry among the
+calibrations, with `active_calibration_id` naming it.
 
-One file, because "which calibrations do I have, and which am I using?" is
-one question. The earlier layout answered it with a directory listing plus
-a side-car pointer file, which is how an operator ends up making a fresh
-calibration on every restart instead of reusing the one already on disk.
+**Acquisition profiles** — the conditions each calibration was taken
+under, and what decides whether one may be applied to a measurement at
+all. In the same document, because a profile and the calibration taken
+under it are one subsystem.
+
+One file, because "which calibrations do I have, which am I using, and
+under what conditions were they taken?" is one question. The earlier
+layout answered it with four files that had to be kept in step.
 
 Every measurement is normalized **both** ways. That is precisely what lets
 the instrument be recalibrated without remeasuring the material library.
@@ -337,14 +374,44 @@ it.
 
 ---
 
-## samples.json
+## samples.json — two collections, three owners
 
-The run's scientific output, and the only file this system writes.
+The run's scientific output, and the only file this system writes. It
+holds **two collections with different lifetimes**:
 
-It is **untracked and gitignored** — measured competition data belongs to
-a run, not to the source tree. That also makes it the most fragile file in
-the repository: git cannot restore it. `test_science` records its size and
-SHA256 before the suite and verifies them after, so a run that damages it
-fails loudly instead of silently.
+```text
+session   the working set of the run in progress. Prepare Sample creates
+          a record here; Measure Sample completes it. Durable, because
+          RAW that exists only in ESP32 RAM is one board reset from being
+          gone - but it is scaffolding, not an archive.
+
+archive   the permanent PC record. Nothing arrives here except an
+          explicit operator import: from the ESP32, or from the session.
+```
+
+Beside them, on a different computer, is a third store the PC does not
+own:
+
+```text
+ESP32     the device's own RAM buffer, one acquisition per slot, cleared
+          by a board reset - and opening the serial port resets the board.
+```
+
+**No implicit synchronization.** A measurement lands on the ESP32 and in
+the PC session. It reaches the archive only when the operator imports it.
+Import is a COPY: it never moves, and it never overwrites a stored
+scientific record - a same-ID sample whose data differs is reported as a
+CONFLICT and left alone.
+
+**Every delete names one store.** Delete from the ESP32, from the PC
+session, or from the PC archive; there is deliberately no "delete
+everywhere". None of them touches the Decision Learning database, DB1,
+DB2, DB3 or the calibrations.
+
+`samples.json` is **untracked and gitignored** — measured competition data
+belongs to a run, not to the source tree. That also makes it the most
+fragile file in the repository: git cannot restore it. `test_science`
+records its size and SHA256 before the suite and verifies them after, so a
+run that damages it fails loudly instead of silently.
 
 Back it up with the procedure in `OPERATIONS.md` after every session.

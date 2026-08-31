@@ -1565,5 +1565,17 @@ class SerialLink:
         return self.request("get_saved_sample", retries=1,
                             sample_id=str(sample_id))
 
+    def delete_saved_sample(self, sample_id):
+        """
+        Delete ONE acquisition from the device's buffer.
+
+        No retries. A delete is not a pure read: a re-send whose first
+        attempt actually landed comes back SAMPLE_NOT_FOUND, which
+        reads as a failure over a delete that succeeded. The PC
+        verifies by listing the device afterwards instead.
+        """
+        return self.request("delete_saved_sample",
+                            sample_id=str(sample_id))
+
     def delete_saved_samples(self):
         return self.request("delete_saved_samples")

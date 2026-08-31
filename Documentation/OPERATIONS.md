@@ -464,16 +464,30 @@ leaves the board at the REPL, so reset afterwards.
 firmware/BD/samples/samples.json
 ```
 
-That is the run's only irreplaceable output and it is **not in version
-control** — git cannot restore it. Copy it outside the repository
-before any bulk file operation.
+That one file is the run's only irreplaceable output and it is **not in
+version control** — git cannot restore it. Copy it outside the
+repository before any bulk file operation.
 
-Beside it, `samples.schemaN.backup.json` is the pre-migration archive,
-written once by the schema migration. It is also the only copy of what
-it holds.
+It holds **two collections**:
 
-Everything else under `BD/` is tracked: calibration, DB1, DB2, DB3, the
-training data and the model registry.
+```text
+session   the run in progress. Prepare and Measure write here.
+archive   the permanent record. Only an explicit import puts anything
+          in it.
+```
+
+Both are in the one file. There is no backup file beside it: the schema
+migration rewrites the canonical document in place, and a second copy in
+a production data folder is a second source of truth waiting to be read
+by mistake. Git carries the history of everything that is tracked.
+
+A third store is not on this computer at all: the **ESP32** keeps the
+last acquisition from each slot in RAM, and loses it when the board
+resets — which happens every time the serial port is opened. If a
+measurement matters, import it.
+
+Everything else under `BD/` is tracked: `calibration/calibration.json`,
+DB1, DB2, DB3, the training database and the model registry.
 
 ---
 

@@ -321,7 +321,10 @@ finally:
 checks.section("{} archive writes".format(ARCHIVE_WRITES))
 
 with SandboxBD() as bd:
-    store = bd.sample_store()
+    # THE ARCHIVE: this case is about the atomic write standing up to
+    # three hundred rewrites of the file, and the session writes no
+    # file at all.
+    store = bd.sample_database().archive()
 
     for index in range(ARCHIVE_WRITES):
         sample_id = "STRESS-{:04d}".format(index)
@@ -339,7 +342,7 @@ with SandboxBD() as bd:
                  "atomic write cleans up after itself every time, not "
                  "usually")
 
-    reread = bd.sample_store()
+    reread = bd.sample_database().archive()
 
     checks.equal(reread.count(), ARCHIVE_WRITES,
                  "and every one of them reads back")

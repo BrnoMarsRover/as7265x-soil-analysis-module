@@ -331,6 +331,9 @@ SEQUENCE = (
                          "confirm": True}),
     ("servo_configure", {"confirm": True}),
     ("servo_stop", {}),
+    # The per-sample delete before the bulk one, so the single-sample
+    # path runs against a device that is actually holding something.
+    ("delete_saved_sample", {"sample_id": "S-CONTRACT"}),
     ("delete_saved_samples", {}),
     ("servo_bus_scan", {}),
     ("disconnect_servo", {}),

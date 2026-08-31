@@ -65,13 +65,13 @@ support.add_path("PC")
 import serial_link                                          # noqa: E402
 from serial_link import DeviceError, LinkError              # noqa: E402
 
+from BD import config as bd_config              # noqa: E402
 from BD.samples import (                                    # noqa: E402
     ACQUISITION_FAILED,
     ACQUISITION_SUCCESS,
     STATE_LOADED,
     STATE_MEASURED,
     STATE_READY_TO_LOAD,
-    SampleStore,
     StorageError,
 )
 
@@ -301,10 +301,13 @@ class System:
         carousel = status.get("carousel") or {}
         position_valid = bool(carousel.get("position_valid"))
 
-        store = SampleStore(self.bd.samples_file).load()
+        # THE LIVE WORKING SET, not a fresh read of the file. The
+        # session is this process's memory now, so re-opening the
+        # database would report a model with no Samples in it and every
+        # state transition below would be computed from nothing.
         states = {
             record["sample_id"]: record.get("state")
-            for record in store._records()
+            for record in self.mission.session._records()
         }
 
         if not position_valid:
@@ -339,7 +342,7 @@ def check_invariants(system, model, where, failures):
     made them false.
     """
     status = system.status()
-    store = SampleStore(system.bd.samples_file).load()
+    store = system.mission.session
     records = store._records()
 
     def fail(number, statement):
@@ -392,7 +395,7 @@ def check_invariants(system, model, where, failures):
     # INV-07  RAM never runs ahead of the durable archive.
     live = {
         record["sample_id"]: record.get("state")
-        for record in system.mission.store._records()
+        for record in system.mission.session._records()
     }
     durable = {
         record["sample_id"]: record.get("state") for record in records
@@ -411,16 +414,29 @@ def check_invariants(system, model, where, failures):
             if measurement.get("sample_id") not in known:
                 fail(8, "a Measurement references an unknown Sample")
 
-    # INV-09  The archive on disk is always valid JSON with a schema.
+    # INV-09  The Sample database on disk is always valid JSON, always
+    # schema-tagged, and holds the ARCHIVE AND NOTHING ELSE.
+    #
+    # It used to require BOTH collections. The session is this
+    # process's memory now, and a session that appears in the file is
+    # the defect: it would mean a measurement had become stored PC
+    # science without anyone importing it, which is the one thing the
+    # split exists to prevent. So its ABSENCE is the invariant.
     try:
         payload = json.loads(
             system.bd.samples_file.read_text(encoding="utf-8"))
 
-        if "samples" not in payload or "schema_version" not in payload:
-            fail(9, "the archive lost its schema")
+        if "schema_version" not in payload:
+            fail(9, "the Sample database lost its schema")
+
+        elif bd_config.ARCHIVE_COLLECTION not in payload:
+            fail(9, "the Sample database lost its archive")
+
+        elif bd_config.SESSION_COLLECTION in payload:
+            fail(9, "the working set reached the disk")
 
     except ValueError:
-        fail(9, "the archive on disk is not valid JSON")
+        fail(9, "the Sample database on disk is not valid JSON")
 
 
 # ======================================================================
@@ -469,7 +485,7 @@ def act_prepare(system, model, rng):
     sample_id = "S{:03d}".format(len(model.samples) + 1)
 
     try:
-        system.mission.store.create(sample_id, slot)
+        system.mission.session.create(sample_id, slot)
         model.prepare(sample_id, slot)
 
     except StorageError:
@@ -490,7 +506,7 @@ def act_confirm_loaded(system, model, rng):
     sample_id = rng.choice(candidates)
 
     try:
-        system.mission.store.set_state(sample_id, STATE_LOADED)
+        system.mission.session.set_state(sample_id, STATE_LOADED)
         model.confirm_loaded(sample_id)
 
     except StorageError:
@@ -517,15 +533,15 @@ def act_measure(system, model, rng):
 
         fields = system.mission.measurement_from_acquisition(
             data, sample_id)
-        system.mission.store.add_measurement(sample_id, **fields)
-        system.mission.store.set_state(sample_id, STATE_MEASURED)
+        system.mission.session.add_measurement(sample_id, **fields)
+        system.mission.session.set_state(sample_id, STATE_MEASURED)
         model.measure(sample_id, succeeded=True)
 
     except (LinkError, DeviceError):
         # The acquisition failed. It is recorded as a failure, and the
         # Sample does NOT advance.
         try:
-            system.mission.store.add_measurement(
+            system.mission.session.add_measurement(
                 sample_id,
                 acquisition_status=ACQUISITION_FAILED,
                 acquisition={},
@@ -729,17 +745,17 @@ system.bd.close()
 
 # INV-01/02  A failed acquisition is a record, never a verdict.
 system = System()
-system.mission.store.create("S-FAIL", 1)
-system.mission.store.set_state("S-FAIL", STATE_LOADED)
+system.mission.session.create("S-FAIL", 1)
+system.mission.session.set_state("S-FAIL", STATE_LOADED)
 
-system.mission.store.add_measurement(
+system.mission.session.add_measurement(
     "S-FAIL",
     acquisition_status=ACQUISITION_FAILED,
     acquisition={},
     error={"code": "SENSOR_UNAVAILABLE", "message": "no sensor"},
 )
 
-record = SampleStore(system.bd.samples_file).load().get_sample("S-FAIL")
+record = system.mission.session.get_sample("S-FAIL")
 
 checks.equal(record.get("state"), STATE_LOADED,
              "INV-02: a failed acquisition does NOT advance the Sample "
@@ -758,12 +774,12 @@ system.close()
 
 # INV-07  RAM never runs ahead of the durable archive.
 system = System()
-system.mission.store.create("S-RAM", 1)
+system.mission.session.create("S-RAM", 1)
 
-durable = SampleStore(system.bd.samples_file).load()
+durable = system.mission.session
 
 checks.equal(
-    sorted(r["sample_id"] for r in system.mission.store._records()),
+    sorted(r["sample_id"] for r in system.mission.session._records()),
     sorted(r["sample_id"] for r in durable._records()),
     "INV-07: what the screens can read is exactly what the file holds")
 
@@ -773,14 +789,17 @@ system.close()
 system = System()
 
 for index in range(5):
-    system.mission.store.create("S{:02d}".format(index), 1 + index % 3)
+    system.mission.session.create("S{:02d}".format(index), 1 + index % 3)
 
     payload = json.loads(
         system.bd.samples_file.read_text(encoding="utf-8"))
 
-    checks.ok("schema_version" in payload and "samples" in payload,
-              "INV-09: the archive is valid and schema-tagged after "
-              "write {}".format(index + 1))
+    checks.ok(
+        "schema_version" in payload
+        and bd_config.ARCHIVE_COLLECTION in payload
+        and bd_config.SESSION_COLLECTION not in payload,
+        "INV-09: the Sample database is valid, schema-tagged and holds "
+        "the archive only after write {}".format(index + 1))
 
 system.close()
 

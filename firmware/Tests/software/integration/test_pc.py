@@ -768,7 +768,11 @@ from BD.acquisition_profiles import AcquisitionProfileStore  # noqa: E402
 from BD.calibrations import CalibrationStore                 # noqa: E402
 from BD.decision_learning import DecisionLearningStore       # noqa: E402
 from BD.registry import DatabaseRegistry                     # noqa: E402
-from BD.samples import SampleStore                           # noqa: E402
+from BD.samples import (
+    SampleDatabase,
+    archive_store,
+    session_store,
+)                           # noqa: E402
 
 WORKFLOW = support.PC_DIR / "workflow"
 
@@ -798,16 +802,17 @@ def attributes_reached_for(name):
 
 
 # A throwaway path even though these instances are never loaded or
-# written. `SampleStore()` with no argument means the operator's live
+# written. `session_store()` with no argument means the operator's live
 # archive, and a rule that is absolute is a rule nobody has to re-check
 # every time a line is added below it - see
 # data_integrity/test_protected_data.py.
 _SURFACE_DIR = Path(tempfile.mkdtemp(prefix="freya-surface-"))
 
 for name, instance in (
-    ("store", SampleStore(_SURFACE_DIR / "samples.json")),
+    ("session", session_store(_SURFACE_DIR / "samples.json")),
+    ("archive", archive_store(_SURFACE_DIR / "samples.json")),
     ("calibrations", CalibrationStore(directory=_SURFACE_DIR)),
-    ("profiles", AcquisitionProfileStore(_SURFACE_DIR / "profiles.json")),
+    ("profiles", AcquisitionProfileStore(directory=_SURFACE_DIR)),
     ("registry", DatabaseRegistry()),
 ):
     used = attributes_reached_for(name)
@@ -855,6 +860,14 @@ class FakeLink:
     def get_status(self):
         return dict(STATUS)
 
+    def list_saved_samples(self):
+        """
+        The device holds nothing. Answered rather than raising, because
+        the storage screen has to be able to draw a table that says so
+        - "no acquisitions" and "no answer" are different rows.
+        """
+        return {"count": 0, "samples": [], "storage": "ram_only"}
+
 
 mission = Mission(FakeLink())
 
@@ -863,7 +876,12 @@ handle = tempfile.NamedTemporaryFile(suffix=".json", delete=False,
 handle.write(json.dumps({"schema_version": 4, "samples": []}))
 handle.close()
 
-mission.store = SampleStore(Path(handle.name)).load()
+# BOTH collections onto the throwaway file. Redirecting only the
+# session would leave `mission.archive` pointing at the operator's real
+# BD/samples/samples.json, and the bench-save path below writes there.
+mission.samples = SampleDatabase(Path(handle.name)).load()
+mission.session = mission.samples.session()
+mission.archive = mission.samples.archive()
 
 status = mission.hardware_status()
 checks.equal(mission.firmware_version, "6.0.0",
@@ -877,7 +895,7 @@ checks.equal([row["slot_id"] for row in view], [1, 2, 3, 4],
 checks.ok(all(row["sample_id"] is None for row in view),
           "and an empty archive gives four empty slots")
 
-mission.store.create("S001", 2)
+mission.session.create("S001", 2)
 view = mission.slot_view(status)
 row = mission.entry_for(view, 2)
 
@@ -885,8 +903,8 @@ checks.equal(row["sample_id"], "S001", "a created Sample appears in its slot")
 checks.equal(row["state"], "READY_TO_LOAD", "with its lifecycle state")
 checks.equal(row["measurement_count"], 0, "and no measurements yet")
 
-mission.store.set_state("S001", "LOADED")
-mission.store.add_measurement(
+mission.session.set_state("S001", "LOADED")
+mission.session.add_measurement(
     "S001", raw={"white": {"A": 1.0}},
     acquisition={"firmware_version": "6.0.0"})
 
@@ -939,7 +957,7 @@ checks.section("the record screens render a three-layer record")
 from BD.channels import CHANNELS as ALL_CHANNELS   # noqa: E402
 from workflow import records                       # noqa: E402
 
-mission.store.add_analysis_run("S001", "M001", {
+mission.session.add_analysis_run("S001", "M001", {
     "analysis_status": "OK",
     "decision_status": "OK",
     "versions": {"science": "5.0.0", "decision_model": "V001",
@@ -958,11 +976,14 @@ mission.store.add_analysis_run("S001", "M001", {
                  "candidates": [], "reason": "two candidates"},
 })
 
-record = mission.store.get_sample("S001")
+record = mission.session.get_sample("S001")
 
 for name, call in (
-    ("print_sample_table",
-     lambda: records.print_sample_table(mission.store)),
+    ("print_storage_table",
+     lambda: records.print_storage_table(
+         records.storage_rows(mission, records.esp32_index(mission)),
+         records.esp32_index(mission),
+     )),
     ("print_full_sample", lambda: records.print_full_sample(record)),
 ):
     try:
@@ -1097,7 +1118,10 @@ bench_handle.write(json.dumps({"schema_version": 4, "samples": []}))
 bench_handle.close()
 
 bench = Mission(FakeLink())
-bench.store = SampleStore(Path(bench_handle.name)).load()
+
+bench.samples = SampleDatabase(Path(bench_handle.name)).load()
+bench.session = bench.samples.session()
+bench.archive = bench.samples.archive()
 bench.learning = None
 
 acquisition = bench_acquisition()
@@ -1109,7 +1133,7 @@ result, output, script = with_answers(
 )
 
 checks.equal(result, (None, False), "exit reports that nothing was saved")
-checks.equal(len(bench.store.active_samples()), 0,
+checks.equal(len(bench.session.active_samples()), 0,
              "and no Sample was created")
 checks.ok("NOTHING SAVED" in output, "and it says so plainly")
 
@@ -1138,9 +1162,16 @@ saved_sample, saved_learning = result
 checks.equal(saved_sample, "BENCH1", "the Sample is reported as saved")
 checks.ok(not saved_learning, "and the learning history was not touched")
 
-stored = bench.store.get_sample("BENCH1")
+# THE ARCHIVE, not the session. "Save as a Sample in the PC archive"
+# is an explicit import decision the operator made on a screen that had
+# just said the measurement was not saved yet - and a bench acquisition
+# belongs to no carousel slot, so there is no run for it to sit in.
+stored = bench.archive.get_sample("BENCH1")
 
-checks.ok(stored is not None, "the Sample exists in the archive")
+checks.ok(stored is not None, "the Sample exists in the PC archive")
+checks.ok(bench.session.get_sample("BENCH1") is None,
+          "and NOT in the session working set - a bench measurement is "
+          "not part of a run")
 checks.equal(stored["slot_id"], None,
              "a bench measurement belongs to no carousel slot")
 
@@ -1204,7 +1235,10 @@ checks.ok("ALREADY SAVED" in output,
           "and choosing Save a second time says ALREADY SAVED rather "
           "than saving again")
 
-saved_ids = [entry.get("sample_id") for entry in bench.store.summaries()]
+# THE ARCHIVE, which is where "Save as a Sample in the PC archive"
+# writes. A bench acquisition belongs to no run and never enters the
+# session working set.
+saved_ids = [entry.get("sample_id") for entry in bench.archive.summaries()]
 
 checks.equal(saved_ids.count("S-DOUBLE"), 1,
              "and the archive holds exactly ONE record for it - the "

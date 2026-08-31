@@ -383,12 +383,32 @@ ST3215_MOVE_TIMEOUT_MS = 12000
 # ACQUIRED-SPECTRUM RETENTION (RAM ONLY)
 # ==========================================
 # The ESP32 keeps the last raw acquisition per slot so the PC can pull a
-# measurement it lost - a crash, a restart, or a different laptop. This
-# is a small acquisition buffer, not a science archive: RAM only, never
-# written to flash, forgotten on reset, and never processed here.
+# measurement it lost - a crash, a restart, or a different laptop.
+#
+# IT IS WRITTEN TO THE DEVICE FILESYSTEM, not just held in RAM, and
+# that is deliberate: the PC keeps its working set in memory until the
+# operator imports, so between a measurement and an import this board
+# holds the only copy of the spectrum. An owner that forgets on reset
+# is not an owner. See ESP32/retention.py.
+#
+# It is still a small acquisition buffer and not a science archive: one
+# record per slot, no history, and nothing here is ever interpreted.
 #
 # 4 slots x 18 floats plus the settings read-back is well under 2 kB.
 RETAIN_LAST_SPECTRUM = True
+
+# WHERE THOSE RECORDS LIVE.
+#
+# Named here rather than hard-coded in retention.py so the test harness
+# can point it at a temporary directory. That is not a convenience: the
+# firmware modules are imported and driven on the HOST by the software
+# suite, where "/retained" is an absolute path on the developer's disk
+# - the first run of this feature created a "retained" directory at the
+# root of the developer's own drive and left two spectra in it, and the
+# fake device then "remembered" them into the next test. A device path
+# that a host can write to has to be overridable, or the tests write
+# outside their sandbox.
+RETAINED_DIR = "/retained"
 
 # ==========================================
 # HOST LINK (USB serial console)

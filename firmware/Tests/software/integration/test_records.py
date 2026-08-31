@@ -95,7 +95,9 @@ def session(samples=0, learning=True):
     bd = SandboxBD()
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -106,18 +108,18 @@ def session(samples=0, learning=True):
 
     for index in range(1, samples + 1):
         sample_id = "S{:03d}".format(index)
-        mission.store.create(sample_id, ((index - 1) % 4) + 1,
+        mission.session.create(sample_id, ((index - 1) % 4) + 1,
                              metadata={"note": "sample {}".format(index)})
-        mission.store.set_state(sample_id, STATE_LOADED)
-        mission.store.add_measurement(sample_id, raw=RAW)
-        mission.store.set_state(sample_id, STATE_MEASURED)
+        mission.session.set_state(sample_id, STATE_LOADED)
+        mission.session.add_measurement(sample_id, raw=RAW)
+        mission.session.set_state(sample_id, STATE_MEASURED)
 
     class Handle:
         pass
 
     handle = Handle()
     handle.mission = mission
-    handle.store = mission.store
+    handle.store = mission.session
     handle.link = link
     handle.port = port
     handle.bd = bd
@@ -304,7 +306,7 @@ try:
              ["2", "1", "", "", "", "", "edited note", "", "", "0"],
              records.menu_sample_database)
 
-    after = handle.bd.sample_store().get_sample("S001")["metadata"]
+    after = handle.store.get_sample("S001")["metadata"]
 
     checks.ok(after["note"] in (before, "edited note"),
               "the note is either unchanged or the new one, never "
@@ -333,7 +335,7 @@ try:
              ["3", "1", "S-RENAMED", "y", "", "0"],
              records.menu_sample_database)
 
-    store = handle.bd.sample_store()
+    store = handle.store
 
     checks.ok(store.has_sample("S-RENAMED") or store.has_sample("S001"),
               "the sample exists under exactly one of the two names")
@@ -347,7 +349,7 @@ try:
                  ["3", "1", "S002", "y", "", "0"],
                  records.menu_sample_database)
 
-        store2 = handle2.bd.sample_store()
+        store2 = handle2.store
 
         checks.equal(store2.count(), 2,
                      "both samples survive - a rename onto an existing "
@@ -365,7 +367,7 @@ try:
                  ["3", "1", "../escape", "y", "", "0"],
                  records.menu_sample_database)
 
-        checks.equal(handle3.bd.sample_store().count(), 1,
+        checks.equal(handle3.store.count(), 1,
                      "an invalid new ID leaves the archive alone")
 
     finally:
@@ -385,14 +387,14 @@ try:
     survives(handle, "cancelling a deletion", ["4", "1", "n", "", "0"],
              records.menu_sample_database)
 
-    checks.equal(handle.bd.sample_store().count(), 3,
+    checks.equal(handle.store.count(), 3,
                  "a cancelled deletion removes nothing")
 
     # Confirmed deletion.
     survives(handle, "confirming a deletion",
              ["4", "1", "y", "", "", "0"], records.menu_sample_database)
 
-    remaining = handle.bd.sample_store().count()
+    remaining = handle.store.count()
 
     checks.ok(remaining in (2, 3),
               "a confirmed deletion removes at most the one sample "
@@ -405,7 +407,7 @@ try:
         survives(empty, "deleting from an empty archive",
                  ["4", "", "0"], records.menu_sample_database)
 
-        checks.equal(empty.bd.sample_store().count(), 0,
+        checks.equal(empty.store.count(), 0,
                      "and the archive is still empty and readable")
 
     finally:
@@ -423,7 +425,7 @@ handle = session(samples=0)
 try:
     # The device holds nothing yet.
     survives(handle, "importing when the device holds nothing",
-             ["", ""], records.sync_esp32_samples, exhausted="")
+             ["", ""], records.import_esp32_samples, exhausted="")
 
     # Give the device something to hold.
     handle.link.connect_servo()
@@ -432,7 +434,7 @@ try:
     handle.link.measure_raw(1, sample_id="S-DEVICE")
 
     output = survives(handle, "importing a held acquisition",
-                      ["", "", ""], records.sync_esp32_samples,
+                      ["", "", ""], records.import_esp32_samples,
                       exhausted="")
 
     checks.ok(output.strip() != "", "the import screen reports something")
@@ -441,7 +443,7 @@ try:
     handle.port.fail_read_after = 0
 
     survives(handle, "importing with the port lost", ["", ""],
-             records.sync_esp32_samples, exhausted="")
+             records.import_esp32_samples, exhausted="")
 
 finally:
     handle.close()
@@ -527,7 +529,7 @@ for count in (0, 3):
                   "eight kinds of nonsense at the sample database with "
                   "{} samples ({})".format(count, crash or "ok"))
 
-        checks.equal(handle.bd.sample_store().count(), count,
+        checks.equal(handle.store.count(), count,
                      "and the archive is untouched")
 
     finally:
@@ -542,14 +544,14 @@ handle = session(samples=2)
 try:
     # Reach into the archive and damage one record the way a partial
     # write or a hand edit would.
-    data = handle.store._require_ready()
-    data["samples"][0]["measurements"] = [
+    records_list = handle.store.database.records("session")
+    records_list[0]["measurements"] = [
         {"measurement_id": None, "acquisition_status": None},
         {"measurement_id": "M002"},
         {},
     ]
-    data["samples"][0]["state"] = None
-    data["samples"][0]["metadata"] = None
+    records_list[0]["state"] = None
+    records_list[0]["metadata"] = None
 
     output, crash = drive(handle, ["1", "1", "", "", "0"],
                           records.menu_sample_database)

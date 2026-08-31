@@ -1,5 +1,35 @@
 """
-The authoritative store for completed scientific records.
+The PC-side Sample database: one file, two collections.
+
+WHO OWNS A SAMPLE
+
+    ESP32 storage   the device's own store, one acquisition per slot,
+                    held on the DEVICE FILESYSTEM and therefore across
+                    its own resets. Not part of this file and not a
+                    copy of it - a physically separate store on a
+                    physically separate computer.
+
+    PC session      the working set of the run in progress. Written by
+                    Prepare and Measure. IN THIS PROCESS'S MEMORY ONLY:
+                    it is never written to samples.json, and closing
+                    the client ends it.
+
+    PC archive      the permanent record, and the only thing in this
+                    file. Reached ONLY by an explicit operator import,
+                    from the ESP32 or from the session.
+
+A measurement never lands in the archive on its own. That was the
+defect this split exists for: the previous release wrote every stage of
+every measurement straight into the one list the screen called "the
+archive", which made "Import ALL Samples from ESP32" a button with
+nothing left to do.
+
+AND IT NEVER LANDS ON THE DISK ON ITS OWN EITHER. The release after
+that one split the list in two but kept persisting both halves, so a
+measurement still became a stored PC file the instant it was taken -
+under a different heading. "Saved on the PC" is decided by the disk,
+not by the label above the list, so the session is now held in memory
+and the archive is the only collection this file contains.
 
 THREE LAYERS, NEVER COLLAPSED
 
@@ -49,6 +79,14 @@ record, and it is deliberately not a successful measurement full of
 zeros - a spectrum of zeros is indistinguishable from a genuinely dark
 one, and inventing it would put a fact into the scientific record that
 never happened.
+
+DELETION NAMES ITS STORAGE
+
+`SampleCollection.delete` removes a Sample from ONE collection and
+reaches nothing else - not the other collection, not the ESP32, not the
+learning history, not DB1/DB2/DB3, not the calibrations. There is
+deliberately no "delete everywhere": the caller has to say which store
+it means, every time.
 
 Layer rule: BD must never import Science. This module stores and
 validates the SHAPE of a record; what the numbers mean is Science's.
@@ -477,125 +515,323 @@ def _read_json(path, default=None):
         )
 
 
-class SampleStore:
+class SampleDatabase:
     """
-    Every Sample this instrument has produced, in one archive.
+    The one PC-side Sample file, and the only writer of it.
 
-    Loaded once, written whole. The archive is small - a run produces a
-    handful of Samples - and one file that is either entirely the old
-    version or entirely the new one is worth more than a directory of
-    fragments that can be half-updated.
+    TWO COLLECTIONS, DIFFERENT LIFETIMES, ONE OF THEM ON DISK.
+
+        session   the working set of the run in progress. Prepare
+                  Sample creates a record here, Measure Sample
+                  completes it. It exists in this object and is never
+                  written out; a new process starts with an empty one.
+
+        archive   the permanent PC record, and the entire contents of
+                  the file. NOTHING lands here except an explicit
+                  operator import - from the ESP32, or from the session
+                  working set.
+
+    WHY THE SESSION IS NOT ON DISK.
+
+    An earlier release persisted it, to protect RAW from a crash. The
+    stated reason was that opening the serial port resets the ESP32, so
+    a PC client that crashed and restarted would take the device's only
+    copy with it on the way back up.
+
+    That reason was measured on the bench and is false.
+    `SerialLink.open()` holds DTR and RTS low precisely so the board
+    does NOT reset, and the device's uptime is monotonic across
+    repeated open/close cycles: a restarted client reconnects to a
+    board that never stopped running and can still import what it
+    holds. The device keeps its retained acquisitions on its own
+    filesystem, so they also survive ITS reset.
+
+    So the session file protected nothing that was not already
+    protected, and it cost the property the whole split exists for:
+    that a measurement becomes persistently stored PC science only when
+    the operator imports it. A crash still costs an ANALYSIS and not an
+    EXPERIMENT - the analysis is recomputed from the RAW the device
+    still has.
+
+    WHY THE SESSION IS STILL PART OF THIS OBJECT. A Sample may
+    legitimately exist in both with different content - a second
+    measurement taken after the first was archived - and the import has
+    to be able to SEE that, because that is exactly what a conflict is.
+    Splitting them across two objects would make the comparison a join
+    between two things that can load independently.
     """
 
-    def __init__(self, archive_path=None):
-        self.path = archive_path or ARCHIVE_PATH
+    def __init__(self, path=None):
+        self.path = path or ARCHIVE_PATH
         self.data = None
-        self.error = None
+        self.migrated = None
 
-        # The last state that reached the disk. `_write` restores from
+        # The last state that reached the disk. `write` restores from
         # it when a save fails, so what the screens read never contains
-        # a Sample the archive does not.
+        # a Sample the file does not.
         self._durable = None
 
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
 
+    def _empty(self):
+        return {
+            "schema_version": ARCHIVE_VERSION,
+            "storage_layout": "archive-only-v1",
+            config.SESSION_COLLECTION: [],
+            config.ARCHIVE_COLLECTION: [],
+        }
+
     def load(self):
+        """
+        Read the archive from the disk. The session is not on the disk.
+
+        RE-READING MUST NOT END THE RUN IN PROGRESS. `load` is not only
+        a constructor step: the Sample Database screen calls it for
+        [r] Refresh and after an import, so that the archive column
+        shows what the file now says. The session is in memory and the
+        file has nothing to say about it, so it is carried across
+        unchanged - a Refresh that silently discarded the measurement
+        the operator had just taken would be the worst kind of state
+        leak, because the screen would look like it had worked.
+        """
+        carried = None
+
+        if self.data is not None:
+            carried = self.data.get(config.SESSION_COLLECTION)
+
         payload = _read_json(self.path)
 
         if payload is None:
-            self.data = {
-                "schema_version": ARCHIVE_VERSION,
-                "samples": [],
-            }
-            self._durable = copy.deepcopy(self.data)
+            self.data = self._empty()
+            self.data[config.SESSION_COLLECTION] = carried or []
+            self.migrated = []
+            self._durable = copy.deepcopy(self._empty())
+            del self._durable[config.SESSION_COLLECTION]
 
             return self
 
-        if not isinstance(payload, dict) or "samples" not in payload:
+        if not isinstance(payload, dict):
             raise StorageError(
-                "{} is not a Sample archive.".format(self.path),
+                "{} is not a Sample database.".format(self.path),
                 "SAMPLE_READ_ERROR",
             )
 
         version = payload.get("schema_version") or payload.get("version")
 
         if version != ARCHIVE_VERSION:
-            # The archive is the run's only irreplaceable output and it
-            # is deliberately not in version control, so the original is
-            # copied aside BEFORE the migrated version replaces it. A
-            # migration that turns out to be wrong then costs nothing.
-            backup = self.path.with_name(
-                "{}.schema{}.backup.json".format(self.path.stem, version)
-            )
-
-            if not backup.exists():
-                _write_json(backup, payload)
-
             payload = migrate(payload, version)
+            self.migrated = payload.get("migrated_from_schema")
+            payload[config.SESSION_COLLECTION] = carried or []
             self.data = payload
-            self._write()
+            self.write()
 
             return self
 
-        self.data = payload
+        if config.ARCHIVE_COLLECTION not in payload:
+            raise StorageError(
+                "{} is version {} but has no '{}' collection.".format(
+                    self.path, version, config.ARCHIVE_COLLECTION,
+                ),
+                "SAMPLE_READ_ERROR",
+            )
+
+        # THE SNAPSHOT IS TAKEN BEFORE THE SESSION IS ATTACHED, so what
+        # `write` restores on failure is the file and nothing else.
         self._durable = copy.deepcopy(payload)
+
+        # A NEW PROCESS STARTS WITH AN EMPTY SESSION, and a re-read
+        # keeps the one this process already had. The file does not
+        # carry a session; a version-6 file that somehow does was not
+        # written by this code, and adopting its records would
+        # resurrect the persisted-session behaviour this layout exists
+        # to remove.
+        payload[config.SESSION_COLLECTION] = carried or []
+
+        self.migrated = []
+        self.data = payload
 
         return self
 
-    def _require_ready(self):
+    def require(self):
         if self.data is None:
             self.load()
 
         return self.data
 
-    def _records(self):
-        return self._require_ready().setdefault("samples", [])
+    def records(self, collection):
+        if collection not in config.SAMPLE_COLLECTIONS:
+            raise StorageError(
+                "Unknown Sample collection '{}'.".format(collection),
+                "INVALID_COLLECTION",
+            )
 
-    def _write(self):
+        return self.require().setdefault(collection, [])
+
+    def write(self):
         """
-        Persist, or leave memory exactly as the disk is.
+        Persist THE ARCHIVE, or leave memory exactly as the disk is.
+
+        THE SESSION IS NOT WRITTEN. It is stripped from the payload
+        here rather than kept in a second attribute, because every
+        screen reads the two collections through the same object and
+        the one place that must know the difference is the one place
+        that touches the disk.
 
         WHY THE SNAPSHOT.
 
-        Every mutator here follows the same shape: change `self.data`,
-        then call this. If the write fails, the caller gets a
-        StorageError - and used to be left holding a store whose
-        in-memory archive contained a Sample, a measurement or a state
-        change that is not on disk and never will be.
+        Every mutator follows the same shape: change `self.data`, then
+        call this. If the write fails, the caller gets a StorageError -
+        and used to be left holding a store whose in-memory records
+        contained a Sample, a measurement or a state change that is not
+        on disk and never will be.
 
         That divergence is worse than the failed write. The screens
-        read the store, so the operator is shown a Sample the archive
-        does not contain; the workflow's rule that RAW is persisted
-        BEFORE Science runs becomes a rule about a record that only
-        exists in memory; and the next successful save writes the
-        phantom out as though it had been there all along.
+        read the store, so the operator is shown a Sample the file does
+        not contain; the workflow's rule that RAW is persisted BEFORE
+        Science runs becomes a rule about a record that only exists in
+        memory; and the next successful save writes the phantom out as
+        though it had been there all along.
 
         So a failed write restores what was last durable. The operator
         sees the failure AND a store that matches the file, which is
         the only pair of facts they can act on.
         """
-        data = self._require_ready()
+        data = self.require()
 
         data["schema_version"] = ARCHIVE_VERSION
+        data["storage_layout"] = "archive-only-v1"
         data["updated_at"] = utc_now()
 
-        try:
-            _write_json(self.path, data)
+        # Everything except the session. Built by copying rather than
+        # by deleting and putting back, so an exception anywhere below
+        # cannot leave `self.data` without its working set.
+        persisted = {
+            key: value for key, value in data.items()
+            if key != config.SESSION_COLLECTION
+        }
 
-        except Exception:
+        try:
+            _write_json(self.path, persisted)
+
+        # BaseException, NOT Exception.
+        #
+        # Ctrl+C during a save is the case this missed. KeyboardInterrupt
+        # and SystemExit do not inherit from Exception, so the rollback
+        # below was skipped for exactly the interruption an operator is
+        # most likely to cause - and the store was left holding a Sample
+        # the file does not contain, which is the divergence this whole
+        # method exists to prevent. The interrupt is re-raised
+        # unchanged; it just does not get to leave memory lying.
+        except BaseException:
             # Back to the last state that reached the disk. Taking the
             # snapshot HERE would be too late - the mutation has
             # already been applied to `data` by the caller - so what is
             # restored is the copy made after the previous successful
             # write.
+            #
+            # THE SESSION SURVIVES IT. It was never on the disk, so the
+            # disk has nothing to say about it; a failed archive write
+            # must not delete the run in progress. Rolling it back with
+            # the archive would lose the RAW of a measurement that
+            # succeeded, because saving a DIFFERENT record failed.
             if self._durable is not None:
+                session = data.get(config.SESSION_COLLECTION) or []
                 self.data = copy.deepcopy(self._durable)
+                self.data[config.SESSION_COLLECTION] = session
 
             raise
 
-        self._durable = copy.deepcopy(data)
+        self._durable = copy.deepcopy(persisted)
+
+    # ------------------------------------------------------------------
+    # the two views
+    # ------------------------------------------------------------------
+
+    def session(self):
+        return SampleCollection(self, config.SESSION_COLLECTION)
+
+    def archive(self):
+        return SampleCollection(self, config.ARCHIVE_COLLECTION)
+
+    def status(self):
+        data = self.require()
+
+        return {
+            "path": str(self.path),
+            "schema_version": ARCHIVE_VERSION,
+            "collections": {
+                name: self.session().status() if name ==
+                config.SESSION_COLLECTION else self.archive().status()
+                for name in config.SAMPLE_COLLECTIONS
+            },
+        }
+
+
+class SampleCollection:
+    """
+    One named collection of Samples inside the database.
+
+    The session and the archive have identical RECORD semantics -
+    Sample, Measurement, AnalysisRun, RAW written once - and completely
+    different OWNERSHIP semantics. Sharing the record code is what
+    makes an import a copy rather than a translation; keeping the
+    instances apart is what makes "delete from the archive" a sentence
+    that can only mean one thing.
+    """
+
+    def __init__(self, database, collection):
+        self.database = database
+        self.collection = collection
+
+    # -- identity -------------------------------------------------------
+
+    @property
+    def path(self):
+        return self.database.path
+
+    @property
+    def is_archive(self):
+        return self.collection == config.ARCHIVE_COLLECTION
+
+    @property
+    def label(self):
+        return ("PC archive" if self.is_archive else "PC session")
+
+    @property
+    def is_persistent(self):
+        """
+        Whether what this collection holds outlives the process.
+
+        The screens ask, because "where does s01 still exist if I close
+        this program right now" is a question the operator has to be
+        able to answer without reading the source.
+        """
+        return self.is_archive
+
+    def load(self):
+        self.database.load()
+
+        return self
+
+    def _records(self):
+        return self.database.records(self.collection)
+
+    def _write(self):
+        """
+        Persist, if this collection is the one that has a file.
+
+        THE SESSION WRITES NOTHING, and that is the whole point of it:
+        a working set held in memory cannot be half-saved, cannot be
+        corrupted by a power cut, and cannot fail because the card is
+        full. Calling through to `write` "for consistency" would give
+        the run in progress a disk failure mode it does not have, and
+        would put the session's records in front of the serializer on
+        every Prepare and every Measure.
+        """
+        if self.is_archive:
+            self.database.write()
 
     # ------------------------------------------------------------------
     # queries
@@ -606,6 +842,9 @@ class SampleStore:
 
     def summaries(self):
         return [summary_of(record) for record in self._records()]
+
+    def sample_ids(self):
+        return [record.get("sample_id") for record in self._records()]
 
     def has_sample(self, sample_id):
         return self.get_sample(sample_id) is not None
@@ -622,7 +861,7 @@ class SampleStore:
 
         if record is None:
             raise StorageError(
-                "No Sample '{}' in the archive.".format(sample_id),
+                "No Sample '{}' in the {}.".format(sample_id, self.label),
                 "SAMPLE_NOT_FOUND",
             )
 
@@ -653,9 +892,9 @@ class SampleStore:
 
         if self.has_sample(sample_id):
             raise StorageError(
-                "Sample '{}' already exists. Sample IDs are permanent "
-                "handles for physical material and are never "
-                "reused.".format(sample_id),
+                "Sample '{}' already exists in the {}. Sample IDs are "
+                "permanent handles for physical material and are never "
+                "reused.".format(sample_id, self.label),
                 "DUPLICATE_SAMPLE_ID",
             )
 
@@ -665,6 +904,37 @@ class SampleStore:
         self._write()
 
         return record
+
+    def adopt(self, record):
+        """
+        Put a COMPLETE record into this collection, verbatim.
+
+        The import path. The record has already been built - by a
+        measurement, or read back off the device - and copying it is
+        the whole operation: nothing is recomputed, no timestamp is
+        refreshed, and RAW arrives exactly as it was acquired.
+
+        Refuses an existing ID outright. Deciding whether an incoming
+        record is the same one, a conflict, or something to be renamed
+        is the caller's judgement and needs both copies in hand; this
+        layer's job is to make sure the decision cannot be skipped.
+        """
+        sample_id = validate_sample_id(record.get("sample_id"))
+
+        if self.has_sample(sample_id):
+            raise StorageError(
+                "Sample '{}' is already in the {}; nothing was "
+                "overwritten.".format(sample_id, self.label),
+                "DUPLICATE_SAMPLE_ID",
+            )
+
+        stored = copy.deepcopy(record)
+        stored["sample_id"] = sample_id
+
+        self._records().append(stored)
+        self._write()
+
+        return stored
 
     def set_state(self, sample_id, state, timestamp_key=None,
                   timestamp=None):
@@ -786,7 +1056,9 @@ class SampleStore:
 
         if self.has_sample(new_id):
             raise StorageError(
-                "Sample '{}' already exists.".format(new_id),
+                "Sample '{}' already exists in the {}.".format(
+                    new_id, self.label
+                ),
                 "DUPLICATE_SAMPLE_ID",
             )
 
@@ -801,11 +1073,14 @@ class SampleStore:
 
     def delete(self, sample_id):
         """
-        Remove a Sample entirely.
+        Remove one Sample FROM THIS COLLECTION ONLY.
 
-        Deliberately blunt and deliberately rare: this destroys RAW that
-        cannot be reacquired once the material is gone. It exists for
-        the mistyped ID created seconds ago, not for tidying up.
+        Deliberately blunt and deliberately narrow. It destroys the
+        RAW held in this collection, which cannot be reacquired once
+        the material is gone - and it reaches nothing else: not the
+        other collection, not the ESP32, not the learning history, not
+        DB1/DB2/DB3, not the calibrations. A deletion whose target is
+        ambiguous is a deletion nobody can authorise.
         """
         records = self._records()
 
@@ -817,9 +1092,28 @@ class SampleStore:
                 return removed
 
         raise StorageError(
-            "No Sample '{}' in the archive.".format(sample_id),
+            "No Sample '{}' in the {}.".format(sample_id, self.label),
             "SAMPLE_NOT_FOUND",
         )
+
+    def clear(self):
+        """
+        Empty this collection.
+
+        The session's end-of-run operation. It exists on the archive
+        too, and every caller of it there has to say the word archive
+        out loud - see records.menu_sample_database.
+
+        On the session it frees memory and nothing else; on the archive
+        it rewrites the file without the records.
+        """
+        records = self._records()
+        removed = list(records)
+
+        del records[:]
+        self._write()
+
+        return removed
 
     # ------------------------------------------------------------------
     # reporting
@@ -829,7 +1123,19 @@ class SampleStore:
         records = self._records()
 
         return {
-            "path": str(self.path),
+            # WHERE IT ACTUALLY IS. The session has no file, and
+            # printing the archive's path beside it - which is what
+            # `str(self.path)` did for both - told the operator that
+            # closing the client would leave the run in progress in
+            # samples.json. It would not.
+            "path": (str(self.path) if self.is_persistent else None),
+            "storage": (
+                "file" if self.is_persistent else "memory"
+            ),
+            "persistent": self.is_persistent,
+            "survives_exit": self.is_persistent,
+            "collection": self.collection,
+            "label": self.label,
             "schema_version": ARCHIVE_VERSION,
             "samples": len(records),
             "measurements": sum(
@@ -843,103 +1149,230 @@ class SampleStore:
 
 
 # ----------------------------------------------------------------------
+# opening one collection directly
+# ----------------------------------------------------------------------
+# For callers that want one collection and nothing else - a test, a
+# research script, a report. They go through the same SampleDatabase,
+# so there is still exactly one reader and one writer of the file; what
+# they save is the two-line dance of loading the database and asking it
+# for a view.
+#
+# NAMED, NOT DEFAULTED. There is deliberately no `open_samples()` that
+# picks a collection for you: choosing between the run in progress and
+# the permanent record is the decision this whole split exists to make
+# explicit.
+
+def session_store(path=None):
+    """The SESSION working set of the Sample database at `path`."""
+    return SampleDatabase(path).load().session()
+
+
+def archive_store(path=None):
+    """The permanent ARCHIVE of the Sample database at `path`."""
+    return SampleDatabase(path).load().archive()
+
+
+# ----------------------------------------------------------------------
 # migration
 # ----------------------------------------------------------------------
 
-def migrate(payload, version):
+def _migrate_flat_record(old, version):
     """
-    Bring an archive written before the three-layer model up to date.
+    One record written before the three-layer model, brought up to date.
 
     ONE-WAY AND LOSSLESS. Every field of the old flat record is carried
     into the new shape; nothing is dropped, nothing is recomputed, and
     no number is changed. What was one implicit measurement becomes
     M001, and what was one implicit analysis becomes A001 beneath it -
     which is what those records always meant, said out loud.
-
-    This is not a compatibility layer. It runs once, the archive is
-    rewritten in the current shape, and the old shape is never produced
-    again.
     """
-    samples = []
+    record = new_sample(
+        old.get("sample_id"),
+        old.get("slot_id"),
+        (old.get("timestamps") or {}).get("created_at"),
+        old.get("metadata"),
+    )
+    record["state"] = old.get("state", STATE_READY_TO_LOAD)
+    record["timestamps"] = dict(old.get("timestamps") or {})
+
+    legacy = old.get("measurement")
+
+    if legacy:
+        # The old record stored raw / dark_corrected / normalized
+        # side by side. Only `raw` is MEASURED; the other two were
+        # CALCULATED from it and belong to an AnalysisRun, so they
+        # are carried there rather than promoted into RAW.
+        raw = legacy.get("raw")
+
+        measurement = new_measurement(
+            "M001",
+            record["sample_id"],
+            old.get("slot_id"),
+            raw={"white": raw} if raw else None,
+            acquisition={
+                "sensor_settings": legacy.get("sensor_settings"),
+                "wavelengths": legacy.get("wavelengths"),
+                "illuminations": ["white"],
+                "migrated_from_schema": version,
+            },
+            acquisition_status=(
+                ACQUISITION_SUCCESS if raw else ACQUISITION_FAILED
+            ),
+            calibration_id=(old.get("calibration") or {}).get(
+                "calibration_id"
+            ),
+            hardware=old.get("hardware"),
+            timestamp=(old.get("timestamps") or {}).get("measured_at"),
+            error=None if raw else {"code": "NO_RAW_IN_LEGACY_RECORD"},
+        )
+
+        if old.get("analysis") or old.get("reference_matches"):
+            measurement["analysis_runs"] = [{
+                "analysis_run_id": "A001",
+                "measurement_id": "M001",
+                "created_at": (old.get("timestamps") or {}).get(
+                    "measured_at"
+                ),
+                "migrated_from_schema": version,
+                "analysis_status": old.get("analysis_status"),
+                "analysis_error": old.get("analysis_error"),
+                "representations": {
+                    "dark_corrected": legacy.get("dark_corrected"),
+                    "normalized": legacy.get("normalized"),
+                },
+                "legacy_analysis": old.get("analysis"),
+                "reference_matches": old.get("reference_matches"),
+                "database": old.get("database"),
+                "calibration": old.get("calibration"),
+            }]
+
+        record["measurements"] = [measurement]
+
+    if old.get("conclusion") or old.get("best_match"):
+        record["conclusion"] = {
+            "interpretation": old.get("best_match"),
+            "similarity_percent": old.get("best_similarity"),
+            "status": old.get("status"),
+            "text": old.get("conclusion"),
+            "from_analysis_run": "A001",
+            "migrated_from_schema": version,
+        }
+
+    return record
+
+
+def migrate(payload, version):
+    """
+    Bring an older Sample file up to the session/archive layout.
+
+    Two changes have happened to this file, and this runs them in
+    order:
+
+        <= 3  one flat record per Sample, with an implicit single
+              measurement and an implicit single analysis. Expanded
+              into Sample -> Measurement -> AnalysisRun.
+
+        4     a single `samples` list, with no distinction between the
+              run in progress and the permanent record - which is the
+              defect the session/archive split exists to fix.
+
+        5     both collections persisted. The session is now held in
+              memory, so the file keeps only the archive.
+
+    WHERE THE VERSION 4 RECORDS GO, AND WHY.
+
+    Into the ARCHIVE. They were written by a release whose Sample
+    Database screen called them "the scientific record" and whose
+    delete confirmation said "this permanently deletes" - so they are
+    what the operator has been treating as their permanent PC copy, and
+    the migration must not quietly demote them to a working set that
+    the new screen offers to clear.
+
+    Putting them in the session instead would be the more literal
+    reading of how they were WRITTEN (automatically, without an
+    import), and it is the wrong one: it would take records the
+    operator believes are kept and place them one keystroke from
+    deletion. Each carries a note saying it predates the split, so
+    nothing here claims an import decision that was never made.
+
+    WHERE THE VERSION 5 SESSION RECORDS GO, AND WHY.
+
+    Into the ARCHIVE as well, each carrying its own note. Version 5
+    WROTE them to the disk, so whatever the screen called them they are
+    records that survived a restart and that an operator may have been
+    relying on. Dropping them because the new layout has nowhere to put
+    them would be this migration destroying real data to tidy up its
+    own history.
+
+    They are NOT presented as imported science: the note says they were
+    found in a persisted session and that no import decision is claimed
+    for them, exactly like the version 4 note. On a file whose session
+    was empty - the normal case, because the session is cleared at the
+    end of a run - this branch does nothing at all.
+
+    ONE-WAY. It runs once, the file is rewritten in the current shape,
+    and the old shape is never produced again.
+    """
+    note = (
+        "Migrated from schema {} on {}. This record predates the "
+        "session/archive split and was written by the release that kept "
+        "one undifferentiated Sample list; it is placed in the PC "
+        "archive because that release presented it as the permanent "
+        "scientific record. No import decision is claimed for it."
+    ).format(version, utc_now())
+
+    session_note = (
+        "Migrated from schema {} on {}. This record was found in the "
+        "PERSISTED session of a release that wrote the working set to "
+        "disk; the session is now held in memory only. It is placed in "
+        "the PC archive because it had already survived a restart and "
+        "discarding it would destroy data the operator could see. No "
+        "import decision is claimed for it."
+    ).format(version, utc_now())
+
+    archived = []
+    rescued_session = 0
+
+    # Everything the old file persisted ends up in the one collection
+    # the new file has. The undifferentiated `samples` list of version
+    # 4 and earlier, the version 5 archive, and the version 5 session -
+    # which was on the disk whatever it was called.
+    for record in payload.get(config.SESSION_COLLECTION) or []:
+        if isinstance(record, dict):
+            record = copy.deepcopy(record)
+            record["migrated_from_schema"] = version
+            record["migration_note"] = session_note
+            record["migrated_from_collection"] = config.SESSION_COLLECTION
+            archived.append(record)
+            rescued_session += 1
+
+    for record in payload.get(config.ARCHIVE_COLLECTION) or []:
+        if isinstance(record, dict):
+            record = copy.deepcopy(record)
+            record["migrated_from_schema"] = version
+            archived.append(record)
 
     for old in payload.get("samples") or []:
-        record = new_sample(
-            old.get("sample_id"),
-            old.get("slot_id"),
-            (old.get("timestamps") or {}).get("created_at"),
-            old.get("metadata"),
-        )
-        record["state"] = old.get("state", STATE_READY_TO_LOAD)
-        record["timestamps"] = dict(old.get("timestamps") or {})
+        if not isinstance(old, dict):
+            continue
 
-        legacy = old.get("measurement")
+        if version in (None, 1, 2, 3):
+            record = _migrate_flat_record(old, version)
 
-        if legacy:
-            # The old record stored raw / dark_corrected / normalized
-            # side by side. Only `raw` is MEASURED; the other two were
-            # CALCULATED from it and belong to an AnalysisRun, so they
-            # are carried there rather than promoted into RAW.
-            raw = legacy.get("raw")
+        else:
+            record = copy.deepcopy(old)
 
-            measurement = new_measurement(
-                "M001",
-                record["sample_id"],
-                old.get("slot_id"),
-                raw={"white": raw} if raw else None,
-                acquisition={
-                    "sensor_settings": legacy.get("sensor_settings"),
-                    "wavelengths": legacy.get("wavelengths"),
-                    "illuminations": ["white"],
-                    "migrated_from_schema": version,
-                },
-                acquisition_status=(
-                    ACQUISITION_SUCCESS if raw else ACQUISITION_FAILED
-                ),
-                calibration_id=(old.get("calibration") or {}).get(
-                    "calibration_id"
-                ),
-                hardware=old.get("hardware"),
-                timestamp=(old.get("timestamps") or {}).get("measured_at"),
-                error=None if raw else {"code": "NO_RAW_IN_LEGACY_RECORD"},
-            )
+        record["migrated_from_schema"] = version
+        record["migration_note"] = note
 
-            if old.get("analysis") or old.get("reference_matches"):
-                measurement["analysis_runs"] = [{
-                    "analysis_run_id": "A001",
-                    "measurement_id": "M001",
-                    "created_at": (old.get("timestamps") or {}).get(
-                        "measured_at"
-                    ),
-                    "migrated_from_schema": version,
-                    "analysis_status": old.get("analysis_status"),
-                    "analysis_error": old.get("analysis_error"),
-                    "representations": {
-                        "dark_corrected": legacy.get("dark_corrected"),
-                        "normalized": legacy.get("normalized"),
-                    },
-                    "legacy_analysis": old.get("analysis"),
-                    "reference_matches": old.get("reference_matches"),
-                    "database": old.get("database"),
-                    "calibration": old.get("calibration"),
-                }]
-
-            record["measurements"] = [measurement]
-
-        if old.get("conclusion") or old.get("best_match"):
-            record["conclusion"] = {
-                "interpretation": old.get("best_match"),
-                "similarity_percent": old.get("best_similarity"),
-                "status": old.get("status"),
-                "text": old.get("conclusion"),
-                "from_analysis_run": "A001",
-                "migrated_from_schema": version,
-            }
-
-        samples.append(record)
+        archived.append(record)
 
     return {
         "schema_version": ARCHIVE_VERSION,
+        "storage_layout": "archive-only-v1",
         "migrated_from_schema": version,
         "migrated_at": utc_now(),
-        "samples": samples,
+        "rescued_persisted_session_records": rescued_session,
+        config.SESSION_COLLECTION: [],
+        config.ARCHIVE_COLLECTION: archived,
     }

@@ -24,6 +24,7 @@ DB1, DB2 and DB3 are not touched, read or written by this operation.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -47,11 +48,31 @@ from BD.decision_learning import (                        # noqa: E402
 from Science.taxonomy import Taxonomy, TaxonomyError           # noqa: E402
 
 
+SEED_FILE = Path(__file__).resolve().parent / "data" / \
+    "seed_observations.json"
+
+
 def load_seed(path=None):
-    path = Path(path or bd_config.DECISION_LEARNING_SEED)
+    """
+    The bootstrap seed, from the research tree.
+
+    It is not stored under BD/. Every row in it is imported into the
+    learning database, and keeping the JSON beside that database meant
+    BD/training/ held one truth twice - so the seed lives with the
+    tooling and the DATABASE records where it came from. See
+    `DecisionLearningStore.record_seed_provenance`.
+    """
+    path = Path(path or SEED_FILE)
 
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def seed_hash(path=None):
+    """SHA256 of the seed file, so the database can name its own source."""
+    path = Path(path or SEED_FILE)
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _spectrum(values, channel_order):
@@ -187,7 +208,7 @@ def print_preview(preview):
     ))
 
 
-def apply(seed, preview, store, profile_store=None):
+def apply(seed, preview, store, profile_store=None, seed_path=None):
     """Write the previewed entries. Nothing not previewed is written."""
     profile_store = profile_store or AcquisitionProfileStore()
 
@@ -280,6 +301,15 @@ def apply(seed, preview, store, profile_store=None):
 
         written.append(entry["measurement_id"])
 
+    # The database says where it came from, in the database. This is
+    # what replaced keeping a second copy of the seed beside it.
+    store.record_seed_provenance(
+        seed.get("seed_id"),
+        str(seed_path or SEED_FILE),
+        seed_hash(seed_path) if (seed_path or SEED_FILE).exists() else None,
+        observations=len(written),
+    )
+
     return {
         "written": written,
         "skipped": skipped,
@@ -322,7 +352,9 @@ def main(argv=None):
         return 0
 
     try:
-        result = apply(seed, preview, store)
+        result = apply(seed, preview, store,
+                       seed_path=Path(arguments.seed)
+                       if arguments.seed else SEED_FILE)
 
     except LearningError as error:
         print()

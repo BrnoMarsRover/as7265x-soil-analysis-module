@@ -60,9 +60,10 @@ support.add_path("PC")
 
 import serial_link                                          # noqa: E402
 
+from BD import config as bd_config          # noqa: E402
 from BD import samples as samples_module                     # noqa: E402
 from BD.samples import (                                     # noqa: E402
-    SampleStore,
+    archive_store,
     StorageError,
 )
 
@@ -87,7 +88,7 @@ def fresh_store(sample="S001"):
     path.write_text('{"schema_version": 4, "samples": []}',
                     encoding="utf-8")
 
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     store.create(sample, 1)
 
     return store, path, directory
@@ -222,7 +223,7 @@ for dotted, description in MEMORY_POINTS:
                  "and the previous archive is byte-identical after it")
 
     # The rule from A.2: RAM must not be left ahead of the disk.
-    reread = SampleStore(path).load()
+    reread = archive_store(path).load()
     checks.equal(
         len(store.get_sample("S001").get("measurements") or []),
         len(reread.get_sample("S001").get("measurements") or []),
@@ -290,8 +291,8 @@ checks.section("10. MemoryError during Science, with RAW already stored")
 link, port, loopback = loopback_link(serial_link)
 mission, bd = sandbox_mission(link)
 
-mission.store.create("S100", 1)
-measurement = mission.store.add_measurement(
+mission.session.create("S100", 1)
+measurement = mission.session.add_measurement(
     "S100", raw={"white": [100] * 18, "uv": [50] * 18, "ir": [70] * 18}
 )
 
@@ -456,7 +457,7 @@ checks.equal(path.read_bytes(), before,
 # Reading, too: a descriptor shortage while opening the archive must be
 # reported rather than read as an empty archive.
 with shadowed(samples_module, "open", raiser(oserror(errno.EMFILE))):
-    kind, detail = outcome(lambda: SampleStore(path).load())
+    kind, detail = outcome(lambda: archive_store(path).load())
 
 checks.ok(kind in ("storage", "raw"),
           "EMFILE opening the archive fails loudly ({} {})".format(
@@ -535,7 +536,7 @@ for label, target, name in STAGES:
                  "  and the previous archive survives ENOSPC at {}"
                  .format(label))
 
-    reread = SampleStore(path).load()
+    reread = archive_store(path).load()
     checks.equal(
         len(store.get_sample("S001").get("measurements") or []),
         len(reread.get_sample("S001").get("measurements") or []),
@@ -579,7 +580,7 @@ checks.equal(kind, "storage",
 checks.equal(path.read_bytes(), before,
              "and the archive that already exists is still readable")
 
-checks.ok(SampleStore(path).load().count() >= 1,
+checks.ok(archive_store(path).load().count() >= 1,
           "and can still be opened and counted")
 
 
@@ -603,7 +604,7 @@ with patched(samples_module.tempfile, "mkstemp",
 checks.equal(kind, "storage",
              "a write to a read-only filesystem is a StorageError")
 
-reopened = SampleStore(path).load()
+reopened = archive_store(path).load()
 checks.ok(reopened.count() >= 1,
           "and the archive is still READABLE on a read-only filesystem "
           "- the mission can still be reviewed")
@@ -622,7 +623,7 @@ store, path, directory = fresh_store()
 store.add_measurement("S001", raw={"white": [8] * 18})
 
 durable = json.loads(path.read_text(encoding="utf-8"))
-durable_count = len(durable["samples"][0].get("measurements") or [])
+durable_count = len(durable[bd_config.ARCHIVE_COLLECTION][0].get("measurements") or [])
 
 # Permission is revoked between one successful save and the next.
 with patched(samples_module.tempfile, "mkstemp",
@@ -646,7 +647,7 @@ checks.equal(in_memory, durable_count,
 store.add_measurement("S001", raw={"white": [12] * 18})
 
 final = json.loads(path.read_text(encoding="utf-8"))
-final_count = len(final["samples"][0].get("measurements") or [])
+final_count = len(final[bd_config.ARCHIVE_COLLECTION][0].get("measurements") or [])
 
 checks.equal(final_count, durable_count + 1,
              "and when permission returns exactly one new measurement "
@@ -672,7 +673,7 @@ orphan.write_text(
     encoding="utf-8",
 )
 
-reopened = SampleStore(path).load()
+reopened = archive_store(path).load()
 
 checks.ok(reopened.get_sample("GHOST") is None,
           "a leftover temporary file is not read as archive content")
@@ -736,7 +737,13 @@ checks.ok("fallback" not in message.lower()
 checks.section("117. a measurement under resource pressure")
 
 # The end-to-end version of everything above: a real acquisition
-# through the real firmware, with the archive unable to accept it.
+# through the real firmware, with the filesystem refusing every write.
+#
+# WHAT CHANGED. This used to require the measurement to FAIL, because
+# Measure wrote the working set to samples.json. It writes no file now,
+# so a full disk cannot reach it - and the archive still has to be
+# untouched, because nothing was imported. Both halves are asserted:
+# the measurement survives, and nothing became stored PC science.
 
 link, port, loopback = loopback_link(serial_link)
 mission, bd = sandbox_mission(link)
@@ -745,7 +752,7 @@ link.connect_servo()
 link.sync_position(load_slot=1)
 link.select_slot(1, sample_id="S200")
 
-mission.store.create("S200", 1)
+mission.session.create("S200", 1)
 
 acquisition = link.measure_raw(1, sample_id="S200")
 
@@ -758,23 +765,45 @@ before = bd.samples_file.read_bytes()
 
 with patched(samples_module.os, "replace", raiser(oserror(errno.ENOSPC))):
     kind, detail = outcome(
-        lambda: mission.store.add_measurement("S200", **fields)
+        lambda: mission.session.add_measurement("S200", **fields)
+    )
+
+checks.equal(kind, "ok",
+             "a full disk does not cost the measurement - the working "
+             "set is memory, and nothing was going to be written")
+
+checks.equal(len(mission.session.get_sample("S200")
+                 .get("measurements") or []), 1,
+             "the Measurement is in the working set, with its RAW")
+
+checks.equal(bd.samples_file.read_bytes(), before,
+             "and the archive file is byte-identical - measuring does "
+             "not put a sample in it, full disk or not")
+
+checks.ok(mission.archive.get_sample("S200") is None,
+          "and the archive holds nothing for it, because nobody "
+          "imported it")
+
+# AND THE ARCHIVE STILL REFUSES HONESTLY when it IS asked to write.
+with patched(samples_module.os, "replace", raiser(oserror(errno.ENOSPC))):
+    kind, detail = outcome(
+        lambda: mission.archive.adopt(mission.session.get_sample("S200"))
     )
 
 checks.equal(kind, "storage",
-             "and a full disk turns it into a failed save rather than a "
-             "saved measurement")
+             "importing onto a full disk IS a failed save, and says so")
 
 checks.equal(bd.samples_file.read_bytes(), before,
-             "the archive is byte-identical")
+             "with the archive still byte-identical")
 
-# THE CLAIM THAT MATTERS. The spectra are gone from BD but not from the
-# device, and the workflow tells the operator exactly that.
+# THE CLAIM THAT MATTERS. The device holds the acquisition whatever the
+# PC's filesystem is doing, and that is what makes the failure
+# recoverable rather than a lost experiment.
 retained = link.request("list_saved_samples")
 
 checks.ok(isinstance(retained, dict),
-          "and the ESP32 still holds the acquisition, which is why the "
-          "screen says to use Sync ESP32 Acquisitions to BD")
+          "and the ESP32 still holds the acquisition, so the operator "
+          "can import it once there is room")
 
 link.close()
 bd.close()

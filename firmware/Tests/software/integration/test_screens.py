@@ -129,7 +129,9 @@ def session(synced=True):
     bd = SandboxBD()
 
     mission = Mission(link)
-    mission.store = bd.sample_store()
+    mission.samples = bd.sample_database()
+    mission.session = mission.samples.session()
+    mission.archive = mission.samples.archive()
     mission.calibrations = bd.calibration_store()
     mission.profiles = bd.profile_store()
     mission.load_science()
@@ -191,14 +193,29 @@ WALKS = {
     "measure.menu_measure": (["", "", "", ""], ""),
     "measure.menu_clear_slot": (["", ""], ""),
 
-    # "1" enters the record review from the history screen, so the walk
-    # covers both; the review itself ends on a pause().
-    "records.menu_learning_history": (["1", ""], "0"),
-    "records.menu_review_observations": ([""], ""),
+    # The learning history is material-first now. "u" enters the
+    # ungrouped observations, "m" the model performance, "x" the
+    # mixture gaps and "c" the context coverage - so one walk covers
+    # every branch of the top screen, and the three screens below it
+    # are entered on their own as well.
+    "records.menu_learning_history": (["u", "", "m", "0", "x", "",
+                                       "c", ""], "0"),
+    "records.menu_material_dataset": (["0"], "0"),
+    "records.menu_ungrouped_observations": ([""], ""),
+    "records.menu_model_performance": (["0"], "0"),
     "records.menu_sample_database": (["0"], "0"),
 
     "screen.menu_tools": (["0"], "0"),
     "screen.menu_help": ([""], ""),
+}
+
+
+# Screens that need more than a Mission. The argument is part of what
+# the screen IS - a material dataset without a material is not a screen
+# - so it is declared here rather than defaulted inside the screen,
+# where a default would make the missing case unreachable and untested.
+EXTRA_ARGS = {
+    "records.menu_material_dataset": ("Activated Carbon",),
 }
 
 
@@ -213,7 +230,9 @@ def call_for(name, mission, link):
     if module_name in ("measure", "screen"):
         return lambda: function(mission, status, view)
 
-    return lambda: function(mission)
+    extra = EXTRA_ARGS.get(name, ())
+
+    return lambda: function(mission, *extra)
 
 
 # ======================================================================

@@ -50,12 +50,13 @@ import support
 support.add_project_root()
 support.add_path("PC")
 
+from BD import config as bd_config          # noqa: E402
 from BD import samples as samples_module                     # noqa: E402
 from BD.samples import (                                     # noqa: E402
     STATE_LOADED,
     STATE_MEASURED,
     STATE_READY_TO_LOAD,
-    SampleStore,
+    archive_store,
     StorageError,
 )
 
@@ -71,7 +72,7 @@ def fresh_store():
     path.write_text('{"schema_version": 4, "samples": []}',
                     encoding="utf-8")
 
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     store.create("S001", 1)
 
     return store, path, directory
@@ -238,7 +239,7 @@ try:
 finally:
     restore()
 
-reread = SampleStore(path).load()
+reread = archive_store(path).load()
 
 checks.ok(not reread.has_sample("S099"),
           "a Sample whose save failed is not in the archive when it is "
@@ -272,7 +273,7 @@ for content, label in BROKEN:
     path.write_text(content, encoding="utf-8")
 
     try:
-        store = SampleStore(path).load()
+        store = archive_store(path).load()
         outcome = "LOADED"
 
         # Loading is allowed to succeed if the store MIGRATES the
@@ -297,7 +298,7 @@ directory = Path(tempfile.mkdtemp(prefix="freya-missing-"))
 path = directory / "does" / "not" / "exist" / "samples.json"
 
 try:
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     count = store.count()
     outcome = "OK"
 
@@ -326,7 +327,7 @@ directory = Path(tempfile.mkdtemp(prefix="freya-unreadable-"))
 path = directory / "samples.json"
 path.write_text('{"schema_version": 4, "samples": []}', encoding="utf-8")
 
-store = SampleStore(path).load()
+store = archive_store(path).load()
 store.create("S001", 1)
 store.create("S002", 2)
 
@@ -343,7 +344,7 @@ unreadable = directory / "a-directory-not-a-file"
 unreadable.mkdir()
 
 try:
-    reread = SampleStore(unreadable).load()
+    reread = archive_store(unreadable).load()
     outcome = "LOADED"
     count = reread.count()
 
@@ -403,7 +404,7 @@ checks.equal(final_raw, stored["measurements"][0]["raw"],
              "and an analysis run, a conclusion and a state change "
              "leave RAW byte-identical")
 
-reloaded = SampleStore(path).load().get_sample("S001")
+reloaded = archive_store(path).load().get_sample("S001")
 
 checks.equal(reloaded["measurements"][0]["raw"], final_raw,
              "and it survives a round trip through the file unchanged")
@@ -423,12 +424,12 @@ store.create("S010", 2, metadata={
 first = json.loads(path.read_text(encoding="utf-8"))
 
 for _pass in range(5):
-    store = SampleStore(path).load()
+    store = archive_store(path).load()
     store.set_state("S010", STATE_READY_TO_LOAD)
     store.set_state("S010", STATE_LOADED)
     store.set_state("S010", STATE_MEASURED)
 
-reloaded = SampleStore(path).load().get_sample("S010")
+reloaded = archive_store(path).load().get_sample("S010")
 
 checks.equal(reloaded["metadata"]["note"],
              "unicode: příliš žluťoučký kůň",
@@ -437,7 +438,8 @@ checks.equal(reloaded["metadata"]["location"], "Mars Yard, zone 3",
              "and so does a location with a comma in it")
 checks.equal(reloaded["metadata"]["map_point"], "P-12",
              "and a map point")
-stored_ids = [record["sample_id"] for record in first["samples"]]
+stored_ids = [record["sample_id"]
+              for record in first[bd_config.ARCHIVE_COLLECTION]]
 
 checks.ok("S010" in stored_ids and reloaded["sample_id"] == "S010",
           "and the identity is stable across every cycle")
@@ -463,7 +465,10 @@ checks.section("the sandbox really is a sandbox")
 # This suite would be worthless if it were writing to the real BD/.
 
 with SandboxBD() as sandbox:
-    store = sandbox.sample_store()
+    # The ARCHIVE, because this section proves that a write reaches the
+    # sandbox FILE and not the real one. A session Sample is never
+    # written to any file, so it could not tell the two apart.
+    store = sandbox.sample_database().archive()
     store.create("SANDBOX-TEST", 1)
 
     checks.ok(str(sandbox.root) not in str(support.FIRMWARE / "BD"),

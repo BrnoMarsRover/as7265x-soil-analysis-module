@@ -85,7 +85,7 @@ Each stage lands with its own tests and leaves the tree green.
 - `BD/taxonomy.py` — reads the material identity that **already exists**
   in DB1/DB3. Resolves display names, ids, aliases (including the Czech
   names already stored) and families. Invents nothing.
-- `BD/acquisition_profiles.py` + `data/acquisition_profiles.json` — HOW a
+- `BD/acquisition_profiles.py`, stored inside `BD/calibration/calibration.json` — HOW a
   measurement was made, separate from the calibration (what the reference
   read) and from the measurement (what the sample read). §40.
 - `BD/decision_learning.py` — SQLite. Observations, ground truth with
@@ -175,7 +175,9 @@ firmware/
     └── data/
         ├── operator_aliases.json
         └── decision_learning/
-            ├── seed_observations.json     readable, rebuildable source
+            └── (the seed it was bootstrapped from lives with the
+                 tooling, in research/training/data/, and its id and
+                 hash are recorded in the database's own meta table)
             └── decision_learning.sqlite3  the working database
 ```
 

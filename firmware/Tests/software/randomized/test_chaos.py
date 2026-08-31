@@ -112,7 +112,7 @@ class Chaos:
         self.link.online = True
 
         self.bd = SandboxBD()
-        self.store = self.bd.sample_store()
+        self.store = self.bd.sample_database().session()
 
         self.counter = 0
 

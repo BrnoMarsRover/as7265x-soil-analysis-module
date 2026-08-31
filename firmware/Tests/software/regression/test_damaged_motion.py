@@ -222,7 +222,8 @@ MOVES_SOMETHING = {
     "move_slots", "fine_adjust", "servo_test_move", "measure_raw",
     "sync_position", "select_slot", "servo_stop", "servo_torque",
     "servo_configure", "connect_servo", "disconnect_servo",
-    "clear_slot", "clear_all_slots", "delete_saved_samples",
+    "clear_slot", "clear_all_slots",
+    "delete_saved_sample", "delete_saved_samples",
     "led_test", "servo_bus_scan",
 }
 

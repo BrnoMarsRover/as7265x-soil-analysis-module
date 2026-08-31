@@ -31,8 +31,10 @@ FIRMWARE_ROOT = Path(__file__).resolve().parents[2]
 if str(FIRMWARE_ROOT) not in sys.path:
     sys.path.insert(0, str(FIRMWARE_ROOT))
 
-from BD.calibrations import CalibrationStore                # noqa: E402
-from BD.databases import References                          # noqa: E402
+from BD.calibrations import (                                     # noqa: E402
+    CalibrationStore,
+    read_legacy_calibration,
+)
 from BD.decision_learning import (                           # noqa: E402
     DecisionLearningStore,
     LABEL_EXACT_MATERIAL,
@@ -64,7 +66,7 @@ class Replay:
         self.registry = registry or DatabaseRegistry()
         self.taxonomy = taxonomy or Taxonomy(self.registry)
         self.calibrations = calibrations or CalibrationStore()
-        self.references = references or References()
+        self.references = references or read_legacy_calibration()
 
         self._calibration_cache = {}
 

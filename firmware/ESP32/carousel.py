@@ -48,6 +48,7 @@
 # are scientific states and belong to the PC.
 
 import config
+import retention
 
 from servo import (
     DIRECTIONS,
@@ -78,7 +79,10 @@ def new_slot(slot_id):
         "sample_id": None,
 
         # Last raw acquisition taken from this slot, so the PC can pull
-        # back a measurement it lost. RAM only, cleared with the slot.
+        # back a measurement it lost. Mirrored to the device filesystem
+        # by `retention`, so it also survives a reset of this board -
+        # see mark_occupied. Kept when the slot is cleared, because
+        # emptying a cup and deleting a spectrum are different things.
         "measurement": None
     }
 
@@ -101,11 +105,38 @@ class Carousel:
         # blocked instead, and status() says why.
         self.geometry_error = self._check_geometry()
 
-        # Physical occupancy: RAM only, reset on every reboot.
+        # Physical occupancy: RAM only, reset on every reboot. The
+        # firmware cannot know whether soil is still sitting in a cup
+        # after a power cut, and inventing an answer would be worse
+        # than admitting it does not know.
         self.slots = {}
 
         for slot_id in range(1, self.slot_count + 1):
             self.slots[slot_id] = new_slot(slot_id)
+
+        # THE ACQUISITIONS ARE A DIFFERENT MATTER. A spectrum that was
+        # measured really was measured, and a reboot does not make that
+        # untrue, so the retained acquisitions come back from the
+        # device filesystem. The slot they came from is NOT marked
+        # occupied by this: the record is restored, the claim about the
+        # physical world is not.
+        self.retention_error = None
+
+        try:
+            restored = retention.load_all()
+
+        except Exception:                              # pragma: no cover
+            # `load_all` is written not to raise. If it ever does, the
+            # module still has to boot - a carousel that will not
+            # construct takes every diagnostic down with it.
+            restored = {}
+            self.retention_error = "retained acquisitions could not be read"
+
+        for slot_id, measurement in restored.items():
+            if slot_id in self.slots:
+                self.slots[slot_id]["measurement"] = measurement
+
+        self.restored_acquisitions = sorted(restored.keys())
 
         self._reset_position()
 
@@ -261,14 +292,38 @@ class Carousel:
 
     def reset_slot(self, slot_id):
         """
-        Free a physical slot.
+        Free a physical slot, KEEPING the acquisition taken from it.
 
-        Runtime state only: the PC's persistent scientific record for
-        whatever was in the slot is a completely separate thing and is
-        never touched from here.
+        THE DEFECT THIS FIXES.
+
+        This used to replace the slot with a blank one, which dropped
+        `measurement` along with the occupancy - so clearing a slot to
+        load the next sample silently destroyed the device's copy of
+        the spectrum that had just been taken from it. Both screens
+        that call it say the opposite in as many words: "This frees the
+        mechanism only" and "Clearing a physical slot is a different
+        thing and keeps the record".
+
+        The visible consequence was on the PC. An operator measured,
+        cleared the slot, then opened Delete ALL ESP32 Samples - and
+        got "ESP32 Sample storage is already empty" over a device that
+        had held the acquisition thirty seconds earlier, while the
+        Sample Database in front of them still listed the sample. The
+        delete looked broken. Nothing was broken: the data had been
+        thrown away by a command that promised not to.
+
+        Emptying a cup and deleting a measurement are different
+        operations with different consequences, and the firmware
+        already has a separate command for the second one
+        (`clear_retained_samples`, reached by delete_saved_samples).
+        This one no longer does both.
         """
         slot_id = self.validate_slot(slot_id)
+
+        retained = self.slots[slot_id].get("measurement")
+
         self.slots[slot_id] = new_slot(slot_id)
+        self.slots[slot_id]["measurement"] = retained
 
         return self.slots[slot_id]
 
@@ -277,23 +332,53 @@ class Carousel:
         Free every physical slot at once.
 
         Runtime occupancy only, exactly like reset_slot repeated: the
-        carousel is not moved, the tracked position is untouched, and no
-        saved Sample record anywhere is affected.
+        carousel is not moved, the tracked position is untouched, the
+        retained acquisitions are kept, and no saved Sample record
+        anywhere is affected.
         """
         cleared = []
 
         for slot_id in range(1, self.slot_count + 1):
             slot = self.slots[slot_id]
 
-            if slot["occupied"] or slot["sample_id"] or slot["measurement"]:
+            if slot["occupied"] or slot["sample_id"]:
                 cleared.append({
                     "slot_id": slot_id,
                     "sample_id": slot["sample_id"],
+                    "acquisition_kept": slot["measurement"] is not None,
                 })
 
             self.reset_slot(slot_id)
 
         return cleared
+
+    def drop_retained_sample(self, sample_id):
+        """
+        Delete ONE retained acquisition, keeping the physical slot state.
+
+        Per-sample rather than all-or-nothing, because the PC's Sample
+        Database offers a per-sample delete that names the ESP32 as its
+        target, and an operator who wants one device copy gone should
+        not have to destroy the other three to get it.
+
+        Returns the slot it was dropped from, or None if no retained
+        acquisition answers to that id. `occupied` and `sample_id` are
+        deliberately untouched: soil can still be sitting in the slot.
+        """
+        slot = self.retained_sample(sample_id)
+
+        if slot is None:
+            return None
+
+        slot["measurement"] = None
+
+        # The persisted copy goes with it. A delete that emptied RAM
+        # and left the file behind would put the acquisition back on
+        # the next reboot, which is the one thing a delete must never
+        # do.
+        retention.drop(slot["slot_id"])
+
+        return slot
 
     def clear_retained_samples(self):
         """
@@ -308,8 +393,13 @@ class Carousel:
 
         for slot in self.slot_list():
             if slot.get("measurement") is not None:
-                cleared.append(slot.get("sample_id"))
+                cleared.append(self.retained_sample_id(slot))
                 slot["measurement"] = None
+
+        # Unconditionally, over every slot rather than only the ones
+        # that had a RAM copy: a file whose record failed to load is
+        # not in RAM and would otherwise survive "delete everything".
+        retention.clear()
 
         return cleared
 
@@ -321,9 +411,22 @@ class Carousel:
         slot, and stays there until clear_slot. The Sample ID is carried
         only so a response can be correlated with the PC's record.
 
-        `measurement` is the raw acquisition kept in RAM so the PC can
-        pull it back later if it lost the response. It is stored, never
+        `measurement` is the raw acquisition kept so the PC can pull it
+        back later if it lost the response. It is stored, never
         interpreted - the ESP32 still performs no science.
+
+        THE ACQUISITION IS WRITTEN TO THE DEVICE FILESYSTEM HERE,
+        because this is the moment it becomes the only copy that exists
+        anywhere: the PC holds its working set in memory until the
+        operator imports, so until then this board owns the science.
+
+        A FAILED WRITE DOES NOT FAIL THE MEASUREMENT. The spectrum is
+        already in RAM and already going back in the response;
+        discarding it because the disk is full would destroy the data
+        to protect the backup of it. `retention_error` records what
+        went wrong and the measure response reports it, so an
+        unprotected acquisition is never silently mistaken for a
+        protected one.
         """
         slot_id = self.validate_slot(slot_id)
         slot = self.slots[slot_id]
@@ -335,6 +438,7 @@ class Carousel:
 
         if measurement is not None and config.RETAIN_LAST_SPECTRUM:
             slot["measurement"] = measurement
+            self.retention_error = retention.save(slot_id, measurement)
 
         return slot
 
@@ -371,6 +475,31 @@ class Carousel:
             if slot.get("measurement") is not None
         ]
 
+    @staticmethod
+    def retained_sample_id(slot):
+        """
+        Which Sample a retained acquisition is OF.
+
+        FROM THE MEASUREMENT, NOT FROM THE SLOT. `slot["sample_id"]`
+        answers a different question - which Sample is physically in
+        this cup right now - and clearing the slot correctly empties it
+        while the acquisition taken from it is still held. Reading the
+        id from the slot therefore renamed a retained acquisition to
+        the SLOTn placeholder the moment the cup was emptied, so the
+        PC could no longer match the device's copy to its own record or
+        delete it by name.
+
+        The measurement has carried its own `sample_id` since it was
+        taken, and that one cannot go stale.
+        """
+        if slot is None or slot.get("measurement") is None:
+            return None
+
+        return (
+            (slot["measurement"] or {}).get("sample_id")
+            or slot.get("sample_id")
+        )
+
     def retained_sample(self, sample_id):
         """
         One retained acquisition by Sample ID.
@@ -383,7 +512,7 @@ class Carousel:
             if slot.get("measurement") is None:
                 continue
 
-            if slot.get("sample_id") == sample_id:
+            if self.retained_sample_id(slot) == sample_id:
                 return slot
 
             if sample_id == "SLOT{}".format(slot["slot_id"]):

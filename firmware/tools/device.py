@@ -76,6 +76,7 @@ PC_DIR = FIRMWARE_DIR / "PC"
 
 ESP32_SOURCES = (
     "config.py",
+    "retention.py",
     "sensor.py",
     "servo.py",
     "carousel.py",
@@ -115,7 +116,8 @@ ESP32_SOURCES = (
 # main.py and boot.py stay as source. MicroPython looks for those two by
 # name at startup, they are 116 and 16 lines, and keeping them readable
 # on the device is worth more than the few hundred bytes.
-PRECOMPILED = ("config", "sensor", "servo", "carousel", "protocol")
+PRECOMPILED = ("config", "retention", "sensor", "servo", "carousel",
+               "protocol")
 
 SOURCE_ON_DEVICE = ("main.py", "boot.py")
 
@@ -124,11 +126,25 @@ ESP32_FILES = tuple(
     name + ".mpy" for name in PRECOMPILED
 ) + SOURCE_ON_DEVICE
 
+# THE DEVICE'S OWN DATA, WHICH IS NOT PART OF THE FIRMWARE.
+#
+# `/retained` holds the acquisitions the operator has not imported yet
+# - the only copy of them, because the PC keeps its working set in
+# memory until an import. It contains no modules, so it cannot shadow
+# anything and it is not what --clean exists to remove.
+#
+# A deployment therefore LEAVES IT ALONE. Wiping it would mean that
+# updating the firmware silently destroys unimported science, which is
+# a thing a maintenance command must never do quietly. `--purge-data`
+# removes it for an operator who has decided that is what they want.
+DEVICE_DATA_DIRS = ("retained",)
+
 # Modules the import check exercises, in dependency order. boot.py is
 # excluded because importing it does nothing by design, and main.py
 # because importing it would start the serving loop - which is exactly
 # what the reset-and-ping step tests properly.
-IMPORT_CHECK = ("config", "sensor", "servo", "carousel", "protocol")
+IMPORT_CHECK = ("config", "retention", "sensor", "servo", "carousel",
+                "protocol")
 
 
 # ======================================================================
@@ -433,12 +449,16 @@ def check_port(port, report):
     return report.step("PORT", True, port)
 
 
-def clean_device(port, report):
+def clean_device(port, report, purge_data=False):
     """
-    Remove every user file and directory from the device filesystem.
+    Remove every user MODULE from the device filesystem.
 
     The MicroPython runtime is in flash and is not part of the
     filesystem, so nothing here can damage it.
+
+    DEVICE_DATA_DIRS IS KEPT unless `purge_data` says otherwise: see
+    the note beside it. Deploying new firmware is a code operation, and
+    it must not take the operator's un-imported measurements with it.
     """
     entries = device_listing(port)
 
@@ -446,8 +466,15 @@ def clean_device(port, report):
         return report.step("CLEAN", True, "already empty")
 
     removed = []
+    kept = []
 
     for name, is_directory in entries:
+        if (not purge_data and is_directory
+                and name.strip("/") in DEVICE_DATA_DIRS):
+            kept.append(name)
+
+            continue
+
         args = ["fs", "rm", "-r", ":" + name] if is_directory else \
                ["fs", "rm", ":" + name]
 
@@ -463,7 +490,11 @@ def clean_device(port, report):
 
         removed.append(name + ("/" if is_directory else ""))
 
-    left = device_listing(port)
+    left = [
+        (name, is_directory) for name, is_directory in device_listing(port)
+        if not (not purge_data and is_directory
+                and name.strip("/") in DEVICE_DATA_DIRS)
+    ]
 
     if left:
         return report.step(
@@ -471,9 +502,12 @@ def clean_device(port, report):
             "still present: {}".format(", ".join(n for n, _ in left)),
         )
 
-    return report.step(
-        "CLEAN", True, "removed {}".format(", ".join(removed))
-    )
+    detail = "removed {}".format(", ".join(removed) or "nothing")
+
+    if kept:
+        detail += "; kept device data: {}".format(", ".join(kept))
+
+    return report.step("CLEAN", True, detail)
 
 
 UPLOAD_ATTEMPTS = 3
@@ -567,7 +601,21 @@ def check_remote_manifest(port, report, strict=True):
     legitimate thing to do knowingly.
     """
     entries = device_listing(port)
-    present = {name for name, _ in entries}
+
+    # The device's own data directory is not firmware and is not
+    # "stale": it is where the un-imported acquisitions live, and a
+    # deployment deliberately leaves it in place. Reporting it as an
+    # unexpected file would make every clean deployment fail its own
+    # manifest check.
+    data_present = sorted(
+        name for name, is_directory in entries
+        if is_directory and name.strip("/") in DEVICE_DATA_DIRS
+    )
+
+    present = {
+        name for name, is_directory in entries
+        if not (is_directory and name.strip("/") in DEVICE_DATA_DIRS)
+    }
 
     missing = [n for n in ESP32_FILES if n not in present]
 
@@ -592,8 +640,13 @@ def check_remote_manifest(port, report, strict=True):
 
         return True
 
-    return report.step("MANIFEST", True,
-                       "{} files, nothing else".format(len(ESP32_FILES)))
+    detail = "{} files, nothing else".format(len(ESP32_FILES))
+
+    if data_present:
+        detail = "{} files + device data ({})".format(
+            len(ESP32_FILES), ", ".join(data_present))
+
+    return report.step("MANIFEST", True, detail)
 
 
 def check_content(port, report, built):
@@ -836,7 +889,7 @@ def command_clean(args):
     if not check_port(args.port, report):
         return 1
 
-    clean_device(args.port, report)
+    clean_device(args.port, report, purge_data=args.purge_data)
 
     return 1 if report.failed else 0
 
@@ -1002,7 +1055,8 @@ def command_deploy(args):
     # difference between a two-minute fix and an afternoon.
     try:
         if args.clean:
-            if not clean_device(args.port, report):
+            if not clean_device(args.port, report,
+                                purge_data=args.purge_data):
                 return 1
 
         if not upload(args.port, report, built):
@@ -1176,7 +1230,15 @@ def build_parser():
                              "device on Linux and macOS)")
     parser.add_argument(
         "--clean", action="store_true",
-        help="remove every user file from the device before uploading",
+        help="remove every user MODULE from the device before uploading. "
+             "The device's own un-imported acquisitions are kept; see "
+             "--purge-data",
+    )
+    parser.add_argument(
+        "--purge-data", action="store_true",
+        help="also delete the device's retained acquisitions. These are "
+             "the only copy of any measurement not yet imported to the "
+             "PC archive",
     )
 
     return parser

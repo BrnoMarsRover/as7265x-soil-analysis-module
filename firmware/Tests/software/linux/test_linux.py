@@ -424,8 +424,8 @@ for label, cwd in WORKING_DIRECTORIES:
     result = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.path.insert(0, r'{}'); "
-         "from BD.databases import References; "
-         "print(len(References().dark))".format(FIRMWARE)],
+         "from BD.calibrations import read_legacy_calibration; "
+         "print(len(read_legacy_calibration().dark))".format(FIRMWARE)],
         capture_output=True, text=True, cwd=str(cwd), timeout=120,
     )
 

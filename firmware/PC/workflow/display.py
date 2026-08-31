@@ -28,6 +28,7 @@ from workflow import status as ui_status
 
 from workflow.prompts import (
     RULE,
+    RULE,
     banner,
     choose,
     number,
@@ -135,32 +136,42 @@ def print_system_status(mission):
     """PC, BD and ESP32 in one place. A failure in one still shows the rest."""
     banner("SYSTEM STATUS")
 
-    store = mission.store
-
     print("PC")
     print("Connection:       {}".format(
         "ONLINE" if mission.link.online else "UNKNOWN"
     ))
+
+    # THE TWO PC COLLECTIONS, COUNTED SEPARATELY.
+    #
+    # One "Samples: 12" line cannot say whether those twelve are a run
+    # in progress or twelve records the operator has decided to keep,
+    # and those call for opposite responses at the end of a mission.
     try:
-        storage = store.status()
+        session = mission.session.status()
+        archive = mission.archive.status()
 
     except Exception as error:
-        storage = None
+        session = archive = None
 
         print("Sample storage:   ERROR")
         print("Storage error:    {}: {}".format(
             type(error).__name__, error))
 
-    if storage:
-        # The three layers, counted separately. "12 samples" alone
-        # cannot distinguish twelve measured samples from twelve
-        # prepared ones that were never measured.
+    if session and archive:
         print("Sample storage:   READY")
-        print("Samples:          {}".format(storage["samples"]))
-        print("Measurements:     {}".format(storage["measurements"]))
-        print("Analysis runs:    {}".format(storage["analysis_runs"]))
-        print("Sample archive:   {}".format(storage["path"]))
-        print("Schema version:   {}".format(storage["schema_version"]))
+        print("Sample database:  {}".format(archive["path"]))
+        print("Schema version:   {}".format(archive["schema_version"]))
+        print()
+
+        # The three record layers, counted separately. "12 samples"
+        # alone cannot distinguish twelve measured samples from twelve
+        # prepared ones that were never measured.
+        for label, entry in (("Session (this run)", session),
+                             ("Archive (permanent)", archive)):
+            print("  {:<20}{} sample(s), {} measurement(s), {} "
+                  "analysis run(s)".format(
+                      label, entry["samples"], entry["measurements"],
+                      entry["analysis_runs"]))
 
     print()
     print("BD")
@@ -201,7 +212,7 @@ def print_system_status(mission):
         ))
 
     print("  library:        {} calibration(s) in {}".format(
-        health["stored"], mission.calibrations.library_path.name
+        health["stored"], mission.calibrations.path.name
     ))
 
     if mission.database is not None:
@@ -758,22 +769,42 @@ DATABASE_LABELS = {
     "DB3": "external spectra, projected",
 }
 
+# What KIND of evidence each database is. Not decoration: a cosine of
+# 0.97 against DB1 means "this looks like something we measured on this
+# instrument", and the same number against DB3 means "this looks like a
+# laboratory spectrum, after modelling our sensor". Those are different
+# claims and the screen has to say which one it is showing.
+DATABASE_EVIDENCE = {
+    "MEASURED": "measured on THIS instrument",
+    "REFERENCE_PROJECTED": "external laboratory spectra, projected",
+    "DERIVED_REFERENCE": "external laboratory spectra, projected",
+}
+
 
 def print_database_results(database_results, metrics=("cosine", "rmse",
-                                                      "pearson_r")):
+                                                      "pearson_r"),
+                           show_key=True):
     """
     What each database says, per metric, with its margin.
 
-    ONE ROW PER DATABASE PER METRIC, never a single ranked list. The
-    databases answer different questions - DB1 from spectra measured on
-    this instrument, DB3 from laboratory spectra put through a model of
-    it - so their scores are shown side by side and never averaged into
-    a number that would mean nothing.
+    ONE BLOCK PER DATABASE, never a single ranked list. The databases
+    answer different questions - DB1 from spectra measured on this
+    instrument, DB3 from laboratory spectra put through a model of it -
+    so their scores are shown side by side and never averaged into a
+    number that would mean nothing. DISAGREEMENT BETWEEN THEM IS
+    EVIDENCE and is left visible.
 
     THE MARGIN IS THE POINT. A winner is only worth reading next to the
     distance to the runner-up: two materials separated by 0.004 cosine
     is not an identification, and printing only the winner is how a 97%
     similarity came to look like a confident answer.
+
+    Each block says, before any number: which database, which version,
+    what kind of evidence it is, how many materials were in the field,
+    how many features were actually compared, and which normalization
+    the measurement went through to be comparable with it. All six are
+    needed to read the numbers underneath - a cosine over 3 shared
+    channels is not the same measurement as a cosine over 54.
     """
     if not database_results:
         print("  No database comparison was made.")
@@ -791,17 +822,22 @@ def print_database_results(database_results, metrics=("cosine", "rmse",
 
             continue
 
-        print("{}  {}  {} materials, {} channels".format(
-            name,
-            entry.get("version"),
+        print("{}  {}".format(name, entry.get("version")))
+        print("     {}".format(
+            DATABASE_EVIDENCE.get(entry.get("evidence"))
+            or entry.get("evidence")
+            or DATABASE_LABELS.get(name, "")
+        ))
+        print("     {} material(s) compared over {} feature(s) of {}".format(
             entry.get("candidate_count"),
             entry.get("channels_compared"),
+            entry.get("feature_space"),
         ))
         print("     normalized with {}".format(
             entry.get("normalization") or "-"
         ))
         print()
-        print("     {:<12} {:<24} {:>10} {:>10}".format(
+        print("     {:<12} {:<26} {:>10} {:>10}".format(
             "metric", "winner", "score", "margin"))
 
         for metric in metrics:
@@ -810,25 +846,46 @@ def print_database_results(database_results, metrics=("cosine", "rmse",
             if not summary:
                 continue
 
-            print("     {:<12} {:<24} {:>10} {:>10}".format(
+            print("     {:<12} {:<26} {:>10} {:>10}".format(
                 metric,
-                str(summary.get("winner"))[:24],
+                str(summary.get("winner"))[:26],
                 number(summary.get("winner_score")),
                 number(summary.get("absolute_margin")),
             ))
+
+        # WHERE THIS DATABASE DISAGREES WITH ITSELF. Three metrics that
+        # name three different materials is a finding, and reading three
+        # rows and noticing it is work the screen can do.
+        winners = {
+            (entry.get("metrics") or {}).get(metric, {}).get("winner")
+            for metric in metrics
+            if (entry.get("metrics") or {}).get(metric)
+        }
+        winners.discard(None)
+
+        if len(winners) > 1:
+            print()
+            print("     METRICS DISAGREE inside {}: {}".format(
+                name, ", ".join(sorted(str(w) for w in winners))))
 
         print()
 
     for entry in unavailable:
         print("{}  {}".format(entry.get("database"), entry.get("status")))
 
-        reason = entry.get("reason")
+        reason = entry.get("reason") or (
+            "not available" if not entry.get("available") else None
+        )
 
         if reason:
             for line in textwrap.wrap(str(reason), 64):
                 print("     {}".format(line))
 
         print()
+
+    if show_key:
+        for line in textwrap.wrap(METRIC_NOTE, 66):
+            print("  {}".format(line))
 
 
 DECISION_HEADLINE = {
@@ -953,19 +1010,72 @@ def print_decision(decision, detail=False):
     if not detail:
         return
 
-    print()
-    print("  EVIDENCE")
+    print_decision_detail(decision)
 
+
+def print_decision_detail(decision):
+    """
+    The complete evidence trace: how this conclusion was actually reached.
+
+    EVERY NUMBER HERE WAS COMPUTED BY THE DECISION MODEL. Nothing is
+    re-derived for the screen and nothing is a plausible-sounding
+    reconstruction: the gates are the ladder's own branches with their
+    own thresholds, the per-database support is the fusion table, and
+    the confidence penalties are the same conditions `_confidence`
+    counted. If the model did not record something, this says so rather
+    than inventing it.
+
+    Read top to bottom it answers, in order: what was concluded, how
+    much measurement it rests on, what each database contributed, which
+    candidates were in play and what supported each, which gate stopped
+    the answer where it stopped, and why the confidence is what it is.
+    """
     evidence = decision.get("evidence") or {}
 
-    for key, entry in sorted((evidence.get("databases") or {}).items()):
+    # ---- coverage ----------------------------------------------------
+    coverage = evidence.get("coverage") or {}
+
+    print()
+    print("  EVIDENCE COVERAGE")
+    print()
+    print("    Hardware QC:        {}".format(coverage.get("hardware_qc")))
+    print("    Normalization:      {}".format(
+        coverage.get("normalization")))
+    print("    Raw features:       {} of {}".format(
+        coverage.get("raw_valid_total"), coverage.get("features_total")))
+    print("    Usable reflectance: {} of {}".format(
+        coverage.get("normalized_valid_total"),
+        coverage.get("features_total"),
+    ))
+
+    for illumination, entry in sorted(
+        (coverage.get("by_illumination") or {}).items()
+    ):
+        print("      {:<6} raw {}/18, reflectance {}/18".format(
+            illumination.upper(),
+            entry.get("raw_valid_channels"),
+            entry.get("normalized_valid_channels"),
+        ))
+
+    # ---- what each database contributed ------------------------------
+    print()
+    print("  DATABASE CONTRIBUTIONS")
+
+    databases = evidence.get("databases") or {}
+
+    if not databases:
         print()
-        print("    {} (weight {})".format(key, entry.get("database_weight")))
+        print("    No database produced usable support.")
+
+    for key, entry in sorted(databases.items()):
+        print()
+        print("    {} (database weight {})".format(
+            key, entry.get("database_weight")))
 
         for family, summary in sorted((entry.get("families") or {}).items()):
-            print("      {:<15} {:<28} margin {} z {}".format(
+            print("      {:<14} best {:<26} margin {:<9} z {}".format(
                 family,
-                str(summary.get("winner"))[:28],
+                str(summary.get("winner"))[:26],
                 (
                     "{:.4f}".format(summary["absolute_margin"])
                     if summary.get("absolute_margin") is not None else "-"
@@ -976,21 +1086,215 @@ def print_decision(decision, detail=False):
                 ),
             ))
 
-    for entry in evidence.get("discounted") or []:
+        supported = sorted(
+            (entry.get("candidates") or {}).items(),
+            key=lambda item: -(item[1].get("support") or 0.0),
+        )[:4]
+
+        if supported:
+            print("      strongest support from this database:")
+
+            for material, support in supported:
+                print("        {:<28} {:<8} {}".format(
+                    str(material)[:28],
+                    number(support.get("support")),
+                    "" if support.get("votes")
+                    else "DISCOUNTED - class reliability {}".format(
+                        support.get("class_reliability")),
+                ))
+
+    discounted = evidence.get("discounted") or []
+
+    if discounted:
+        by_reason = {}
+
+        for entry in discounted:
+            key = (entry["database"], entry["reason"])
+            by_reason.setdefault(key, []).append(entry["material"])
+
         print()
-        print("    DISCOUNTED {} said {} - {}".format(
-            entry["database"], entry["material"], entry["reason"]
+        print("    DISCOUNTED - named by a database, not counted")
+
+        for (database, reason), materials in sorted(by_reason.items()):
+            print()
+            print("      {} x{}: {}".format(
+                database, len(materials), reason))
+
+            for material in materials[:DISCOUNTED_SHOWN]:
+                print("        {}".format(material))
+
+            if len(materials) > DISCOUNTED_SHOWN:
+                print("        ... and {} more".format(
+                    len(materials) - DISCOUNTED_SHOWN))
+
+    # ---- candidate by candidate --------------------------------------
+    print()
+
+    nearest_known = decision.get("candidates_are") == "NEAREST_KNOWN"
+
+    if nearest_known:
+        print("  NEAREST KNOWN MATERIALS")
+        print()
+
+        for line in textwrap.wrap(
+            "Not candidates. The decision was UNKNOWN, so these are the "
+            "closest things in the libraries - context, not a claim "
+            "about the sample. No per-database support was fused for "
+            "them, because none of them was being judged.", 66
+        ):
+            print("    {}".format(line))
+
+    else:
+        print("  CANDIDATE EVIDENCE")
+
+    candidates = decision.get("candidates") or []
+
+    if not candidates:
+        print()
+        print("    No candidate was carried forward.")
+
+    for index, candidate in enumerate(candidates, start=1):
+        print()
+        print("    {}. {}   strength {}  ({})".format(
+            index,
+            candidate.get("material"),
+            number(candidate.get("evidence_strength")),
+            candidate.get("evidence_level") or "-",
         ))
+        print("       family: {}".format(candidate.get("family") or "-"))
+
+        if not nearest_known:
+            print("       supported by {} of the databases: {}".format(
+                candidate.get("independent_sources")
+                if candidate.get("independent_sources") is not None
+                else len(candidate.get("supporting_databases") or []),
+                ", ".join(candidate.get("supporting_databases") or [])
+                or "none",
+            ))
+
+        for key, entry in sorted(
+            (candidate.get("per_database") or {}).items()
+        ):
+            print("         {:<5} support {:<8} agreeing metrics {}".format(
+                key,
+                number(entry.get("support")),
+                entry.get("family_agreement"),
+            ))
+
+        class_evidence = candidate.get("class_evidence") or {}
+
+        if class_evidence.get("support") is not None:
+            print("       class distance: support {} ({}x the class's own "
+                  "spread, {} independent measurement(s))".format(
+                      number(class_evidence.get("support")),
+                      number(class_evidence.get("within_class_ratio")),
+                      class_evidence.get("n_independent"),
+                  ))
+
+        elif class_evidence.get("reason"):
+            print("       class distance: {}".format(
+                class_evidence["reason"]))
+
+    # ---- the gates ---------------------------------------------------
+    print()
+    print("  DECISION GATES")
+    print()
+    print("    Each step of the ladder, in the order it was walked.")
+    print("    NOT_REACHED means the ladder had already answered.")
+    print()
+
+    for gate in decision.get("gates") or []:
+        print("    {:<20} {}".format(gate.get("gate"), gate.get("verdict")))
+
+        for line in textwrap.wrap(str(gate.get("detail") or ""), 58):
+            print("        {}".format(line))
+
+    if not decision.get("gates"):
+        print("    This decision was recorded before the gates were kept.")
+
+    # ---- confidence and abstention -----------------------------------
+    print()
+    print("  CONFIDENCE   {}".format(decision.get("confidence")))
+    print()
+
+    reasons = decision.get("confidence_reasons")
+    level = decision.get("level")
+
+    if reasons:
+        print("    What counted against it:")
+        print()
+
+        for reason in reasons:
+            print("    -{}  {}".format(reason["penalty"], reason["code"]))
+
+            for line in textwrap.wrap(str(reason.get("detail") or ""), 58):
+                print("        {}".format(line))
+
+    elif reasons is not None:
+        print("    Nothing counted against it.")
+
+    else:
+        print("    This decision was recorded before the penalties were "
+              "kept.")
+
+    # WHY IT IS NOT HIGHER. The penalty list alone cannot say: the
+    # LEVEL caps the confidence before any penalty is counted, so a
+    # clean AMBIGUOUS_SET with nothing against it still reads MEDIUM -
+    # and "nothing counted against it" beside "MEDIUM" looks like a
+    # contradiction until the ceiling is stated.
+    if reasons is not None and level != "KNOWN_MATERIAL":
+        print()
+
+        ceiling = (
+            "An UNKNOWN conclusion has named nothing, so its confidence "
+            "is NONE whatever the evidence looked like - there is no "
+            "answer for it to be confident about."
+            if level == "UNKNOWN" else
+            "HIGH confidence is reachable only from a KNOWN_MATERIAL "
+            "conclusion. This one is {}, so MEDIUM is the ceiling "
+            "however clean the evidence is.".format(level)
+        )
+
+        for line in textwrap.wrap(ceiling, 58):
+            print("    {}".format(line))
 
     unknown = evidence.get("unknown_detection") or {}
 
     if unknown.get("reasons"):
         print()
-        print("    DOUBTS")
+        print("  ABSTENTION / UNCERTAINTY")
+        print()
+        print("    {} severe and {} moderate doubt(s); {} moderate ones "
+              "force UNKNOWN.".format(
+                  unknown.get("severe"), unknown.get("moderate"),
+                  (unknown.get("thresholds") or {}).get(
+                      "moderate_reasons_for_unknown", 2),
+              ))
+        print()
 
         for reason in unknown["reasons"]:
-            print("      [{}] {}".format(reason["severity"], reason["code"]))
+            print("    [{}] {}".format(reason["severity"], reason["code"]))
 
+            for line in textwrap.wrap(str(reason.get("detail") or ""), 58):
+                print("        {}".format(line))
+
+    # ---- how the metrics read ----------------------------------------
+    print()
+    print("  READING THE NUMBERS")
+    print()
+
+    for metric, (direction, note) in sorted(METRIC_DIRECTION.items()):
+        if metric not in ("cosine", "rmse", "pearson_r"):
+            continue
+
+        print("    {:<12} {:<18} {}".format(metric, direction, note))
+
+    print("    {:<12} {}".format(
+        "margin", "distance to the runner-up in that same metric"))
+    print("    {:<12} {}".format(
+        "strength", "0..1 fused support; not a probability"))
+
+    # ---- explanation and provenance ----------------------------------
     print()
     print("  EXPLANATION")
     print()
@@ -1018,6 +1322,142 @@ def print_decision(decision, detail=False):
         ))
 
 
+# ======================================================================
+# ONE SCIENTIFIC RESULT, ONE RENDERER
+# ======================================================================
+# The Sensor + Analysis Test and a production measurement produce the
+# SAME object: an AnalysisRun. They used to render it with two separate
+# stretches of code, and the two had already drifted - the sensor test
+# printed the calibration in force, the full spectral table and, most
+# importantly, DATABASE COMPARISON, while the production screen printed
+# neither the calibration nor a single word about what DB1, DB2 and DB3
+# had each said. An operator running a real measurement therefore saw
+# less about it than one running a bench test.
+#
+# `print_science_result` is now the only place a completed analysis is
+# rendered. Both screens call it, so a change to the spectral table or
+# to the database block reaches both or neither, and
+# `regression/test_science_display.py` asserts that the two call it
+# rather than reimplementing it.
+#
+# What is NOT here: everything mission-specific. Sample ID, slot,
+# measurement id, the movement result, whether the carousel came home,
+# what was persisted where. Those belong to the workflow that produced
+# the acquisition and are printed by it, above this.
+
+METRIC_DIRECTION = {
+    "cosine": ("higher is better", "1.0 is an identical shape"),
+    "rmse": ("lower is better", "0.0 is an identical spectrum"),
+    "pearson_r": ("higher is better", "+1.0 is perfect correlation"),
+    "mae": ("lower is better", "mean absolute error"),
+    "euclidean": ("lower is better", "distance in reflectance units"),
+    "spectral_angle_deg": ("lower is better", "0 deg is identical shape"),
+}
+
+# How many discounted materials to name before summarising. Enough
+# to recognise the pattern, not enough to bury the candidates under
+# it - DB3 routinely discounts a dozen.
+DISCOUNTED_SHOWN = 3
+
+METRIC_NOTE = (
+    "cosine and pearson_r: HIGHER is better.  rmse: LOWER is better.  "
+    "margin is the distance to the runner-up in that same metric - a "
+    "large score with a tiny margin is not an identification."
+)
+
+
+def print_calibration_line(result):
+    """Which calibrations the numbers below were derived under."""
+    calibration = (result or {}).get("calibration") or {}
+
+    print("Active calibration:  {}".format(
+        calibration.get("calibration_id") or "NONE"))
+    print("Legacy calibration:  {}   (DB1 is compared under this and "
+          "nothing else)".format(
+              calibration.get("legacy_calibration_id") or "NONE"))
+
+
+def print_science_result(result, settings=None, show_calibration=True,
+                         show_spectra=True):
+    """
+    A completed AnalysisRun, in full, for any acquisition source.
+
+    The order is the order the evidence was produced in, which is also
+    the order an operator reads it in: what the instrument was set to,
+    what it measured, whether the measurement is usable, what each
+    library says about it separately, and only then what the Decision
+    Model concluded from all of that.
+
+    `settings` is what the ESP32 reported for THIS acquisition, read
+    back from the silicon. Passed in rather than dug out of the run
+    because the acquisition knows it first-hand and an AnalysisRun
+    carries it only as provenance.
+    """
+    result = result or {}
+
+    if show_calibration:
+        print()
+        print("CALIBRATION")
+        print()
+        print_calibration_line(result)
+
+    print()
+    print("SETTINGS")
+    print()
+    print_settings_block(
+        settings
+        or ((result.get("evidence") or {}).get("acquisition") or {}).get(
+            "sensor_settings"
+        )
+    )
+
+    print()
+    print("MEASUREMENT QUALITY")
+    print()
+
+    if result.get("quality"):
+        print_quality(result["quality"])
+
+    else:
+        print("  not available: {}".format(
+            (result.get("error") or {}).get(
+                "message", "the analysis did not reach the quality stage")
+        ))
+
+    if show_spectra:
+        print()
+        print("FULL SPECTRAL DATA")
+        print()
+        print_triad_table(
+            (result.get("evidence") or {}).get("raw"),
+            (result.get("representations") or {}).get("normalized"),
+        )
+
+    print()
+    print(RULE)
+    print()
+    print("DATABASE COMPARISON")
+    print()
+    print_database_results(result.get("database_results"))
+
+    print()
+    print(RULE)
+    print()
+
+    if result.get("evidence"):
+        print_evidence_summary(result["evidence"])
+        print()
+        print_decision(result.get("decision"))
+
+    else:
+        print("DECISION MODEL")
+        print()
+        print("  Not run: {}".format(
+            (result.get("error") or {}).get("message")
+            or "no evidence package could be built"
+        ))
+
+
 def offer_decision_detail(result):
     """'Why?' - the full evidence, on request."""
     decision = (result or {}).get("decision")
@@ -1030,8 +1470,14 @@ def offer_decision_detail(result):
     if choose("[w] Why?  [Enter] continue").strip().lower() != "w":
         return
 
+    # THE DETAIL ONLY. `print_decision(detail=True)` starts by drawing
+    # the compact block again, and the caller has just drawn it - so
+    # the operator got the level, the confidence and the candidate list
+    # twice, one screen apart, and had to work out that they were the
+    # same thing.
     print()
-    print_decision(decision, detail=True)
+    print(RULE)
+    print_decision_detail(decision)
     print()
     pause()
 

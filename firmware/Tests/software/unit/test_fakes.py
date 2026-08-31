@@ -521,12 +521,25 @@ with SandboxBD() as bd:
               "seeded with a copy of DB1, so a test works with real "
               "reference data and can only damage the copy")
 
-    store = bd.sample_store()
-    store.create("SANDBOX-PROOF", 1)
+    # THE ARCHIVE, because it is the collection that has a file. A
+    # Sample created in the session proves nothing about the sandbox:
+    # the session is this process's memory and is never written out,
+    # which is asserted separately below.
+    database = bd.sample_database()
+    database.archive().create("SANDBOX-PROOF", 1)
 
     checks.ok("SANDBOX-PROOF" in bd.samples_file.read_text(
         encoding="utf-8"),
         "a write really lands in the sandbox file")
+
+    database.session().create("SANDBOX-SESSION", 2)
+
+    checks.ok("SANDBOX-SESSION" not in bd.samples_file.read_text(
+        encoding="utf-8"),
+        "and a SESSION Sample reaches no file at all - it is the run "
+        "in progress, not stored PC science")
+
+    store = database.archive()
 
     real_archive = real_bd / "samples" / "samples.json"
 
